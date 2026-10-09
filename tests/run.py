@@ -307,6 +307,24 @@ def mutations(sc):
         sc.patch("tools/score_items.py", 'if slot == "RangedOff" and not me["handxbow"]:', "if False:")
         return sc.env()
     out.append((names[8], "validator: off-hand ranged hand-crossbow rule removed", m9, "red"))
+
+    # 10. Gale's items handed to Shadowheart; Builds.lua's Shadowheart order swapped without a re-score
+    def m10a():
+        sc.reset()
+        return sc.env(lua_patches={"LootData.lua": [('o={"gale"}', 'o={"shadowheart"}')]})
+    out.append((names[9], "LootData: every item owned by Gale given to Shadowheart", m10a, "red"))
+
+    def m10b():
+        sc.reset()
+        src = open(BUILDS_LUA, encoding="utf-8").read()
+        old = 'shadowheart = { builds = { "lightquick", "lightcleric" }'
+        if old not in src:
+            raise RuntimeError("mutation target not found in Builds.lua: " + old)
+        swapped = os.path.join(sc.dir, "Builds.lua")
+        with open(swapped, "w", encoding="utf-8") as f:
+            f.write(src.replace(old, 'shadowheart = { builds = { "lightcleric", "lightquick" }'))
+        return C.Env(sc.root, MODS_LUA, swapped)
+    out.append((names[9], "Builds.lua: Shadowheart's order swapped, LootData not re-scored", m10b, "red"))
     return out, by
 
 
