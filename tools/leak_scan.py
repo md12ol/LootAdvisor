@@ -78,9 +78,10 @@ except ImportError:
     public_text = None
 SOFT_RE = [(n, re.compile(p, re.I)) for n, p in SOFT]
 
-# exact strings that may show (player instructions naming the files the mod itself writes / reads)
+# exact strings that may show (player instructions naming the files the mod or Script Extender reads)
 ALLOW = [
     r"Sets\.html", r"LootAdvisor_settings\.json", r"BuildAdvisor_settings\.json", r"Script Extender[\\/]+LootAdvisor",
+    r"ScriptExtenderUpdaterConfig\.json",  # the Script Extender updater's own file, named in the install steps
 ]
 ALLOW_RE = re.compile("|".join(ALLOW))
 

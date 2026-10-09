@@ -642,6 +642,139 @@ def check_first_builds_and_ruled_owners(env):
         fails.append("nothing checked: no origin has a Build Advisor build")
     return fails
 
+
+# ==================================================================== 11. Noesis only from Ext.UI.Defer
+# Noesis renders in parallel with Lua. Before Script Extender v33 (no Ext.UI.Defer) a walk of the UI tree from the
+# game tick can reach an element the UI has just freed and crash the game, so the client must not touch the tree
+# there unless the player opts in; with Ext.UI.Defer every touch must happen inside the deferred callback.
+CLIENT_STUB = r"""
+STUB = { touches = 0, outside = 0, cells = 0, inDefer = false, prints = {}, queue = {}, handlers = {},
+         winTicks = 0, t = 0, settings = nil }
+local function touch(cell)
+  STUB.touches = STUB.touches + 1
+  if not STUB.inDefer then STUB.outside = STUB.outside + 1 end
+  if cell then STUB.cells = STUB.cells + 1 end
+end
+local function node(ty, name, kids, cell)
+  local d = { Type = ty, Name = name, kids = kids or {} }
+  return setmetatable({}, { __index = function(_, k)
+    touch(cell)
+    if k == "Type" then return d.Type end
+    if k == "Name" then return d.Name end
+    if k == "VisualChildrenCount" then return #d.kids end
+    if k == "VisualChild" then return function(_, i) touch(cell); return d.kids[i] end end
+    if k == "Find" then return function(_, n) touch(cell); return n == "ContentRoot" and STUB.content or nil end end
+    if k == "GetProperty" or k == "SetProperty" or k == "Resource" then return function() touch(cell) end end
+    return nil
+  end })
+end
+local function itemCell()
+  return node("Grid", "Cell", { node("Image", "Back", nil, true), node("Rectangle", "Icon", nil, true),
+                                node("Image", "Front", nil, true) }, true)
+end
+local deep = itemCell()
+for _ = 1, 40 do deep = node("Border", "Wrap", { deep }) end
+STUB.content = node("Grid", "ContentRoot", {
+  node("ls.UIWidget", "ContainerInventory", { node("Grid", "Slots", { itemCell(), itemCell(), deep }) }),
+  node("ls.UIWidget", "Minimap", { node("Canvas", "Markers", {}) }) })
+STUB.root = node("Grid", "Root", { STUB.content })
+local function out(s) STUB.prints[#STUB.prints + 1] = tostring(s) end
+Ext = { Utils = { MonotonicTime = function() STUB.t = STUB.t + 250; return STUB.t end, Print = out,
+                  PrintError = out, PrintWarning = out },
+        IO = { LoadFile = function() return STUB.settings and "{}" or nil end, SaveFile = function() end },
+        Json = { Parse = function() return STUB.settings end, Stringify = function() return "{}" end },
+        UI = { GetRoot = function() touch(); return STUB.root end },
+        Entity = { Get = function() return nil end }, Template = {}, Net = {}, Loca = {}, Events = {},
+        RegisterConsoleCommand = function() end }
+for _, ev in ipairs({ "Tick", "KeyInput", "NetMessage", "SessionLoaded", "ResetCompleted" }) do
+  Ext.Events[ev] = { Subscribe = function(_, f) STUB.handlers[ev] = f end }
+end
+"""
+
+
+def client_lua(env, defer, settings=None):
+    """A fresh Lua state with the mod's client loop (Common, UiTree, Paint, Tooltip, Main) on a stub Ext whose UI tree
+    counts every access. env.lua_patches apply by file name."""
+    from lupa import LuaRuntime
+    L = LuaRuntime(unpack_returned_tuples=True)
+    L.execute(CLIENT_STUB)
+    G = L.globals()
+    if defer:
+        L.execute("Ext.UI.Defer = function(f) STUB.queue[#STUB.queue + 1] = f end")
+    if settings:
+        G.STUB.settings = L.table_from(settings)
+    for rel in ("Shared/Common.lua", "Client/UiTree.lua", "Client/Paint.lua", "Client/Tooltip.lua", "Client/Main.lua"):
+        with open(os.path.join(env.mods_lua, *rel.split("/")), encoding="utf-8") as f:
+            src = f.read()
+        for old, new in env.lua_patches.get(os.path.basename(rel), []):
+            if old not in src:
+                raise RuntimeError(f"lua patch target not found in {rel}: {old[:60]!r}")
+            src = src.replace(old, new)
+        if rel == "Shared/Common.lua":
+            L.execute(src)
+            L.execute("LA.Win = { Init = function() end, Toggle = function() end,"
+                      " Tick = function() STUB.winTicks = STUB.winTicks + 1 end }")
+        else:
+            L.execute(src)
+    return L
+
+
+def run_ticks(L, n):
+    """SessionLoaded, then n game ticks; queued Defer callbacks run between ticks, as the UI update would."""
+    L.execute("""
+      local n = ...
+      STUB.handlers.SessionLoaded()
+      for _ = 1, n do
+        STUB.handlers.Tick({})
+        local q = STUB.queue
+        STUB.queue = {}
+        STUB.inDefer = true
+        for _, f in ipairs(q) do f() end
+        STUB.inDefer = false
+      end
+    """.replace("local n = ...", f"local n = {int(n)}"))
+    return L.globals().STUB
+
+
+def check_noesis_only_through_defer(env):
+    """Old Script Extender (no Ext.UI.Defer): the client never touches the UI tree, logs one line naming v33, and
+    the F6 window keeps ticking. With Ext.UI.Defer: the tree is touched only inside the deferred callback, and the
+    paint walk reaches the item cells. Old SE with UnsafeUiOnOldSE = true: the walk runs (the opt-in works)."""
+    fails = []
+    ticks = 40
+    scenarios = 0
+
+    S = run_ticks(client_lua(env, defer=False), ticks)
+    scenarios += 1
+    if S.touches != 0:
+        fails.append(f"no Ext.UI.Defer: the UI tree was touched {S.touches} times (must be 0)")
+    notes = [p for p in S.prints.values() if "v33" in p]
+    if len(notes) != 1:
+        fails.append(f"no Ext.UI.Defer: {len(notes)} log lines name Script Extender v33 (want exactly 1)")
+    if S.winTicks == 0:
+        fails.append("no Ext.UI.Defer: the F6 window never ticked")
+
+    S = run_ticks(client_lua(env, defer=True), ticks)
+    scenarios += 1
+    if S.outside != 0:
+        fails.append(f"Ext.UI.Defer present: {S.outside} UI tree touches outside the deferred callback (must be 0)")
+    if S.cells == 0:
+        fails.append("Ext.UI.Defer present: the paint walk never reached an item cell")
+    if any("v33" in p for p in S.prints.values()):
+        fails.append("Ext.UI.Defer present: the old Script Extender line was logged anyway")
+
+    S = run_ticks(client_lua(env, defer=False, settings={"UnsafeUiOnOldSE": True}), ticks)
+    scenarios += 1
+    if S.cells == 0:
+        fails.append("no Ext.UI.Defer, UnsafeUiOnOldSE = true: the paint walk never reached an item cell")
+
+    env.counts["scenarios"] = scenarios
+    env.counts["ticks each"] = ticks
+    if scenarios == 0:
+        fails.append("nothing checked")
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -654,4 +787,6 @@ CHECKS = [
     ("sets page sheet: weapon damage riders (dice and stat) counted once", check_sheet_weapon_riders, False),
     ("ranged off hand: hand crossbows only (validator + sets)", check_ranged_offhand_hand_crossbow, False),
     ("first builds follow Build Advisor; Weave kit owned by Gale", check_first_builds_and_ruled_owners, False),
+    ("UI tree touched only through Ext.UI.Defer (old Script Extender: not at all)", check_noesis_only_through_defer,
+     False),
 ]

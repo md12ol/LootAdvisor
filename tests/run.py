@@ -42,7 +42,7 @@ except ImportError:
 import checks as C  # noqa: E402
 
 LOGIC_OWNER_OLD = "return cs ~= nil and cs.team and not cs.dead"
-# the decision-63 fix: a contested item's owner must be in the ACTIVE party (state.comp[c].party)
+# the owner fix: a contested item's owner must be in the ACTIVE party (state.comp[c].party)
 LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.dead"
 
 
@@ -329,6 +329,20 @@ def mutations(sc):
             f.write(src.replace(old, 'shadowheart = { builds = { "lightcleric", "lightquick" }'))
         return C.Env(sc.root, MODS_LUA, swapped)
     out.append((names[9], "Builds.lua: Shadowheart's order swapped, LootData not re-scored", m10b, "red"))
+
+    # 11a / 11b. the Ext.UI.Defer gate removed (old SE walks the tree from the tick); the deferred path bypassed
+    def m11a():
+        sc.reset()
+        return sc.env(lua_patches={"UiTree.lua": [(
+            "if LA.Settings and LA.Settings.UnsafeUiOnOldSE == true then", "if true then")]})
+    out.append((names[10], "UiTree.lua LA.UI.Run: no Ext.UI.Defer -> runs the UI code anyway (gate removed)", m11a,
+                "red"))
+
+    def m11b():
+        sc.reset()
+        return sc.env(lua_patches={"UiTree.lua": [("defer(function() pcall(fn) end)", "pcall(fn)")]})
+    out.append((names[10], "UiTree.lua LA.UI.Run: Ext.UI.Defer present but the code runs straight from the tick",
+                m11b, "red"))
     return out, by
 
 
