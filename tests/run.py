@@ -277,6 +277,24 @@ def mutations(sc):
         return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_FIX, LOGIC_OWNER_FIX.replace(
             "cs.party == true", "(cs.party == true or cs.team == true)"))]})
     out.append((names[5], "ownerAvailable broken again: camp companion counts as owner", m6, "red"))
+
+    # 7. Gale's items handed to Shadowheart; Builds.lua's Shadowheart order swapped without a re-score
+    def m7a():
+        sc.reset()
+        return sc.env(lua_patches={"LootData.lua": [('o={"gale"}', 'o={"shadowheart"}')]})
+    out.append((names[6], "LootData: every item owned by Gale given to Shadowheart", m7a, "red"))
+
+    def m7b():
+        sc.reset()
+        src = open(BUILDS_LUA, encoding="utf-8").read()
+        old = 'shadowheart = { builds = { "lightquick", "lightcleric" }'
+        if old not in src:
+            raise RuntimeError("mutation target not found in Builds.lua: " + old)
+        swapped = os.path.join(sc.dir, "Builds.lua")
+        with open(swapped, "w", encoding="utf-8") as f:
+            f.write(src.replace(old, 'shadowheart = { builds = { "lightcleric", "lightquick" }'))
+        return C.Env(sc.root, MODS_LUA, swapped)
+    out.append((names[6], "Builds.lua: Shadowheart's order swapped, LootData not re-scored", m7b, "red"))
     return out, by
 
 

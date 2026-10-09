@@ -434,7 +434,7 @@ for _bid, _b in BUILDS.items():
 CHARACTERS = {
     "astarion": dict(
         name="Astarion", race="High Elf", research="astarion.md",
-        builds=["gloomassassin", "thiefmelee", "thx", "critarcher"],
+        builds=["thx", "gloomassassin", "thiefmelee", "critarcher"],
         tags={"GSA": ["gloomassassin"], "GSA7": ["gloomassassin"], "THX": ["thx"], "TM": ["thiefmelee"],
               "CRIT": ["critarcher"], "all": "*"},
         default_tags=["gloomassassin"]),
@@ -461,7 +461,7 @@ CHARACTERS = {
         default_tags="*"),
     "shadowheart": dict(
         name="Shadowheart", race="High Half-Elf", research="shadowheart.md",
-        builds=["lightcleric", "lightquick", "stormsorc", "tempestcleric", "lifecleric", "trickcleric"],
+        builds=["lightquick", "lightcleric", "stormsorc", "tempestcleric", "lifecleric", "trickcleric"],
         tags={"LIGHT": ["lightcleric"], "STORM": ["stormsorc"], "TRICK": ["trickcleric"],
               "TEMPEST": ["tempestcleric"], "LIFE": ["lifecleric"], "SG": ["lightcleric", "tempestcleric"],
               "CLESOR": ["stormsorc"]},

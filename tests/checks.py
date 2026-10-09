@@ -403,6 +403,38 @@ def check_owner_active_party_only(env):
     return fails
 
 
+
+# ==================================================================== 7. first builds follow Build Advisor; ruled owners
+# Destructive Wrath maximises every Chain Lightning target and Markoheshkir's item spells, so Gale's kit.
+RULED_OWNERS = {"MAG_TheChromatic_Staff": "gale", "MAG_EndGameCaster_Hood": "gale", "MAG_EndGameCaster_Cloak": "gale"}
+
+
+def check_first_builds_and_ruled_owners(env):
+    """Each origin's first build in LootData is Build Advisor's first build for that origin (when Loot Advisor
+    profiles it), and every item in RULED_OWNERS has exactly that owner."""
+    G = env.lua().globals()
+    chars = lua_dict(G.LA.Data.chars)
+    _builds, origins = gamedata.builds_lua(env.builds_lua)
+    fails, n_first = [], 0
+    for char, cd in chars.items():
+        ids = [b.id for b in lua_list(cd.b)]
+        want = next((b for b in origins.get(char, []) if b in ids), None)
+        if want is None:
+            continue
+        n_first += 1
+        if ids[0] != want:
+            fails.append(f"{char}: first build {ids[0]}, Build Advisor's first is {want}")
+    items = G.LA.Data["items"]
+    owners = {items[i].id: lua_list(items[i].o) for i in range(1, len(items) + 1)}
+    for sid, who in RULED_OWNERS.items():
+        if owners.get(sid) != [who]:
+            fails.append(f"{sid}: owners {owners.get(sid)}, ruled {who}")
+    env.counts["origins with a Build Advisor first build"] = n_first
+    env.counts["ruled owners"] = len(RULED_OWNERS)
+    if n_first == 0:
+        fails.append("nothing checked: no origin has a Build Advisor build")
+    return fails
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -411,4 +443,5 @@ CHECKS = [
     ("list-only items: no frame, no tooltip text", check_list_only_no_frame_no_text, False),
     # decision 63 applied in Logic.lua ownerAvailable + State.lua party flag (session 4): must pass
     ("contested owners: active party only (page = F6)", check_owner_active_party_only, False),
+    ("first builds follow Build Advisor; Weave kit owned by Gale", check_first_builds_and_ruled_owners, False),
 ]
