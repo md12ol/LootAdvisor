@@ -881,14 +881,14 @@ def check_dead_shot(out=None):
 _COST = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
 
 
-def check_respec(out, sample=None):
+def check_respec(out, sample=None, plans=None):
     """Tuned respecs: re-scored here, never below the planned build with the same gear; the exported per-level
     picks obey the point-buy rules (27 points, 8-15, racial +2 / +1 on two abilities) and keep the build's class
     sequence (Builds.lua parsed here)."""
     import model
     import gamedata
     W = _world()
-    plans = _plans()
+    plans = plans or _plans()
     builds, _o = gamedata.builds_lua(BUILDS_LUA)
     fails, n = [], 0
     ps = plans["plans"] if not sample else plans["plans"][:sample]
@@ -1008,6 +1008,10 @@ def check_party(out):
         for sid, cs in users.items():
             if len(cs) > 1 and r["assign"].get(sid) not in cs:
                 fails.append(f"{own} A{act}: {sid} used by {sorted(cs)} assigned to {r['assign'].get(sid)}")
+        # the last pass only settles items repaired sets picked up later; an assigned item still shared means the
+        # losers kept it
+        for sid in set(r.get("settled_last") or []) & set(r["assign"]):
+            fails.append(f"{own} A{act}: assigned item {sid} still shared after the rounds")
         final, pseudo, per_char = {}, [], {}
         for b in r["builds"]:
             n += 1
@@ -1431,17 +1435,18 @@ def mutations():
                 t["pb"] = dict(s0["pb"])
                 k = max(t["pb"], key=t["pb"].get)    # take points out of the main ability
                 lo_ = min(t["pb"], key=t["pb"].get)
-                t["pb"][k] -= 1
-                t["pb"][lo_] += 1
+                t["pb"][k] -= 2                     # two points: one can stay inside the same modifier
+                t["pb"][lo_] += 2
                 r.update(respec=sp.respec(t), state=t, tuned=r["untuned"] * 1.01)
             return r
         import run as R
         respec.tune = worse
         try:
-            plan, _row = R.tuned_plan(W, "karlach", "giants", 3,
+            # a caster: an Elixir of Cloud Giant Strength in a STR build's set makes the main ability moot
+            plan, _row = R.tuned_plan(W, "gale", "tempestevoker", 3,
                                       {k: v["sid"] for k, v in next(s for s in _output()["sets"] if s["id"] ==
-                                                                    "karlach.giants.a3.opt")["items"].items()},
-                                      "karlach.giants.a3.opt", "optimizer", "party")
+                                                                    "gale.tempestevoker.a3.opt")["items"].items()},
+                                      "gale.tempestevoker.a3.opt", "optimizer", "party")
         finally:
             respec.tune = old
         import tempfile
@@ -1450,8 +1455,7 @@ def mutations():
             json.dump({"format": "loot-advisor-test-plan/1", "plans": [plan]}, f)
         _CACHE.pop("P", None)
         try:
-            _plans(tmp)
-            return check_respec({"sets": []})[0]
+            return check_respec({"sets": []}, plans=_plans(tmp))[0]     # _plans() alone reloads the real file
         finally:
             _CACHE.pop("P", None)
             _CACHE.pop("P_path", None)
@@ -1469,7 +1473,7 @@ def mutations():
     def m_party_greedy():
         old = party._local
 
-        def greedy(chars, items, claims, value):
+        def greedy(chars, items, claims, value, start=None):
             wants = {c: frozenset(i for i in items if c in claims[i]) for c in chars}
             return {i: max(claims[i], key=lambda c: (value(c, wants[c]) - value(c, wants[c] - {i}), c)) for i in items}
         party._local = greedy                        # no local search after the greedy start
