@@ -117,7 +117,7 @@ PACK_TARGETS = {"Projectile_Fireball": 3, "Target_IceStorm": 3, "Zone_ConeOfCold
                 "Projectile_MAG_Legendary_Chromatic_ChainLightning": 4, "Zone_MAG_Legendary_Chromatic_LightningBolt": 2.5,
                 "Projectile_MAG_Legendary_Chromatic_Fireball": 3, "Target_MAG_Legendary_Chromatic_IceStorm": 3,
                 "Zone_MAG_Legendary_Chromatic_ConeOfCold": 3}
-# Sensitivity switches (both unverified in game, see GALE_BEST_BUILD.md "To verify"):
+# Sensitivity switches (both unverified in game):
 DW_ALL_TARGETS = True    # Destructive Wrath maximises every target / chain jump of the cast (status lasts the whole cast)
 DW_ITEM_SPELLS = True    # Destructive Wrath triggers on Markoheshkir's item spells ("not AnyEntityIsItem()")
 prof_of = lambda lvl: 2 + (lvl - 1) // 4

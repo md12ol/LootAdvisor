@@ -50,7 +50,8 @@ LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.
 # from tracked files, so --ci skips them; they run in the full local suite (pre-push hook). A check can also mark
 # itself with a function attribute `local_only = True`. Any check not marked here runs in CI and must pass there.
 LOCAL_ONLY = {"check_no_heavy_armour_raging", "check_profiles_cover_builds_lua", "check_class_proficiencies",
-              "check_subclass_names"}
+              "check_subclass_names", "check_sheet_subclass_features", "check_sheet_weapon_riders",
+              "check_ranged_offhand_hand_crossbow"}
 
 
 def local_only(fn):
@@ -155,7 +156,7 @@ class Scratch:
             shutil.copytree(os.path.join(LA, "data", d), os.path.join(self.root, "data", d))
         for fn in os.listdir(os.path.join(LA, "data", "cache")):
             if fn.endswith(".json") and (fn.startswith("roottemplates_") or fn in (
-                    "class_progressions.json", "item_display_names.json")):
+                    "class_progressions.json", "item_display_names.json", "stats_resolved.json")):
                 shutil.copy2(os.path.join(LA, "data", "cache", fn), os.path.join(self.root, "data", "cache", fn))
 
     def patch(self, rel, old, new, count=1):
@@ -259,18 +260,53 @@ def mutations(sc):
         return sc.env(lua_patches={"Tooltip.lua": [('if r.mode ~= "l" or r.s == "owned" then', "if true then")]})
     out.append((names[4], "Tooltip.lua T.Apply: list-only rows get text", m5b, "red"))
 
-    # 6. owners: with the decision-63 fix the check must pass; counting a camp companion as owner must fail
+    # 6. owners: Logic.lua carries the active-party fix -> the unpatched mod must pass; the pre-fix line (team only)
+    #    and a variant that lets a camp companion count must both fail
     def m6fix():
         sc.reset()
-        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_OLD, LOGIC_OWNER_FIX)]})
-    out.append((names[5], "Logic.lua ownerAvailable FIXED (active party only) - must pass", m6fix, "green"))
+        return sc.env()
+    out.append((names[5], "Logic.lua as shipped (ownerAvailable = active party only) - must pass", m6fix, "green"))
+
+    def m6old():
+        sc.reset()
+        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_FIX, LOGIC_OWNER_OLD)]})
+    out.append((names[5], "ownerAvailable back to the pre-fix line (whole team counts)", m6old, "red"))
 
     def m6():
         sc.reset()
-        # the fix applied, then broken again: a camp companion (in the team, not in the party) counts as owner
-        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_OLD, LOGIC_OWNER_FIX.replace(
+        # a camp companion (in the team, not in the party) counts as owner
+        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_FIX, LOGIC_OWNER_FIX.replace(
             "cs.party == true", "(cs.party == true or cs.team == true)"))]})
-    out.append((names[5], "fixed ownerAvailable broken again: camp companion counts as owner", m6, "red"))
+    out.append((names[5], "ownerAvailable broken again: camp companion counts as owner", m6, "red"))
+
+    # 7. the sheet matches subclasses by the shown name again (the old "Hexblade" / "Draconic" comparisons)
+    def m7():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", 'sub_cls = {s["cls"]: s.get("k") for s in BI["subs"]}',
+                 'sub_cls = {s["cls"]: s["n"] for s in BI["subs"]}')
+        return sc.env()
+    out.append((names[6], "sheet: subclass features matched on the shown name, not the game's internal name", m7,
+                "red"))
+
+    # 8a / 8b. stat riders dropped again; the weapon's own WeaponDamage boost counted on top of its rider again
+    def m8a():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", "n = val(m.group(1))", "n = 0")
+        return sc.env()
+    out.append((names[7], "sheet: number / stat weapon riders (Giantslayer STR) ignored", m8a, "red"))
+
+    def m8b():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", 'if x["name"] == "WeaponDamage" and (d0, t) in riders:', "if False:")
+        return sc.env()
+    out.append((names[7], "sheet: the weapon's own WeaponDamage boost counted again next to its rider", m8b, "red"))
+
+    # 9. the validator lets any ranged weapon into the ranged off hand again
+    def m9():
+        sc.reset()
+        sc.patch("tools/score_items.py", 'if slot == "RangedOff" and not me["handxbow"]:', "if False:")
+        return sc.env()
+    out.append((names[8], "validator: off-hand ranged hand-crossbow rule removed", m9, "red"))
     return out, by
 
 

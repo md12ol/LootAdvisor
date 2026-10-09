@@ -4,7 +4,7 @@
 cd "$(dirname "$0")"
 NET="/c/Program Files/dotnet/shared/Microsoft.NETCore.App/$(ls "/c/Program Files/dotnet/shared/Microsoft.NETCore.App" | grep '^8\.' | tail -1)"
 LS=../../../third_party/lslib/Packed/Tools
-for src in VtExtract; do
+for src in VtExtract VtBatch; do
   /c/Windows/Microsoft.NET/Framework64/v4.0.30319/csc.exe -nologo -nostdlib -noconfig -out:$src.dll -target:exe \
     "-r:$(cygpath -w "$NET/System.Private.CoreLib.dll")" "-r:$(cygpath -w "$NET/System.Runtime.dll")" \
     "-r:$(cygpath -w "$NET/System.Console.dll")" "-r:$(cygpath -w "$NET/System.Collections.dll")" \

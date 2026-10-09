@@ -49,7 +49,7 @@
 
   // ================================================================= live sync (local Sets page shipped with the mod)
   // The mod writes the running game's state; the page loader passes it to LootAdvisorSets.live(state). In the
-  // claude.ai artifact LIVE stays null and nothing below changes the page.
+  // online copy LIVE stays null and nothing below changes the page.
   var LIVE = null, LIVE_HAVE = {}, LIVE_PLAY = {}, OVR = store.json("ovr", {}), liveSel = null, liveAct = null;
   var PLAY_KEYS = ["durge", "grove", "night", "isobel"];
   var LIVE_SKIP = { shar: 1, selune: 1, goblins: 1, tieflings: 1, isobel_kill: 1, isobel_dead: 1, isobel_alive: 1 };
@@ -223,6 +223,7 @@
   var ABS = ["STR", "DEX", "CON", "INT", "WIS", "CHA"];
   var ABN = { STR: "Strength", DEX: "Dexterity", CON: "Constitution", INT: "Intelligence", WIS: "Wisdom", CHA: "Charisma" };
   var DICE_RE = /^(\d+)d(\d+)$/;
+  function riderLabel(a) { a = String(a).trim(); return /^-?\d+$/.test(a) ? "" : ", " + a.replace(/([a-z])(?=[A-Z])/g, "$1 ").toLowerCase(); }
   function pyStr(v) { return v == null ? "None" : String(v); }
   function num(x) {
     if (typeof x === "number") return isFinite(x) ? Math.trunc(x) : null;
@@ -315,9 +316,10 @@
     var nm = { ProficiencyBonus: profB, Level: level, CharacterLevel: level };
     ABS.forEach(function (k) { nm[ABN[k] + "Modifier"] = M[k]; });
     function val(expr) { var n = num(expr); return n !== null && /^-?\d+(\.\d+)?$/.test(String(expr).trim()) ? n : safeEval(expr, nm); }
-    var subCls = {}; BI.subs.forEach(function (s) { subCls[s.cls] = s.n; });
-    var hexblade = subCls.Warlock === "Hexblade" && (classes.Warlock || 0) > 0;
-    var draconic = subCls.Sorcerer === "Draconic" && (classes.Sorcerer || 0) > 0;
+    // subclass features: matched on the game's internal subclass name (RULES.subs, same table as the generator)
+    var subCls = {}; BI.subs.forEach(function (s) { subCls[s.cls] = s.k; });
+    function hasSub(key, minLv) { var r = RULES.subs[key]; return !!r && subCls[r[0]] === r[1] && (classes[r[0]] || 0) >= (minLv || 1); }
+    var hexblade = hasSub("hexblade"), draconic = hasSub("draconic");
     // HP
     var hp = 0, hpF = [], first = true;
     clsOrder.forEach(function (c) {
@@ -416,11 +418,20 @@
       if (ench) df.push("enchantment " + pctd(ench));
       var offSid = (items.OffHand || {}).sid;
       if (!ranged && !offhand && !twoH && !useVer && styles.some(function (s) { return s.indexOf("Duel") === 0; }) && !(offSid && ITEMS[offSid] && ITEMS[offSid].wpn)) { flat += 2; df.push("+2 Fighting Style: Duelling"); }
-      (w.extra || []).forEach(function (e) { var m = /^(\d+d\d+)\s+(\w+)/.exec(String(e)); if (m) { dparts.push([m[1], m[2]]); df.push(m[1] + " " + m[2] + " (weapon)"); } });
+      // weapon riders: dice, or a number / stat expression added to the flat part (same as the generator)
+      var riders = {};
+      (w.extra || []).forEach(function (e) {
+        var m = /^(\S+)\s+(\w+)/.exec(String(e)); if (!m) return;
+        riders[m[1] + "|" + m[2]] = 1;
+        if (DICE_RE.test(m[1])) { dparts.push([m[1], m[2]]); df.push(m[1] + " " + m[2] + " (weapon)"); }
+        else { var n = val(m[1]); if (n) { flat += n; df.push(pctd(n) + " " + m[2] + " (weapon" + riderLabel(m[1]) + ")"); } }
+      });
       flatDmg.forEach(function (x) { var n = val(x.args[0]), t = x.args.length > 1 ? x.args[1] : null; if (n) { flat += n; df.push(pctd(n) + " " + x.src + (t ? " " + t : "")); } });
       charDice.concat(uncond.filter(function (y) { return y.name === "WeaponDamage" && y.scope === slot; })).forEach(function (x) {
         var d0 = x.args[0], t = x.args.length > 1 ? x.args[1] : w.dt;
+        if (x.name === "WeaponDamage" && riders[d0 + "|" + t]) return;   // the weapon's own rider, counted above
         if (DICE_RE.test(d0)) { dparts.push([d0, t]); df.push(d0 + " " + pyStr(t) + " " + x.src); }
+        else if (x.name === "WeaponDamage" && val(d0)) { var rl = riderLabel(d0); flat += val(d0); df.push(pctd(val(d0)) + " " + pyStr(t) + " " + x.src + (rl ? " (" + rl.slice(2) + ")" : "")); }
       });
       var cnotes = [];
       cond.forEach(function (x) {
@@ -449,12 +460,12 @@
     if ((classes.Fighter || 0) >= 11) { nAtt = 3; attF = "Fighter 11: Improved Extra Attack"; }
     else if (["Fighter", "Barbarian", "Paladin", "Ranger", "Monk"].some(function (c) { return (classes[c] || 0) >= 5; })) { nAtt = 2; attF = "Extra Attack (level 5 of a martial class)"; }
     else if ((classes.Warlock || 0) >= 5 && (BI.thirsting || hexblade)) { nAtt = 2; attF = "Thirsting Blade / Pact of the Blade (Warlock 5+, assumed for blade builds)"; }
-    else if ((classes.Bard || 0) >= 6 && subCls.Bard === "Swords") { nAtt = 2; attF = "Extra Attack (College of Swords 6)"; }
-    else if ((classes.Wizard || 0) >= 6 && subCls.Wizard === "Bladesinging") { nAtt = 2; attF = "Extra Attack (Bladesinging 6)"; }
+    else if (hasSub("swords", 6)) { nAtt = 2; attF = "Extra Attack (College of Swords 6)"; }
+    else if (hasSub("bladesinging", 6)) { nAtt = 2; attF = "Extra Attack (Bladesinging 6)"; }
     // spellcasting
     var casters = clsOrder.filter(function (c) { return RULES.castAbil[c]; }).map(function (c) { return [c, RULES.castAbil[c]]; });
-    if (subCls.Fighter === "Eldritch Knight" && (classes.Fighter || 0) >= 3) casters.push(["Fighter", "INT"]);
-    if (subCls.Rogue === "Arcane Trickster" && (classes.Rogue || 0) >= 3) casters.push(["Rogue", "INT"]);
+    if (hasSub("eldritch_knight", 3)) casters.push(["Fighter", "INT"]);
+    if (hasSub("arcane_trickster", 3)) casters.push(["Rogue", "INT"]);
     var spell = null;
     if (casters.length) {
       var bestC = casters[0];

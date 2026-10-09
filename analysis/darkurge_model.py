@@ -195,11 +195,11 @@ BUILDS["B  Bardadin Paladin 2 / Swords Bard 10, Duellist's Prerogative + Bhaalis
     control="Hold Person / Hypnotic Pattern / Hold Monster DC 17",
 )
 
-# W  The user's White Urge: Hexblade Warlock 12, GWM, CHA 19 -> 21 with Birthright; Sword of Chaos, Lifedrinker +5,
+# W  A resisting Dark Urge: Hexblade Warlock 12, GWM, CHA 19 -> 21 with Birthright; Sword of Chaos, Lifedrinker +5,
 #    Helldusk Gloves 1d6, Hex 1d6 (~70%), Hexblade's Curse (+4, crit 19, ~60%), Elixir of Viciousness, Risky.
 #    Attack 5+4+2 = +11. No smites.
 _w = A(11, 7 + 2.5 + 3.5 + 0.7 * 3.5, 2 + 5 + 5 + 0.6 * 4, 0, 0, 18.4, pa=True)
-BUILDS["W  White Urge today: Hexblade Warlock 12 + GWM (durge_hexblade)"] = dict(
+BUILDS["W  Resisting Durge: Hexblade Warlock 12 + GWM (durge_hexblade)"] = dict(
     hit=_w, adv=True, rounds=lambda r: [("hit", True)] * 2, extra=lambda r: 0.3 * 33,
     ac="21 (Helldusk)", hp=135, dr="3 per hit", aoe=lambda r: 0,
     control="Hold Person / Hold Monster (pact slots) DC 18",
@@ -305,7 +305,7 @@ if __name__ == "__main__":
         print(f"{name:<88} {s16:6.1f} {s19:6.1f} {s22:6.1f} | {n19:6.1f} | {nb:12.1f} | {fin:17.1f} | {aoe:5.1f}")
     print(f"Slayer form (Durge level 10+, gear off): {slayer(16):.1f} / {slayer(19):.1f} / {slayer(22):.1f} at AC 16/19/22")
     t = rows[0][2]; w = [r for r in rows if r[0].startswith("W")][0][2]
-    print(f"\nVerdict T vs White Urge Hexblade at AC 19: {t:.1f} vs {w:.1f} = +{(t / w - 1) * 100:.0f}%")
+    print(f"\nVerdict T vs resisting-Durge Hexblade at AC 19: {t:.1f} vs {w:.1f} = +{(t / w - 1) * 100:.0f}%")
     for r in rows[1:]:
         print(f"  T vs {r[0][:2].strip()}: +{(t / r[2] - 1) * 100:.0f}% sustained AC19, finale +{(rows[0][6] / r[6] - 1) * 100:.0f}%")
     tk = list(BUILDS)[0]

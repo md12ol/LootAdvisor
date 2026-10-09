@@ -1,4 +1,4 @@
-"""Generates the LootAdvisor mod's derived data (session 3, step 4). Read-only on the data; writes only into the mod.
+"""Generates the LootAdvisor mod's derived data. Read-only on the data; writes only into the mod.
 
   python LootAdvisor/tools/gen_mod_data.py            -> Mods/LootAdvisor/...
 
@@ -14,7 +14,7 @@ Outputs:
   Mods/LootAdvisor/ScriptExtender/Lua/Shared/ModData.lua    markers per item, build classes, flags, NPC uuids
   Mods/LootAdvisor/Story/Journal/Markers/<guid>.lsx          one journal marker per (item, source) target
 
-Marker rule (HANDOFF session 3, decisions 3-5): an item gets markers in an act whose display char is 'm' (fixed
+Marker rule: an item gets markers in an act whose display char is 'm' (fixed
 world / container / NPC sources with chance 1) or 't' (trader sources: marker on the trader). Random loot,
 rewards (no placed holder) and forge/combo steps get none - the list window covers them.
 """
@@ -27,17 +27,40 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
-ROOT = LA                      # Desktop/BG3Mods/LootAdvisor holds Mods/LootAdvisor (restructure 2026-10)
+ROOT = LA                      # the repo root holds Mods/LootAdvisor
 MOD = os.path.join(ROOT, "Mods", "LootAdvisor")
 SHARED = os.path.join(MOD, "ScriptExtender", "Lua", "Shared")
 MARKERS = os.path.join(MOD, "Story", "Journal", "Markers")
 sys.path.insert(0, HERE)
 
 CHARS = ["astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge"]
-NS = uuid.UUID("2e3407b4-e6ef-4cf7-9de7-25950e9f82f9")  # same namespace as spike/gen_markers.py
+# stable GUID per MarkerID (uuid5 in this namespace), so regenerating never creates new markers
+NS = uuid.UUID("2e3407b4-e6ef-4cf7-9de7-25950e9f82f9")
+# one journal map marker (.lsx), the same format as the game's own markers in Story/Journal/Markers
+TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="{handle}" version="1"/>
+                    <attribute id="Guid" type="guid" value="{guid}"/>
+                    <attribute id="MarkerID" type="FixedString" value="{id}"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="{icon}"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="{level}"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="{target_type}"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="{target}"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>
+"""
 MAX_MARKERS_PER_ITEM = 6
 BOX_MARGIN = 25
-BOX_FILTER = False  # off: item boxes cannot tell interiors from real areas (Emerald Grove fell outside); see MOD_STATUS
+BOX_FILTER = False  # off: item boxes cannot tell interiors from real areas (Emerald Grove fell outside)
 REGION_ACT = {"WLD_Main_A": 1, "CRE_Main_A": 1, "SCL_Main_A": 2, "INT_Main_A": 2, "BGO_Main_A": 3,
               "CTY_Main_A": 3, "IRN_Main_A": 3, "END_Main": 3}
 # player-facing region names (the names the game's map / waypoint list uses)
@@ -61,7 +84,7 @@ PATHS = {
                   "no": ["DEN_AttackOnDen_State_RaiderVictory", "DEN_AttackOnDen_State_DenLost",
                          "DEN_AttackOnDen_State_DruidsAreDefeated"]},
     # isobel_kill = Last Light falls (its traders die): Isobel killed, abducted or knocked out -> the siege runs
-    # without protection (RESEARCH_VERDICTS #5). Verified in game: White Urge has NoProtection=1 while
+    # without protection (research verdict 5). Verified in game: a Durge save has NoProtection=1 while
     # HAV_Isobel_State_IsDead=0 (the Durge's kill sets ORI_DarkUrge_KilledIsobel_Requirement).
     "isobel_kill": {"yes": ["HAV_Isobel_State_IsDead", "ORI_DarkUrge_State_KilledIsobel",
                             "HAV_TakingIsobel_State_KilledIsobel", "HAV_Siege_State_NoProtection",
@@ -159,7 +182,7 @@ def main():
     levels = json.load(open(os.path.join(LA, "data", "items_all", "levels.json"), encoding="utf-8"))
 
     # world positions (sub-levels placed as LevelTemplates store local coordinates), zones, entrances:
-    # tools/level_links.py + tools/entrances.py (round 2, decision 4: marker on the area's entrance)
+    # tools/level_links.py + tools/entrances.py (marker on the area's entrance)
     import math
     import entrances as ent_mod
     Z = json.load(open(os.path.join(LA, "data", "cache", "level_zones.json"), encoding="utf-8"))
@@ -277,8 +300,6 @@ def main():
     if os.path.isdir(MARKERS):
         shutil.rmtree(MARKERS)
     os.makedirs(MARKERS)
-    tpl = open(os.path.join(LA, "spike", "gen_markers.py"), encoding="utf-8").read()
-    TEMPLATE = re.search(r'TEMPLATE = """(.*?)"""', tpl, re.S).group(1)
 
     marker_lua = []
     interior = []

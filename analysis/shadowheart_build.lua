@@ -1,7 +1,7 @@
--- Shadowheart verdict build (analysis/SHADOWHEART_BEST_BUILD.md, model analysis/shadowheart_model.py).
+-- Shadowheart verdict build (model analysis/shadowheart_model.py).
 -- CORRECTED 2026-10-09: Quickened Spell is only offered from Sorcerer 3 (PassiveLists.lsx c3506532; Sorcerer 2 list
 -- 49704931 = Careful/Distant/Extended/Twinned). The split is therefore Cleric 9 / Sorcerer 3. This matches the
--- `lightquick` entry the main session already merged into Builds.lua; kept here only as the analysis copy (not merged).
+-- `lightquick` entry in Builds.lua; kept here only as the analysis copy.
 {
   id = "lightquick", name = "Light Domain Cleric 9 / Sorcerer 3 (Quickened)", tier = "S",
   role = "Radiant AoE caster + support: Radiance of the Dawn, Spirit Guardians and a quickened second spell",

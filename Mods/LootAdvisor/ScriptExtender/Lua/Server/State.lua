@@ -58,8 +58,8 @@ end
 
 local function guidOf(s) return type(s) == "string" and (s:match("(%x+%-%x+%-%x+%-%x+%-%x+)$") or s) or nil end
 
--- uuid set of everyone in the player's team (party + camp): Osiris DB_PartOfTheTeam (verified in game: Ryzen's
--- Lae'zel is not in it although she is alive - she left; DB_InCamp lists camp members)
+-- uuid set of everyone in the player's team (party + camp): Osiris DB_PartOfTheTeam (verified in game: a
+-- Lae'zel who left the party is not in it although she is alive - she left; DB_InCamp lists camp members)
 function S.Team()
   local out = {}
   for _, r in ipairs(try(function() return Osi.DB_PartOfTheTeam:Get(nil) end) or {}) do
@@ -69,15 +69,26 @@ function S.Team()
   return out
 end
 
+-- party = in the ACTIVE party (S.Players(), the same list PageSync uses), not just in the team (camp counts as team)
 function S.Companions()
   local out = {}
   local team = S.Team()
+  local inParty = {}
+  -- keyed by guid AND by the name part ("S_Player_Astarion_<guid>" -> "S_Player_Astarion"), as LA.Mod.companions
+  -- names its npcs by name
+  for _, u in ipairs(S.Players()) do
+    if type(u) == "string" then
+      inParty[u] = true
+      local g = guidOf(u); if g then inParty[g] = true end
+      local nm = u:match("^(.-)_%x+%-%x+%-%x+%-%x+%-%x+$"); if nm then inParty[nm] = true end
+    end
+  end
   for name, c in pairs(LA.Mod.companions or {}) do
     local d = false
     for _, f in ipairs(c.dead or {}) do if flag(f) then d = true end end
     if c.npc and c.npc ~= "" and try(Osi.IsDead, c.npc) == 1 then d = true end
     local inTeam = (c.npc ~= "" and team[c.npc]) or (c.team ~= "" and flag(c.team)) or false
-    out[name] = { team = inTeam and true or false, dead = d }
+    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d }
   end
   return out
 end
@@ -108,7 +119,7 @@ function S.IsDurgeCampaign()
 end
 
 -- Camp chests: DB_Camp_UserCampChest lists one chest per user, but the party's items can sit in other camp chest
--- instances (verified in game: White Urge's Traveller's Chest is CONT_PlayerCampChest_B, while the DB names _A).
+-- instances (verified in game: one save's Traveller's Chest is CONT_PlayerCampChest_B, while the DB names _A).
 -- So every placed instance of the camp chest templates counts (CONT_PlayerCampChest_A..D, all children of one parent
 -- template); found once per level by an entity scan, plus whatever the DB names.
 local CHEST_TEMPLATES = { ["96eab9d1-74b1-42f7-b1ad-061a9fcea8c4"] = true, ["f68b5862-887c-4adf-b9f8-bb29e4d73b0f"] = true,

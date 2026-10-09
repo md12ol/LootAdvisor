@@ -1,8 +1,9 @@
-"""Build the SHIPPABLE LootAdvisor Sets page (HANDOFF decision 24): the same page as the claude.ai artifact
+"""Build the SHIPPABLE LootAdvisor Sets page: the same page as the online copy
 (tools/build_sets_artifact.py + tools/sets_artifact/, all UX fixes), but with NO game art and NO game text inside.
 
     python tools/build_sets_ship.py            # -> Mods/LootAdvisor/Page/Sets.html + Shared/ShipManifest.lua
     python tools/build_sets_ship.py --check    # also print the leak report (game text left in the page)
+    python tools/build_sets_ship.py --release [DIR]   # also write DIR/Page/Sets.html (install folder copy)
 
 What ships (our own data): set lists, scores, ids, our why / how-to texts, conditions, the sheet rules, the page code,
 and a MANIFEST of game files (paths only) plus loca handles. What does NOT ship: icons, frames, portraits, UI art, the
@@ -371,6 +372,82 @@ def iter_strings(o):
         yield o
 
 
+# ------------------------------------------------------------------------------------------------ header
+# Gilded Panel header (branding option 1): our lockup image + CSS panel; the inventory strip
+# on the right is filled at runtime from the player's own game icons (7 columns x 3 rows, the third row cut by the panel
+# like in branding/LootAdvisor/option1_sets.png; one row on phones).
+# What goes in (user 2026-10-09): only the best and rarest items - Legendary and Very Rare page items, ranked by how
+# often the sets pick them: main picks first (rank-1 set of each character's main build, per act), then picks in all
+# sets, then the item id (deterministic). One cell per icon. The list is longer than the strip: the page skips items
+# whose icon the player's install does not have and takes the next one. Every cell gets our rainbow frame (the
+# in-game mark of a recommended item - they are all recommended picks; user 2026-10-09).
+HDR_COLS, HDR_ROWS, HDR_PHONE, HDR_SPARE = 7, 3, 8, 14
+HDR_LA = HDR_COLS * HDR_ROWS + HDR_SPARE   # how many of the ranked items get the rainbow frame: all of them
+HDR_RARITY = {"Legendary": "legendary", "VeryRare": "veryrare"}
+
+
+def header_rank(payload):
+    """[(sid, main picks, all picks)] of the Legendary / Very Rare items the sets pick, best first."""
+    E, items = payload["E"], payload["items"]
+    main, picks = {}, {}
+    for ch in payload["chars"]:
+        for sets in (ch.get("sets") or {}).values():
+            for st in sets:
+                is_main = st.get("b") == ch.get("main") and str(st.get("rank")) == "1"
+                for idx in (st.get("slots") or {}).values():
+                    sid = E[idx].get("sid") if isinstance(idx, int) and idx < len(E) else None
+                    if not sid:
+                        continue
+                    picks[sid] = picks.get(sid, 0) + 1
+                    if is_main:
+                        main[sid] = main.get(sid, 0) + 1
+    ranked = [(sid, main.get(sid, 0), n) for sid, n in picks.items()
+              if (items.get(sid) or {}).get("r") in HDR_RARITY and (items.get(sid) or {}).get("icon")]
+    ranked.sort(key=lambda x: (-x[1], -x[2], x[0]))
+    return ranked
+
+
+def header_cells(A, payload):
+    """DATA.hdr: the ranked item list for the strip (icon art keys already in the page's art list - no extra art)."""
+    out, seen = [], set()
+    for sid, _m, _n in header_rank(payload):
+        it = payload["items"][sid]
+        if it["icon"] in seen:
+            continue
+        seen.add(it["icon"])
+        out.append([it["icon"], HDR_RARITY[it["r"]], 0])
+        if len(out) >= HDR_COLS * HDR_ROWS + HDR_SPARE:
+            break
+    missing = [] if len(out) >= HDR_COLS * HDR_ROWS else ["only %d ranked items" % len(out)]
+    return {"cols": HDR_COLS, "rows": HDR_ROWS, "phone": HDR_PHONE, "la": HDR_LA, "items": out}, missing
+
+
+LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_lockup.py (our own art)
+
+
+LOCKUP_PRIVATE = os.path.join(SHIP_SRC, "brand_lockup_private.webp")   # the online copy (does not follow the game)
+ALT_SHIP = "Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live"
+ALT_PRIVATE = "Loot Advisor: Synergy Sets - full loadouts for every origin, act by act"
+
+
+def header_html(shell, lockup=LOCKUP, alt=ALT_SHIP):
+    """The Gilded Panel header in place of shell.html's text brand (also used by build_sets_artifact.gilded_header)."""
+    import base64
+    lock = base64.b64encode(open(lockup, "rb").read()).decode("ascii")
+    old = re.search(r'<div class="brand">.*?</div>', shell, re.S)
+    if not old:
+        raise SystemExit("shell.html brand block not found - update build_sets_ship.header_html")
+    new = ('<div class="brand gship">\n      <h1 class="brand-title"><span class="gp-wrap"><span class="gp">'
+           '<span class="gp-frame" aria-hidden="true"><i class="c" style="left:0;top:0"></i><i class="c" style="left:100%;top:0"></i>'
+           '<i class="c" style="left:0;top:100%"></i><i class="c" style="left:100%;top:100%"></i>'
+           '<i class="m" style="left:50%;top:0"></i><i class="m" style="left:50%;top:100%"></i></span>'
+           '<img class="gp-lock" src="data:image/webp;base64,@LOCK@" width="659" height="240" '
+           'alt="@ALT@">'
+           '<span class="gp-strip" id="gpStrip" aria-hidden="true"></span><span class="gp-row" id="gpRow" aria-hidden="true"></span>'
+           '</span></span></h1>\n    </div>').replace("@LOCK@", lock).replace("@ALT@", alt)
+    return shell[:old.start()] + new + shell[old.end():]
+
+
 # ------------------------------------------------------------------------------------------------ build
 def lua_str(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -397,6 +474,11 @@ def build(args):
                     it["ot"] = ot
     except OSError:
         pass
+
+    # ---- header strip icons (before the manifest, so the mod writes them with the other art)
+    payload["hdr"], hdr_missing = header_cells(A, payload)
+    if hdr_missing:
+        print("  ! header strip: %s (the rest stays empty slots)" % ", ".join(hdr_missing))
 
     # ---- art manifest: keys -> path index + box (the page builds IMG[key] from the decoded textures)
     paths, pidx = [], {}
@@ -441,6 +523,9 @@ def build(args):
     app = open(os.path.join(B.TEMPLATE, "app.js"), encoding="utf-8").read()
     dds = open(os.path.join(SHIP_SRC, "dds.js"), encoding="utf-8").read()
     ship = open(os.path.join(SHIP_SRC, "ship.js"), encoding="utf-8").read()
+    hdr_js = open(os.path.join(SHIP_SRC, "header.js"), encoding="utf-8").read()
+    css += "\n" + open(os.path.join(SHIP_SRC, "header.css"), encoding="utf-8").read()
+    shell = header_html(shell)
     payload["generated"] = time.strftime("%Y-%m-%d %H:%M")
     payload["ship"] = 1
     data_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
@@ -450,16 +535,24 @@ def build(args):
                  .replace("/*@CSS@*/", css)
                  .replace("@IMAGES@", "{}")
                  .replace("@DATA@", data_json)
-                 .replace("/*@JS@*/", "window.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + ship))
+                 .replace("/*@JS@*/", "window.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + hdr_js + "\n" + ship))
     html = html.replace("@LOADING@", '<span class="prep" id="prep">Preparing the page from your game files...'
                         '<span class="bar"><i></i></span></span>')
     page = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             'content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>\n' + html + "\n</body></html>\n")
-    # the claude.ai shell has no doctype (the publisher adds it); the local page needs one
+    # the online shell has no doctype (its host adds it); the local page needs one
     os.makedirs(PAGE_DIR, exist_ok=True)
     with open(os.path.join(PAGE_DIR, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
         f.write(page)
     ver = hashlib.md5(page.encode("utf-8")).hexdigest()[:12]
+    if args.release:
+        # install-folder copy: the same single file - header, logo and our art are inside it; opened
+        # there (no game files next to it) it shows the "load a save once, then open the live page" card
+        rel = os.path.join(args.release, "Page")
+        os.makedirs(rel, exist_ok=True)
+        with open(os.path.join(rel, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(page)
+        print("  release copy: %s" % os.path.join(rel, "Sets.html"))
 
     # ---- Lua manifest for the mod
     handles = sorted({h for h, _ in TT.T})
@@ -505,4 +598,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--no-fonts", action="store_true")
+    ap.add_argument("--release", metavar="DIR", nargs="?", const=os.path.join(REPO, "LootAdvisor"),
+                    help="also write DIR/Page/Sets.html (default DIR: the install folder LootAdvisor/LootAdvisor)")
     build(ap.parse_args())

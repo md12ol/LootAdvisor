@@ -2,8 +2,8 @@
 
 Why: many interiors (vaults, House of Hope, Guildhall, Murder Tribunal, Undercity ...) are stored far away from
 the visible map of their region and are reached by a teleporting door / ladder / hatch / portal. A map marker on an
-item inside such an interior points into nowhere; the marker belongs on the entrance instead (HANDOFF session 3
-decision 4, user round 2: "the entrance closest to the player").
+item inside such an interior points into nowhere; the marker belongs on the entrance instead (the entrance closest
+to the player).
 
 General method (no per-item or per-map rules):
  1. World positions. Sub-levels that are placed into their parent level as LevelTemplates (Levels/<parent>/
