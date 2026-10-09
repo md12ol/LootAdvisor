@@ -10,9 +10,9 @@ local ORIGINS = { astarion = true, gale = true, karlach = true, laezel = true, s
                   darkurge = true }
 -- BuildAdvisor's BA.Origins build order (Mods/BuildAdvisor/ScriptExtender/Lua/Shared/Builds.lua); read live from
 -- Mods.BuildAdvisor when that mod is loaded, this copy is the fallback.
-local BA_ORDER = { astarion = { "thx", "gloomassassin" }, gale = { "evoker", "stormsorc" },
-                   karlach = { "giants", "throwzerker" }, laezel = { "battlemaster", "sorcadin" },
-                   shadowheart = { "lightcleric", "stormsorc" }, wyll = { "sorlock", "lockadin" }, darkurge = {} }
+local BA_ORDER = { astarion = { "thx", "gloomassassin" }, gale = { "tempestevoker", "stormsorc" },
+                   karlach = { "giants", "throwzerker" }, laezel = { "bmgiant", "sorcadin" },
+                   shadowheart = { "lightquick", "lightcleric" }, wyll = { "sorlock", "lockadin" }, darkurge = {} }
 local ABIL = { "STR", "DEX", "CON", "INT", "WIS", "CHA" }
 
 local resCache = {}

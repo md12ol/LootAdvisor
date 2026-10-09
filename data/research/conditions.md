@@ -1,14 +1,13 @@
 # Campaign / origin / party / story-path conditions per item (read by tools/score_items.py)
 
-Built 2026-10-09 from the coordinator's catalogue analysis/CAMPAIGN_CONDITIONS.md (research-derived) and checked
+Built 2026-10-09 from a research-derived catalogue of campaign conditions and checked
 against the game data (data/items_all/sources.jsonl): column "Data check" says what the game data shows; "contradicts"
-rows are still coded (user decision 2026-10-09: every catalogue item gets its condition) but listed as doubts in
-analysis/SETS_AUDIT.md. score_items.py also derives codes on its own (Dark-Urge-only sources, items placed in one
+rows are still coded (every catalogue item gets its condition) but count as doubts. score_items.py also derives codes on its own (Dark-Urge-only sources, items placed in one
 companion's origin quest, Shar / Selune wording in an item's own research text, Last Light Inn stock) and takes the
 union with this table.
 
-Round 2 (2026-10-09): the 14 verdicts of analysis/RESEARCH_VERDICTS.md are applied (verdict numbers in the Research
-column, "V#"); the act overrides and trader-loss rules below are new.
+Round 2 (2026-10-09): 14 research verdicts are applied (verdict numbers in the Research column, "V#"); the act
+overrides and trader-loss rules below come from them.
 
 ## Codes
 - `durge` - only exists in a Dark Urge campaign

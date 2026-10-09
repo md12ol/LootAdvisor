@@ -19,7 +19,7 @@ import build_cache as bc  # noqa: E402
 from pak import GAME_DATA, Pak  # noqa: E402
 
 ROOT = rv.ROOT
-# Dark Urge: the player's own body; White Urge race is read from the save later - HUM_M as a placeholder here
+# Dark Urge: the player's own body; the race is read from the save later - HUM_M as a placeholder here
 RACES = {k: v["races"] for k, v in rv.ORIGINS.items()}
 RACES["darkurge"] = ["HUM_M"]
 

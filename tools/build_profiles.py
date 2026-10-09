@@ -1,11 +1,11 @@
-"""Build profiles for LootAdvisor scoring (PLAN step 3).
+"""Build profiles for LootAdvisor scoring.
 
 One entry per origin character: race proficiencies, the research file, the research tag vocabulary
 (codes used in data/research/<char>.md -> build ids) and the builds that get scores and sets:
   - the BuildAdvisor builds for that origin (Mods/BuildAdvisor/.../Builds.lua, BA.Origins),
-  - 2-3 popular community alternatives covered by the research (user decision 2026-10-08),
-  - Dark Urge: the actual build in the user's "The White Urge" campaign (seen in game 2026-10-08:
-    White Dragonborn, Hexblade Warlock 12, CHA 19, Great Weapon Master) plus the top community Durge builds.
+  - 2-3 popular community alternatives covered by the research,
+  - Dark Urge: a resisting-Durge build checked in game (White Dragonborn, Hexblade Warlock 12, CHA 19, Great Weapon
+    Master) plus the top community Durge builds.
 
 Build fields (all used by tools/score_items.py, formula in the score_items.py docstring and at the end of data/scores/SETS.md):
   classes      {class: levels}; start = first class (full proficiencies), others give multiclass proficiencies
@@ -34,7 +34,7 @@ RACE_PROFS = {
 }
 # Class and subclass proficiencies come from the game files (tools/class_progressions.py ->
 # data/cache/class_progressions.json: Progressions.lsx level-1 Boosts for a first class / a multiclass, subclass
-# progression Boosts + the Boosts of the passives they add, e.g. Hex Warrior). Session 4: the old hand tables missed
+# progression Boosts + the Boosts of the passives they add, e.g. Hex Warrior). The old hand tables missed
 # the Cleric's Morningstar + Flail proficiency (level 1, first class) and Bladesinging's Daggers + Sickles.
 import json as _json  # noqa: E402
 import os as _os  # noqa: E402
@@ -335,7 +335,7 @@ BUILDS = {
         attacks={"unarmed": 4}, offhand="none", armour="unarmoured", caster=0, avoid=["shield"],
         needs={"unarmed": 4, "ki": 2, "weapon_atk": 1.5, "adv": 2, "mobility": 1.5, "ac": 1.5, "kill_trigger": 1},
         why="Tavern Brawler adds STR twice to 4-5 unarmed hits a turn."),
-    # ---------------- Builds.lua builds added in session 4 (decision 65; analysis/*_BEST_BUILD.md, *_build.lua).
+    # ---------------- later Builds.lua builds (every Builds.lua build needs a profile; models in analysis/*_build.lua).
     # stats / feats / styles / level plan are synced from Builds.lua at run time; needs / attacks from the analyses.
     "tempestevoker": dict(
         name="Evocation Wizard 10 / Tempest Cleric 2", origin="BuildAdvisor",
@@ -413,7 +413,7 @@ BUILDS = {
         attacks={}, offhand="shield", armour="medium", caster=2,
         needs={"spell_dc": 2.5, "healer": 2, "concentration": 2, "dmg_radiant": 1.5, "spell_slot": 1, "ac": 1},
         why="Starry Form keeps concentration safe (Dragon) and adds damage / heals every turn."),
-    # ---------------- Dark Urge actual build (The White Urge campaign)
+    # ---------------- Dark Urge build checked in game (resisting Durge)
     "durge_hexblade": dict(
         name="Hexblade Warlock 12 with Great Weapon Master (Dark Urge)", origin="campaign",
         classes={"Warlock": 12}, subclass=["Hexblade"],
@@ -434,7 +434,7 @@ for _bid, _b in BUILDS.items():
 CHARACTERS = {
     "astarion": dict(
         name="Astarion", race="High Elf", research="astarion.md",
-        builds=["gloomassassin", "thiefmelee", "thx", "critarcher"],
+        builds=["thx", "gloomassassin", "thiefmelee", "critarcher"],
         tags={"GSA": ["gloomassassin"], "GSA7": ["gloomassassin"], "THX": ["thx"], "TM": ["thiefmelee"],
               "CRIT": ["critarcher"], "all": "*"},
         default_tags=["gloomassassin"]),
@@ -455,13 +455,13 @@ CHARACTERS = {
     "laezel": dict(
         name="Lae'zel", race="Githyanki", research="laezel.md",
         builds=["bmgiant", "sorcadin", "eldritchknight", "champion", "tankfighter"],
-        # bmgiant replaced battlemaster as her BuildAdvisor build (decision 53): the Battle Master research is hers
+        # bmgiant replaced battlemaster as her BuildAdvisor build: the Battle Master research is hers
         tags={"BM": ["bmgiant"], "SORC": ["sorcadin"], "EK": ["eldritchknight"],
               "FP": ["bmgiant", "sorcadin"], "CH": ["champion"], "TANK": ["tankfighter"]},
         default_tags="*"),
     "shadowheart": dict(
         name="Shadowheart", race="High Half-Elf", research="shadowheart.md",
-        builds=["lightcleric", "lightquick", "stormsorc", "tempestcleric", "lifecleric", "trickcleric"],
+        builds=["lightquick", "lightcleric", "stormsorc", "tempestcleric", "lifecleric", "trickcleric"],
         tags={"LIGHT": ["lightcleric"], "STORM": ["stormsorc"], "TRICK": ["trickcleric"],
               "TEMPEST": ["tempestcleric"], "LIFE": ["lifecleric"], "SG": ["lightcleric", "tempestcleric"],
               "CLESOR": ["stormsorc"]},
@@ -487,7 +487,7 @@ CHARACTERS = {
 # explicit cross-references for builds that have no own research section.
 XREFS = {
     "durge_hexblade": [("wyll", "hexblade", 0.5), ("wyll", "lockadin", 0.4)],
-    # session 4 builds without own research sections: the closest researched build (own file counts too)
+    # later builds without own research sections: the closest researched build (own file counts too)
     "tempestevoker": [("gale", "evoker", 0.7), ("gale", "stormsorc", 0.4), ("shadowheart", "stormsorc", 0.3)],
     "lightquick": [("shadowheart", "lightcleric", 0.8)],
     "hexsorlock": [("wyll", "sorlock", 0.8)],
@@ -562,7 +562,7 @@ def builds_lua_subclasses(ba):
 def sync_with_builds_lua(path=BUILDS_LUA):
     """Every build that exists in Builds.lua is a BuildAdvisor build: its profile takes the Builds.lua level-12
     stats, feats and fighting styles, and its subclasses (game names) from the build's star labels.
-    A Builds.lua build without a profile here is an error (decision 65): raise ProfileSyncError listing them.
+    A Builds.lua build without a profile here is an error: raise ProfileSyncError listing them.
     -> list of (build id, old stats, new stats) where the profile had drifted."""
     drift = []
     ba_all = builds_lua_stats(path)
@@ -630,7 +630,7 @@ SUBCLASSES = {
     "trickcleric": {"Cleric": "Trickery Domain"},
     "tbmonk": {"Monk": "Way of the Open Hand"},
     "durge_hexblade": {"Warlock": "The Hexblade"},
-    # session 4 (Builds.lua builds; the sync re-reads them from the star labels)
+    # later Builds.lua builds (the sync re-reads them from the star labels)
     "tempestevoker": {"Wizard": "Evocation", "Cleric": "Tempest Domain"},
     "lightquick": {"Cleric": "Light Domain", "Sorcerer": "Shadow Magic"},
     "hexsorlock": {"Sorcerer": "Draconic Bloodline", "Warlock": "The Hexblade"},

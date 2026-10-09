@@ -1,5 +1,5 @@
--- Karlach verdict build (analysis/KARLACH_BEST_BUILD.md, model analysis/karlach_model.py), Builds.lua format.
--- Not merged: the main session adds it to BA.Builds and BA.Origins.karlach.
+-- Karlach verdict build (model analysis/karlach_model.py), Builds.lua format.
+-- Reference copy for BA.Builds and BA.Origins.karlach.
   {
     id = "throwthief", name = "Throwzerker Thief (Berserker 7 / Thief 3 / Fighter 2)", tier = "S+",
     role = "Thrower: 4 throws every turn, 2 of them knock Prone; Nyrulna blast on every throw",

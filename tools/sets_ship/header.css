@@ -1,4 +1,4 @@
-/* ---- Gilded Panel header of the SHIPPED page (branding option 1; HANDOFF decisions 58 / 70).
+/* ---- Gilded Panel header of the SHIPPED page (branding option 1).
    Panel, frame and lockup are our own art (CSS + brand_lockup.webp); the inventory-icon strip on the right is built at
    runtime from the player's own game icons (header.js). Wide: a 6:1 panel scaled like branding/option1_sets.png
    (1 design px = --u); phones: the lockup over one row of icons. */
