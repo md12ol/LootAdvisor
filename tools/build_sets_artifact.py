@@ -76,6 +76,13 @@ SUBCLASSES = [
     ("Vengeance", "Paladin", "Vengeance"), ("Oathbreaker", "Paladin", "Oathbreaker"),
     ("Hexblade", "Warlock", None), ("Fiend", "Warlock", "Fiend"), ("Swords", "Bard", "SwordsCollege"),
 ]
+# subclasses whose features the sheet models: (class, the game's internal subclass name from
+# data/cache/class_progressions.json). build_features() gives every subclass its game name ("n", as the game shows
+# it) and internal name ("k"); the sheet matches on "k" (an id: never replaced by a text token on the shipped page).
+# Shipped to the page as RULES.subs for sheetFor() in app.js.
+SHEET_SUB = {"hexblade": ("Warlock", "Hexblade"), "draconic": ("Sorcerer", "DraconicBloodline"),
+             "swords": ("Bard", "SwordsCollege"), "bladesinging": ("Wizard", "BladesingingSchool"),
+             "eldritch_knight": ("Fighter", "EldritchKnight"), "arcane_trickster": ("Rogue", "ArcaneTrickster")}
 RACE_ICON = {"High Elf": "Elf_HighElf", "Human": "Human", "Zariel Tiefling": "Tiefling_Zariel",
              "Githyanki": "Githyanki", "High Half-Elf": "HalfElf_High", "White Dragonborn": "Dragonborn_White"}
 RACE_RESIST = {"Zariel Tiefling": [("Fire", "Resistant", "Hellish Resistance (Tiefling)")],
@@ -637,6 +644,30 @@ def plan_ba(b):
             "levels": [(x["class"], list(x.get("picks") or [])) for x in lv], "inferred": bool(pl.get("inferred"))}
 
 
+_GAME_SUBS = None
+
+
+def game_subclasses():
+    """{class: {subclass name as the game shows it: internal name}} from data/cache/class_progressions.json."""
+    global _GAME_SUBS
+    if _GAME_SUBS is None:
+        d = load_json(os.path.join(DATA, "cache", "class_progressions.json"), {}) or {}
+        _GAME_SUBS = d.get("by_display") or {}
+    return _GAME_SUBS
+
+
+def game_subclass_name(cls, name):
+    """A subclass name from a build (game name, or a keyword like "Hexblade" / "Draconic" / "Path of Giants") -> the
+    name the game shows for that class ("The Hexblade", "Draconic Bloodline", "Giant"); the one game name that
+    contains the keyword (or is contained in it). Unknown or ambiguous names stay as they are."""
+    names = sorted(game_subclasses().get(cls) or {})
+    if name in names:
+        return name
+    k = _letters(name)
+    hits = [n for n in names if k and (k in _letters(n) or _letters(n) in k)]
+    return hits[0] if len(hits) == 1 else name
+
+
 def build_features(D, build_key, b):
     """Subclasses (with game icons), feats and fighting styles we can know for a build."""
     text = b.get("name", "") + " " + b.get("about", "")
@@ -650,15 +681,16 @@ def build_features(D, build_key, b):
     for cls, name in (b.get("subclasses") or {}).items():
         if cls in b.get("classes", {}) and cls not in seen:
             icon = next((ic for kw, c_, ic in SUBCLASSES if c_ == cls and ic and kw.lower() in name.lower()), None)
-            subs.append({"n": name, "cls": cls, "icon": icon})
+            subs.append({"n": game_subclass_name(cls, name), "cls": cls, "icon": icon})
             seen.add(cls)
     for kw, cls, icon in SUBCLASSES:
         if re.search(r"\b" + re.escape(kw), blob, re.I) and cls in b.get("classes", {}) and cls not in seen:
-            subs.append({"n": kw if kw not in ("Evoker", "Bear", "Giants", "Bladesinger", "Storm Sorcer")
-                         else {"Evoker": "Evocation", "Bear": "Wildheart", "Giants": "Giant",
-                               "Bladesinger": "Bladesinging", "Storm Sorcer": "Storm Sorcery"}[kw],
-                         "cls": cls, "icon": icon})
+            n_ = {"Evoker": "Evocation", "Bear": "Wildheart", "Bladesinger": "Bladesinging",
+                  "Shadow Sorcerer": "Shadow Magic"}.get(kw, kw)
+            subs.append({"n": game_subclass_name(cls, n_), "cls": cls, "icon": icon})
             seen.add(cls)
+    for s_ in subs:
+        s_["k"] = (game_subclasses().get(s_["cls"]) or {}).get(s_["n"])
     feats, styles = [], []
     for p in picks:
         m = re.match(r"Feat:\s*([^(]+)", p)
@@ -808,6 +840,13 @@ def _letters(s):
 STYLE_RE = re.compile(r"^\s*(not\s+)?HasPassive\('([A-Za-z_]+)'(?:,\s*context\.Source)?\)\s*$")
 
 
+def rider_label(amount):
+    """", strength modifier" for a stat expression rider ("StrengthModifier"), "" for a plain number."""
+    if re.fullmatch(r"-?\d+", amount.strip()):
+        return ""
+    return ", " + re.sub(r"(?<=[a-z])(?=[A-Z])", " ", amount.strip()).lower()
+
+
 def resolve_cond(cond, styles, feats):
     """A single HasPassive('FightingStyle_X' / '<Feat>') condition is decided by the build: True / False / None."""
     m = STYLE_RE.match(cond or "")
@@ -887,9 +926,12 @@ def compute_sheet(D, BI, set_items, IB, level=LEVEL):
         n_ = num(expr)
         return n_ if n_ is not None and re.fullmatch(r"-?\d+(\.\d+)?", expr.strip()) else safe_eval(expr, names)
 
-    sub_cls = {s["cls"]: s["n"] for s in BI["subs"]}
-    hexblade = sub_cls.get("Warlock") == "Hexblade" and classes.get("Warlock", 0) > 0
-    draconic = sub_cls.get("Sorcerer") == "Draconic" and classes.get("Sorcerer", 0) > 0
+    sub_cls = {s["cls"]: s.get("k") for s in BI["subs"]}
+    def has_sub(key, min_lv=1):
+        cls, name = SHEET_SUB[key]
+        return sub_cls.get(cls) == name and classes.get(cls, 0) >= min_lv
+    hexblade = has_sub("hexblade")
+    draconic = has_sub("draconic")
 
     # ---- HP
     hp = 0
@@ -1087,11 +1129,22 @@ def compute_sheet(D, BI, set_items, IB, level=LEVEL):
                 and not D.items.get((set_items.get("OffHand") or {}).get("sid") or "", {}).get("weapon")):
             flat += 2
             df.append("+2 Fighting Style: Duelling")
+        # weapon riders ("<amount> <type>", from its stats and template statuses): dice, or a number / stat
+        # expression added to the flat part (Balduran's Giantslayer: StrengthModifier Slashing)
+        riders = set()
         for e in w.get("extra_damage") or []:
-            m = re.match(r"(\d+d\d+)\s+(\w+)", str(e))
-            if m:
+            m = re.match(r"(\S+)\s+(\w+)", str(e))
+            if not m:
+                continue
+            riders.add((m.group(1), m.group(2)))
+            if DICE_RE.match(m.group(1)):
                 dparts.append((m.group(1), m.group(2)))
                 df.append("%s %s (weapon)" % (m.group(1), m.group(2)))
+            else:
+                n = val(m.group(1))
+                if n:
+                    flat += n
+                    df.append("%+d %s (weapon%s)" % (n, m.group(2), rider_label(m.group(1))))
         for x in flat_dmg:
             n = val(x["args"][0])
             t = x["args"][1] if len(x["args"]) > 1 else None
@@ -1101,9 +1154,15 @@ def compute_sheet(D, BI, set_items, IB, level=LEVEL):
         for x in char_dice + [y for y in uncond if y["name"] == "WeaponDamage" and y["scope"] == slot]:
             d0 = x["args"][0]
             t = x["args"][1] if len(x["args"]) > 1 else w.get("damage_type")
+            if x["name"] == "WeaponDamage" and (d0, t) in riders:
+                continue   # the weapon's own rider, counted above
             if DICE_RE.match(d0):
                 dparts.append((d0, t))
                 df.append("%s %s %s" % (d0, t, x["src"]))
+            elif x["name"] == "WeaponDamage" and val(d0):
+                flat += val(d0)
+                lbl = rider_label(d0)
+                df.append("%+d %s %s%s" % (val(d0), t, x["src"], " (%s)" % lbl[2:] if lbl else ""))
         cnotes = []
         for x in cond:
             c = x["cond"] or ""
@@ -1148,16 +1207,16 @@ def compute_sheet(D, BI, set_items, IB, level=LEVEL):
         n_att, att_f = 2, "Extra Attack (level 5 of a martial class)"
     elif classes.get("Warlock", 0) >= 5 and (BI["thirsting"] or hexblade):
         n_att, att_f = 2, "Thirsting Blade / Pact of the Blade (Warlock 5+, assumed for blade builds)"
-    elif classes.get("Bard", 0) >= 6 and sub_cls.get("Bard") == "Swords":
+    elif has_sub("swords", 6):
         n_att, att_f = 2, "Extra Attack (College of Swords 6)"
-    elif classes.get("Wizard", 0) >= 6 and sub_cls.get("Wizard") == "Bladesinging":
+    elif has_sub("bladesinging", 6):
         n_att, att_f = 2, "Extra Attack (Bladesinging 6)"
 
     # ---- spellcasting: a ranged and a melee spell attack (items often give both; each counts once)
     casters = [(c, CAST_ABIL[c]) for c in cls_order if c in CAST_ABIL]
-    if sub_cls.get("Fighter") == "Eldritch Knight" and classes.get("Fighter", 0) >= 3:
+    if has_sub("eldritch_knight", 3):
         casters.append(("Fighter", "INT"))
-    if sub_cls.get("Rogue") == "Arcane Trickster" and classes.get("Rogue", 0) >= 3:
+    if has_sub("arcane_trickster", 3):
         casters.append(("Rogue", "INT"))
     spell = None
     if casters:
@@ -1581,7 +1640,8 @@ def build_payload(args, A=None):
     payload = {"generated": time.strftime("%Y-%m-%d %H:%M"), "level": LEVEL, "actLevel": ACT_LEVEL, "chars": chars,
                "items": items, "E": etab, "ui": ui, "slots": SLOTS,
                "rules": {"hitDie": HIT_DIE, "castAbil": CAST_ABIL, "raceRes": RACE_RESIST, "dmgTypes": DMG_TYPES,
-                         "abil": ABIL, "asiLevels": ASI_LEVELS},
+                         "abil": ABIL, "asiLevels": ASI_LEVELS,
+                         "subs": SHEET_SUB},
                "rarityColor": {"Common": "#E6DBC2", "Uncommon": "#00be3a", "Rare": "#00c0ff",
                                "VeryRare": "#d1007c", "Legendary": "#d18f00", "Story": "#ff5a00"}}
     return payload, A, {"t0": t0, "n_sets": n_sets, "cap_jobs": cap_jobs, "chars": chars, "items": items, "D": D}
