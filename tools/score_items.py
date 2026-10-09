@@ -11,7 +11,7 @@ SCORING FORMULA (per item, build, act) - simple general rules, no item-specific 
            proficient ("considered Proficient with this armour", e.g. Helldusk Armour, Elven Chain);
            weapons without proficiency are excluded; build "avoid" rules (Bladesong: no shield / medium /
            heavy, Monk: no shield) exclude too; heavy body armour is excluded for every build that rages (a class
-           with the Rage feature: Barbarian levels), since heavy armour switches Rage off (decision 38).
+           with the Rage feature: Barbarian levels), since heavy armour switches Rage off.
            Class / subclass proficiencies come from the game's Progressions.lsx (tools/class_progressions.py).
 
   fit = rarity + weapon/armour base + sum(effect rule value x build need weight)
@@ -42,7 +42,7 @@ SCORING FORMULA (per item, build, act) - simple general rules, no item-specific 
         source, then the act the research names. Sets and best lists are per act: an item counts in
         act N only when first act <= N <= the last act it can still be obtained in.
 
-  effect-rule details (session 3): a status that repeats its passive counts once; riders that only fire on a
+  effect-rule details: a status that repeats its passive counts once; riders that only fire on a
   crit / against some creatures / under a condition the build does not arrange are discounted; "while
   obscured / hidden / concentrating" style qualifiers add little and nothing when the build does not want
   the payload; weapon riders and weapon actions count only for a build that attacks with the weapon
@@ -481,7 +481,7 @@ class Scorer:
             return False, "build does not use a shield"
         if rec["slot"] == "Breast" and arm.get("category") in ("Medium", "Heavy") and arm["category"].lower() in avoid:
             return False, f"build avoids {arm['category'].lower()} armour"
-        # general rule (decision 38): heavy body armour switches Rage off - never for a build that rages
+        # general rule: heavy body armour switches Rage off - never for a build that rages
         if rec["slot"] == "Breast" and arm.get("category") == "Heavy" and self.rages:
             return False, "heavy armour switches Rage off"
         if rec.get("weapon"):
@@ -820,7 +820,7 @@ def source_flags(s):
 # origin:<char>; every reliable source is a Last Light Inn trader / container -> !path:isobel_kill; Shar / Selune
 # wording in the item's own research text -> path:shar / path:selune (vetoed when the game data has a sure free
 # source). origin:<char> implies party:<char>; a path that costs an origin companion adds costs:<char>.
-# Use (user decisions 2026-10-09): conditions are stored and shown; a set never holds two items whose conditions
+# Use: conditions are stored and shown; a set never holds two items whose conditions
 # exclude each other (general rule over the tags, see path_conflict); items with costs:<char> stay out of sets and
 # best lists (the mod re-enables them live when that path already happened); every other conditioned set item
 # gets an unconditioned fallback (Lua fb).
@@ -862,7 +862,7 @@ FIXED_KINDS = ("world", "container", "npc_equipped", "npc_inventory", "reward", 
 
 
 def display_mode(rec, srcs, window=None):
-    """How the mod shows an item, per act (user decisions 2026-10-09):
+    """How the mod shows an item, per act:
     m = marker on the map + inventory frame + why text; t = the marker goes on the trader; l = list window only;
     - = not obtainable in that act. Random-chance loot is list-only (with its odds). A generic +1 / +2 item is normal
     in an act where 5 or fewer copies are obtainable (world placements + trader stock in that act), else list-only.
@@ -1604,8 +1604,7 @@ def main():
         all_chars[cid] = {"character": cid, "name": cfg["name"], "race": cfg["race"], "research": char_file,
                           "builds": builds_out}
 
-    # ---- party level: unique items and scarce materials go to the best-fit character (user decision
-    # 2026-10-09); the others see "better on X" and their next pick moves up. Every character keeps its own lists.
+    # ---- party level: unique items and scarce materials go to the best-fit character; the others see "better on X" and their next pick moves up. Every character keeps its own lists.
     owners = party_owners(all_chars, items, ba_origins, universe)
     party_alternatives(all_chars, owners, items, universe, warning_text, how_text)
     with open(os.path.join(SCORES_DIR, "owners.json"), "w", encoding="utf-8") as f:
@@ -1882,7 +1881,7 @@ def primary_build(cid, cfg, ba_origins):
 def party_owners(all_chars, items, ba_origins, universe):
     """-> {key: {"name", "kind", "cap", "owners", "ranking": [...]}} for every unique item (game Unique flag) or
     scarce-material group that appears in the sets of two or more characters. Ranking per character: the best
-    game-data FIT (no research / consensus weight; user decision 2026-10-09) of the item in that character's PRIMARY
+    game-data FIT (no research / consensus weight) of the item in that character's PRIMARY
     build sets (other builds only when the primary build never uses
     it; marked primary=False and ranked after). Owner = rank 1 (a material group: the top `cap` characters)."""
     occ = collections.defaultdict(list)
@@ -2317,8 +2316,8 @@ OWNED_GAP_POINTS = ROLE_W["set"]
 
 def is_unusual(sid, cid):
     """A campaign condition that is unusual for this character: Dark-Urge-only items for the other six origins
-    (most campaigns have no Dark Urge). Companion-quest rewards (origin:X) are a normal party condition (user
-    decision 8) and stay main picks with a fallback."""
+    (most campaigns have no Dark Urge). Companion-quest rewards (origin:X) are a normal party condition and
+    stay main picks with a fallback."""
     return "durge" in COND.get(sid, ()) and cid != "darkurge"
 
 

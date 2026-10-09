@@ -2,7 +2,7 @@
 
   python tools/model3d/build_3d_page.py [set_id ...]
 
-Writes artifact/3d_test.html (claude.ai artifact page contract: no doctype/html/body, own <title>, GLB embedded as a
+Writes artifact/3d_test.html (hosted page contract: no doctype/html/body, own <title>, GLB embedded as a
 data: URL, three.js + addons from cdn.jsdelivr.net) and artifact/_3d_preview.html (same with a document skeleton for
 local viewing / screenshots) and artifact/_sets_3d_preview.html (the sets page preview with the 3D adapter injected,
 to check the mountModel wiring).

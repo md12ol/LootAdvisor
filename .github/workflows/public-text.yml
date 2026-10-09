@@ -1,0 +1,41 @@
+# Public text guard: the PR title and body, every commit message in the PR and every file it adds or changes must not
+# point at private or machine-local things (rules and its own failing test: BG3Tools tools/public_text.py).
+name: Public text
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  contents: read
+jobs:
+  public-text:
+    name: public-text
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: LootAdvisor
+          fetch-depth: 0
+      - name: Pick the BG3Tools branch (same name when it exists, else main)
+        id: sib
+        run: |
+          br="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          if git ls-remote --exit-code --heads "https://github.com/md12ol/BG3Tools.git" "$br" >/dev/null; then ref=$br; else ref=main; fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"; echo "BG3Tools @ $ref"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: md12ol/BG3Tools
+          ref: ${{ steps.sib.outputs.ref }}
+          path: BG3Tools
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Guard self-test (bad samples must fail, good ones pass)
+        run: python BG3Tools/tools/test_public_text.py
+      - name: PR title, body, commit messages and changed files
+        working-directory: LootAdvisor
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: python ../BG3Tools/tools/public_text.py pr "$BASE" "$HEAD"

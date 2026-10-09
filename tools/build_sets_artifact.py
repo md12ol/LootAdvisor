@@ -1,4 +1,4 @@
-"""Build the LootAdvisor sets artifact (PLAN step 6): artifact/sets.html, one self-contained page.
+"""Build the LootAdvisor sets artifact: artifact/sets.html, one self-contained page.
 
     python tools/build_sets_artifact.py            # re-run any time; ~10-20 s cold, a few s with the icon cache
     python tools/build_sets_artifact.py --no-fonts # skip the embedded game fonts (smaller page)
@@ -1669,7 +1669,7 @@ GILDED_CSS = """
 
 
 def gilded_header(shell, css, js=None, payload=None):
-    """Swap the text brand of the claude.ai artifact for the Gilded Panel header. Same header as the shipped page
+    """Swap the text brand of the online page for the Gilded Panel header. Same header as the shipped page
     (build_sets_ship.header_html + tools/sets_ship/header.css/.js, private tagline): the icon strip shows the best
     Legendary / Very Rare set picks, from the icons embedded in this page. Falls back to the static banner image."""
     if js is not None and payload is not None:

@@ -45,7 +45,7 @@ ROOT = os.path.dirname(HERE)
 CACHE = os.path.join(ROOT, "data", "cache")
 OUT_DEFAULT = os.path.join(ROOT, "data", "items_all")
 # party (treasure) levels per act: TreasureTable StartLevel / EndLevel windows are evaluated at these levels
-# (same windows as analysis/RESEARCH_VERDICTS.md #14); a trader / container / reward roll only uses the subtables
+# (the act level windows the research verdicts use); a trader / container / reward roll only uses the subtables
 # that are open at the party's level
 ACT_LEVELS = {1: (1, 5), 2: (4, 8), 3: (7, 12)}
 PLAY_ACT = {"tutorial": 1}
