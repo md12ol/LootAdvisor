@@ -3,7 +3,7 @@
 --    strip (Control "LoreDescriptionSection") is given our template (Pages/LootAdvisorRes.xaml,
 --    LA.ItemAdviceTemplate): the game's description strip, then ONE row like the tooltip's other rows - our rainbow
 --    diamond in the description icon's column, a short title in our colour ("Best Gloves for Astarion") and one
---    short line (why / warning / status). Nothing is written into game texts; only this tooltip's UI is touched,
+--    short line (why / status), or the item's warning in up to 3 lines. Nothing is written into game texts; only this tooltip's UI is touched,
 --    and the game's own template is put back as soon as the tooltip shows an item that is not recommended (or the
 --    mod / tooltips are switched off).
 --  * Map marker labels (our markers only): the label's content template gets our diamond in front of the text
@@ -65,23 +65,6 @@ local function shortWhy(why, budget)
   return fit(first, budget)
 end
 
--- the most telling part of a warning: missable > a kill / loss > theft > the first sentence
-local WARN_RANK = { { "Missable" }, { "kill", "die", "Lost", "lost" }, { "steal", "stolen", "theft", "Theft", "pickpocket" } }
-local function shortWarn(w)
-  local s = tostring(w or "")
-  local who = s:match("Taking it from (.-) means killing or pickpocketing")
-  if who then return fit("Kill or pickpocket " .. who, MAXLINE) end
-  local best, bestRank
-  for sen in (s .. " "):gmatch("%s*(.-[%.;])%s") do
-    local rank = 9
-    for i, keys in ipairs(WARN_RANK) do
-      for _, key in ipairs(keys) do if rank == 9 and sen:find(key, 1, true) then rank = i end end
-    end
-    if not best or rank < bestRank then best, bestRank = sen, rank end
-  end
-  local out = fit(best or s, MAXLINE)
-  return (out:gsub("^%l", string.upper))
-end
 
 -- one row per recommended item: the most important of its rows (best > runner-up > set > greyed)
 local function primary(rows)
@@ -112,8 +95,9 @@ function T.Text(rows, who)
     local nm = {}
     for _, c in ipairs(r.shared) do nm[#nm + 1] = LA.CHAR_NAME[c] or c end
     body = fit("Shared pick with " .. table.concat(nm, ", "), MAXLINE)
-  elseif r.w and r.w ~= "" and r.s ~= "owned" then
-    body, warn = shortWarn(r.w), true
+  elseif r.tw and r.tw ~= "" and r.s ~= "owned" and r.s ~= "onlyowned" then
+    -- the data's tooltip form of the warning (at most 3 lines; the F6 list shows the full text)
+    body, warn = r.tw, true
   else
     local st = STATUS[r.s] or ""
     if r.enter then st = "Way marked on your map" end
