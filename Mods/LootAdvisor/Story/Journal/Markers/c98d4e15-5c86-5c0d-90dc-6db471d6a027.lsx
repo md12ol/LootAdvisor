@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h512f385ag4e18g5f01g992bgc888fc68ace5" version="1"/>
+                    <attribute id="Guid" type="guid" value="c98d4e15-5c86-5c0d-90dc-6db471d6a027"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Restoration_SpellSlotRestoration_Amulet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="66b3e4c0-2f82-4c0a-9333-73a5194f88c7"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

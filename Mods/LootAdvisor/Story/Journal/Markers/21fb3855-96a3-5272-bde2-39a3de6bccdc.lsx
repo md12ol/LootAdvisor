@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hd1a1972bg4aadg536fg965bg19a6d9bed63f" version="1"/>
+                    <attribute id="Guid" type="guid" value="21fb3855-96a3-5272-bde2-39a3de6bccdc"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Frost_GenerateFrostOnStatusApply_Hat_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="1d58147b-41f9-4502-a042-3a1bcdec3ae9"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

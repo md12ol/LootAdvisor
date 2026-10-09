@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h7d27c791g52d1g5269gb378g2ba51cdbf279" version="1"/>
+                    <attribute id="Guid" type="guid" value="f54b2b39-206e-50cc-862b-093c3bb53151"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Colossal_Greatsword_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="11bbae59-5ebc-4546-8d28-e537a2c3ecbb"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

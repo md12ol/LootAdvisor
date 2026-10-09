@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="ha216129fg8445g5238g9a55g1c474727520e" version="1"/>
+                    <attribute id="Guid" type="guid" value="01d35405-38e2-57ce-866a-639302e81a7b"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ChargedLightning_AbilityCheckBoost_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="239f0f63-e042-46bc-b98f-a068704555ee"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

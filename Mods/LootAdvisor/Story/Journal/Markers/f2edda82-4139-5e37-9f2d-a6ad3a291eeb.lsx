@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h5d1e902bgf6cag5ac4gb45bg7e876097ec53" version="1"/>
+                    <attribute id="Guid" type="guid" value="f2edda82-4139-5e37-9f2d-a6ad3a291eeb"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ARM_HalfPlate_Body_Githyanki_4"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="245be20a-c140-48b8-bea7-9ff44d9606b2"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

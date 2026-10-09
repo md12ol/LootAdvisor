@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h50008502g5140g5497g9e8eg28f918a01871" version="1"/>
+                    <attribute id="Guid" type="guid" value="28af07dd-76c4-5be1-85e2-b67bb797efc8"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_PHB_OfRegeneration_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7c408b4f-8d02-43d5-9f7b-a3898afe2bf0"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

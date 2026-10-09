@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h032d1f23g04efg54ffg95a5g52b57e0c94fa" version="1"/>
+                    <attribute id="Guid" type="guid" value="d1274c74-5b96-55e8-97b8-332a350798f9"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Safeguard_Shield_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="cfe93bf1-55c4-423d-8d85-f650bfb2afef"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

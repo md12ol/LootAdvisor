@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h09a8e82dg6564g5b4cg98ffgea3b27eaf856" version="1"/>
+                    <attribute id="Guid" type="guid" value="47b6b08c-d3cd-547a-aacf-bce5d326a332"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ARM_Leather_Body_1_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7c63e4b3-6bf8-4d3f-8161-641ce7453c14"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

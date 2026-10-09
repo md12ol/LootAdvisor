@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h8d71018agad3ag585agb3ffg3a23e2971811" version="1"/>
+                    <attribute id="Guid" type="guid" value="9028f9c6-7b60-5625-a5cc-d306080a3892"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Radiant_RadiatingOrb_Armor_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="0775d7c3-e650-4588-8485-e08b23b18f2f"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

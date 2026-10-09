@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hbf406ce2g0cdeg5bcdgba07gb76a98c30e69" version="1"/>
+                    <attribute id="Guid" type="guid" value="3eb1fef1-0d3c-5af4-ba76-ba7b539c8a8f"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ElementalGish_ArcaneAcuity_Helmet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="32495d2a-f93b-44e0-bac7-69927d48258d"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hd6d132bdg8134g58a0g97ffga617d187a638" version="1"/>
+                    <attribute id="Guid" type="guid" value="5352c1fb-27bd-5568-832a-f62304195738"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_UNI_DarkJusticiarArmor_HalfPlate_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="113460a1-f4ab-4e14-9c88-76c1c06bca0b"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

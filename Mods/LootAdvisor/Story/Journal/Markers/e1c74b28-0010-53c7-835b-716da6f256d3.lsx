@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h3c3d9451g6210g54a4ga414gf12942c9d205" version="1"/>
+                    <attribute id="Guid" type="guid" value="e1c74b28-0010-53c7-835b-716da6f256d3"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_TheThorns_Trident_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="91bf2e82-e204-4610-b23a-da76b781968e"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

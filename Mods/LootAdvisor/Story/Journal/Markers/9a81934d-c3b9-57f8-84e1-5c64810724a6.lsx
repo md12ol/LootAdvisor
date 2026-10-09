@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hdda0c919ga5b6g5bb0g90a7gf88d424405c4" version="1"/>
+                    <attribute id="Guid" type="guid" value="9a81934d-c3b9-57f8-84e1-5c64810724a6"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ChargedLightning_StaticDischarge_Shield_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="f0b18a19-3194-4abf-95c5-78efcdfc37af"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

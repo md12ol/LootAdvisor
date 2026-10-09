@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h5020b57fgade6g50cfg8fb0g435100b656e3" version="1"/>
+                    <attribute id="Guid" type="guid" value="fc159c11-6d1e-5e20-9e29-7ae14090444c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_PHB_PactKeeper_Quarterstaff_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="c5dfe394-2c14-4d6f-97cf-c81f37fbdff6"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

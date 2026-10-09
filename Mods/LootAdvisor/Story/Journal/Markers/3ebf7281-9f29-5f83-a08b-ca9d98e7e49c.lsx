@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="he34d6253gec68g5d78gb0d3gfa97007f30ae" version="1"/>
+                    <attribute id="Guid" type="guid" value="3ebf7281-9f29-5f83-a08b-ca9d98e7e49c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_WPN_SkullFlail_1_5"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7f0f8d11-9d1e-4210-bbcb-41aa05666d58"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

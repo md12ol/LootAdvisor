@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h8c2a86fbg50a3g58d4gb253gd9a0ce604625" version="1"/>
+                    <attribute id="Guid" type="guid" value="6b389414-2055-5dac-83d5-4b796d54340d"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ARM_BootsOfSpeed_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="fca76ec8-f3dd-446c-bd69-dc2f6ccca285"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

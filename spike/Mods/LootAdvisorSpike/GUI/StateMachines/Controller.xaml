@@ -1,0 +1,19 @@
+<ls:StateMachine xmlns:ls="clr-namespace:ls;assembly=Code"
+                 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- LootAdvisor: adds one hidden widget (Pages/LootAdvisorAssets.xaml) under the player's UI so that Noesis
+         creates our BitmapImage/ImageBrush objects; Lua then assigns them to cells / map markers. No game file is
+         overridden: PlayerUIsHolder is only extended (ModType="Extend", like Mods/CrossplayUI does). -->
+    <ls:StateMachine.States>
+        <ls:State Name="PlayerUIsHolder" Layout="Player" Owner="Player" ModType="Extend">
+            <ls:State.InitialSubstates>
+                <ls:InitialSubstate Name="LootAdvisorAssets"/>
+            </ls:State.InitialSubstates>
+        </ls:State>
+        <ls:State Name="LootAdvisorAssets" Layout="Player" Owner="Player">
+            <ls:State.Widgets>
+                <ls:StateWidget Filename="LootAdvisorAssets.xaml" Layer="HUD" IgnoreHitTest="True"/>
+            </ls:State.Widgets>
+        </ls:State>
+    </ls:StateMachine.States>
+</ls:StateMachine>

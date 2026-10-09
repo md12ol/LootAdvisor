@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h1364bc15g94bfg5ed1g9bfegd37f7a96a5f9" version="1"/>
+                    <attribute id="Guid" type="guid" value="43c8d383-f39b-5a06-b3e8-e943a122321a"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_LC_Nymph_Cloak_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="b2cf2efe-ec06-48cd-8fb7-ad596d61164f"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

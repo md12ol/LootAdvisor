@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hde4c3dcbg58e6g5780gbd1dg1309bca585c9" version="1"/>
+                    <attribute id="Guid" type="guid" value="c06c6916-7d5b-5866-86b8-5be2b61ccf76"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_PHB_OfLifestealing_Shortsword_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="cfe93bf1-55c4-423d-8d85-f650bfb2afef"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h3e017732gd5efg51e7gabcag2616c5398584" version="1"/>
+                    <attribute id="Guid" type="guid" value="92fa104b-f911-55cc-816a-548ec5a7fad9"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ALCH_Solution_Elixir_ArcaneAcuity_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="f442634b-586a-4985-aa61-8c3569cad259"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

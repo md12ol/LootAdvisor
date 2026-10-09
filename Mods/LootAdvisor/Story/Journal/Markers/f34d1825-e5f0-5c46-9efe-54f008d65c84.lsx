@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hddcfc145gb096g55d6g8a67g63fcd8ddc440" version="1"/>
+                    <attribute id="Guid" type="guid" value="f34d1825-e5f0-5c46-9efe-54f008d65c84"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Lesser_Infernal_Plate_Armor_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="d0c4fde9-1baa-4b35-994b-fd91b1bfd0fc"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

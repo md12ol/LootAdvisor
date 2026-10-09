@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h33b75e61g28b7g577eg8998g405e3f17d579" version="1"/>
+                    <attribute id="Guid" type="guid" value="b0c53abf-562d-544b-a384-4d3ba5f19dbb"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Mobility_MomentumOnCombatStart_Helmet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="5c487da2-cda8-4af9-bab7-ed491da20911"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

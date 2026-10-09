@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h2a6ec6b3g8b06g5130g9c01g354e6b7ec0dc" version="1"/>
+                    <attribute id="Guid" type="guid" value="4c00c394-53bd-54bf-bbc7-ee9021e5334c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Paladin_RestoreChannelDivinity_Armor_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="2ffbe979-0c12-4564-940b-17e7f1b3fd0e"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

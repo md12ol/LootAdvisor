@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hefd73a67ge1d9g5666gb5d5g980e7c5d8afd" version="1"/>
+                    <attribute id="Guid" type="guid" value="b840c705-22ab-5b1a-9814-e524b59580c7"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Vicious_Dagger_3"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="997a264b-7650-4be8-a315-b27139f07efb"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

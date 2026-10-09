@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h01ce05adgee42g5409g9ef5g06f5f120eab3" version="1"/>
+                    <attribute id="Guid" type="guid" value="ae3e5ca7-34aa-59f4-9f60-851d1af9838b"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_GOB_DrowCommander_Leather_Armor_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="25721313-0c15-4935-8176-9f134385451b"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

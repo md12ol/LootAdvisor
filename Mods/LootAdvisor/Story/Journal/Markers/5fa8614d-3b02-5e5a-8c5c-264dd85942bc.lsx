@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h7fa8f519ga238g51b1g9c6bgfb4a520847a0" version="1"/>
+                    <attribute id="Guid" type="guid" value="5fa8614d-3b02-5e5a-8c5c-264dd85942bc"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Lesser_Infernal_Metal_Helmet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="6cf68d5c-aa28-4e77-aaff-5633b00ae1c1"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

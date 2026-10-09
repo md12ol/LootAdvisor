@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h0dc022edgcbb9g5313g9972gf97696bde3a0" version="1"/>
+                    <attribute id="Guid" type="guid" value="ff512bfa-9b49-5005-bb2d-9e08473fac60"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_CRE_MAG_Psychic_Githborn_Circlet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="378ac93e-03a0-40b4-904c-f37989ac7a8c"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

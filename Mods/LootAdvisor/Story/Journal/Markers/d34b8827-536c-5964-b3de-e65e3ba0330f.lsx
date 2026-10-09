@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="he8ddfd9cg6eeag5590gb331g99c732ef9ed6" version="1"/>
+                    <attribute id="Guid" type="guid" value="d34b8827-536c-5964-b3de-e65e3ba0330f"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_WYRM_OfBalduran_Helmet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="36a4f0eb-1ac7-4fc5-87f5-f74ec49afec0"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

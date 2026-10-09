@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hb80f71b5g4217g5623g93c5gdfa768b11c4c" version="1"/>
+                    <attribute id="Guid" type="guid" value="825e69c7-3e75-591b-a878-f6dbf111400b"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_TheCrimson_Shortsword_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="675b8dd2-b6df-44f6-8978-b4ad340e0959"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

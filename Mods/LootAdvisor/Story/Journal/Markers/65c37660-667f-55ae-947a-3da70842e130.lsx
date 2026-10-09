@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h17e5e913gb7a5g5737g9dc9g5c7b2a29e88d" version="1"/>
+                    <attribute id="Guid" type="guid" value="65c37660-667f-55ae-947a-3da70842e130"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_EndGameCaster_Hood_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="d97e258a-86e3-463c-82c0-f52bd77caedb"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h6e8e4369g4f50g5491gacb0g4470e13c2a14" version="1"/>
+                    <attribute id="Guid" type="guid" value="85f5c31d-bf38-5398-826d-4d5fb7a5a0c2"/>
+                    <attribute id="MarkerID" type="FixedString" value="LAE_0400a218_1_29"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="0400a218-3ad1-4197-b1f4-5d46b042d3fd"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

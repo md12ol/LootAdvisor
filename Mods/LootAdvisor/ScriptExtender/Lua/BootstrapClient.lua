@@ -1,0 +1,12 @@
+-- LootAdvisor (client): selected character, rainbow frames + map marker styling, tooltip texts, list window.
+Ext.Require("Shared/Common.lua")
+Ext.Require("Shared/LootData.lua")
+Ext.Require("Shared/ModData.lua")
+Ext.Require("Shared/Logic.lua")
+Ext.Require("Shared/Zones.lua")
+Ext.Require("Client/UiTree.lua")
+Ext.Require("Client/Selected.lua")
+Ext.Require("Client/Paint.lua")
+Ext.Require("Client/Tooltip.lua")
+Ext.Require("Client/Window.lua")
+Ext.Require("Client/Main.lua")

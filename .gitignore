@@ -1,0 +1,51 @@
+# LootAdvisor - PUBLIC repo (decisions 71-73, 80-81). No extracted game files; they are rebuilt locally from the
+# player's own BG3 install (README "Rebuild"). Allowed: our code, mod source (Mods/*), tests, own art, the built pak in
+# the install folder LootAdvisor/.
+
+# shared Claude folder: a link to ../.claude, its own private repo
+.claude
+
+# game-derived data: loca/stats/level dumps, extracted item lists, scores with game item texts
+data/cache/
+data/items_all/*
+!data/items_all/SCHEMA.md
+data/scores/
+
+# generated pages that embed game icons/texts (sets.html, 3d_test.html, previews), 3D models, captures, audit shots
+artifact/
+
+# extracted game textures/icons (frames_game, icons, mapicons, minimapicons, sheets) and outputs made from them;
+# the generator stays
+design/*
+!design/make_rainbow.py
+
+# third-party binaries (downloaded LSLib); the provenance note stays
+third_party/*
+!third_party/README.md
+
+# save/profile snapshots, in-game screenshots (incl. stray shot.sh files at the root)
+backups/
+shots/
+/shots$*
+
+# built paks anywhere except the install folder
+*.pak
+!/LootAdvisor/LootAdvisor.pak
+
+# game texture formats and models, wherever they turn up outside Mods/
+*.dds
+*.DDS
+!/Mods/**/*.dds
+!/Mods/**/*.DDS
+*.glb
+*.gr2
+*.GR2
+
+# python / node / editor clutter
+__pycache__/
+*.pyc
+node_modules/
+.cache/
+*.mp4
+Thumbs.db
+desktop.ini

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h994e319cg6eecg55a0g9d77gbb4d2545a573" version="1"/>
+                    <attribute id="Guid" type="guid" value="6586fe0a-240c-55e1-a8e0-e119edc0ccec"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_LOW_OfWindrider_Amulet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="58ece4ba-e097-4b3b-ac71-7abe8706d3a8"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

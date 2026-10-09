@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h6fbe3b06g6f8eg5a54gad00g9c15d0f366ae" version="1"/>
+                    <attribute id="Guid" type="guid" value="1dcb440a-7a19-51d6-b552-8383f1fc699c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Ketheric_Shield_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="e9918f3e-5b87-40a3-a9bd-61545151573f"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

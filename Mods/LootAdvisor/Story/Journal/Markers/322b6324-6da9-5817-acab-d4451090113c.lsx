@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hec88a63ag6054g5070g8055g7392e25f320f" version="1"/>
+                    <attribute id="Guid" type="guid" value="322b6324-6da9-5817-acab-d4451090113c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Bard_RefreshBardicInspirationSlot_Shoes_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="d439365a-ec12-473e-8893-f0426f772bca"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

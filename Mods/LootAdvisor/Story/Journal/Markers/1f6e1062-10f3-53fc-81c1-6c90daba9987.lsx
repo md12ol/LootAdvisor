@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hb445f9a3g290cg5bb4g9bc7gd958c162c010" version="1"/>
+                    <attribute id="Guid" type="guid" value="1f6e1062-10f3-53fc-81c1-6c90daba9987"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_EndGame_StuddedLeather_Armor_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="6ba6a3cd-56ef-410a-a2b3-508fbde47e55"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

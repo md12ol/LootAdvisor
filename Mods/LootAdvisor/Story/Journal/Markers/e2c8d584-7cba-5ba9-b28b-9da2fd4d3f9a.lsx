@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hf9071785gc4a2g519agad70gea5260e1b48a" version="1"/>
+                    <attribute id="Guid" type="guid" value="e2c8d584-7cba-5ba9-b28b-9da2fd4d3f9a"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_OfAwareness_Bow_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="e5462b9f-9c27-4cda-91ab-6117693cc156"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h353e6a4agc1e8g5da7ga45ag3a5960cb949e" version="1"/>
+                    <attribute id="Guid" type="guid" value="94b848e7-8149-5c82-8176-289f091943c5"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Healer_HealSelfPoisonWeapon_Amulet_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="END_Main"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="cecc84c0-b051-4752-b45a-6da91a147433"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

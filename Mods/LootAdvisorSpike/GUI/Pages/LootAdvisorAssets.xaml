@@ -1,0 +1,64 @@
+<ls:UIWidget x:Name="LootAdvisorAssets"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ls="clr-namespace:ls;assembly=Code"
+             IsHitTestVisible="False" ls:UIWidget.Focusable="False">
+    <!-- LootAdvisor asset holder. Never visible (LA_Debug Opacity 0; Lua may set it to 1 for a test strip).
+         Its only job: make Noesis create our image objects from our own textures (GUI/Assets/LootAdvisor/*.DDS,
+         listed in GUI/metadata.lsf). Lua reads them back from the named elements (GetProperty Source/Fill) or via
+         Resource(key) and assigns them with SetProperty. -->
+    <ls:UIWidget.Resources>
+        <BitmapImage x:Key="LA.FrameBack"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_back.png"/>
+        <BitmapImage x:Key="LA.FrameFront" UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_front.png"/>
+        <BitmapImage x:Key="LA.FrameFront.DXT5"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_front_dxt5.png"/>
+        <BitmapImage x:Key="LA.FrameFront.UNORM" UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_front_unorm.png"/>
+        <BitmapImage x:Key="LA.FrameFront.RGBA"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_front_rgba.png"/>
+        <BitmapImage x:Key="LA.FrameFront.Core"  UriSource="pack://application:,,,/Core;component/Assets/LootAdvisor/frame1_front.png"/>
+        <BitmapImage x:Key="LA.MapSymbol"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_symbol.png"/>
+        <BitmapImage x:Key="LA.MapArrow"   UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_arrow_empty.png"/>
+        <ImageBrush x:Key="LA.MapSymbolBrush" ImageSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_symbol.png" Stretch="Uniform"/>
+        <ImageBrush x:Key="LA.MapArrowBrush"  ImageSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_arrow_empty.png" Stretch="None"/>
+        <BitmapImage x:Key="LA.Game.Uncommon.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_uncommon_back.png"/>
+        <BitmapImage x:Key="LA.Game.Uncommon.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_uncommon_front.png"/>
+        <BitmapImage x:Key="LA.Game.Rare.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_rare_back.png"/>
+        <BitmapImage x:Key="LA.Game.Rare.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_rare_front.png"/>
+        <BitmapImage x:Key="LA.Game.VeryRare.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_veryrare_back.png"/>
+        <BitmapImage x:Key="LA.Game.VeryRare.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_veryrare_front.png"/>
+        <BitmapImage x:Key="LA.Game.Legendary.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_legendary_back.png"/>
+        <BitmapImage x:Key="LA.Game.Legendary.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_legendary_front.png"/>
+        <BitmapImage x:Key="LA.Game.Story.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_story_back.png"/>
+        <BitmapImage x:Key="LA.Game.Story.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_story_front.png"/>
+    </ls:UIWidget.Resources>
+
+    <Grid x:Name="LA_Debug" Opacity="0" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="300,160,0,0"
+          IsHitTestVisible="False" Background="#E0181410">
+        <StackPanel Margin="10">
+            <StackPanel Orientation="Horizontal">
+                <Image x:Name="LA_FrameBack"        Source="{StaticResource LA.FrameBack}"         Width="160" Height="160" Stretch="Fill"/>
+                <Image x:Name="LA_FrameFront"       Source="{StaticResource LA.FrameFront}"        Width="160" Height="160" Stretch="Fill"/>
+                <Image x:Name="LA_FrameFront_DXT5"  Source="{StaticResource LA.FrameFront.DXT5}"   Width="160" Height="160" Stretch="Fill"/>
+                <Image x:Name="LA_FrameFront_UNORM" Source="{StaticResource LA.FrameFront.UNORM}"  Width="160" Height="160" Stretch="Fill"/>
+                <Image x:Name="LA_FrameFront_RGBA"  Source="{StaticResource LA.FrameFront.RGBA}"   Width="160" Height="160" Stretch="Fill"/>
+                <Image x:Name="LA_FrameFront_Core"  Source="{StaticResource LA.FrameFront.Core}"   Width="160" Height="160" Stretch="Fill"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal">
+                <Image x:Name="LA_MapSymbol" Source="{StaticResource LA.MapSymbol}" Width="136" Height="136" Stretch="Fill"/>
+                <Image x:Name="LA_MapArrow"  Source="{StaticResource LA.MapArrow}"  Width="136" Height="128" Stretch="Fill"/>
+                <Rectangle x:Name="LA_MapSymbolBrush" Fill="{StaticResource LA.MapSymbolBrush}" Width="68" Height="68"/>
+                <Rectangle x:Name="LA_MapArrowBrush"  Fill="{StaticResource LA.MapArrowBrush}"  Width="68" Height="64"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal">
+                <Image x:Name="LA_Game_Uncommon_Back"  Source="{StaticResource LA.Game.Uncommon.Back}"  Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Uncommon_Front" Source="{StaticResource LA.Game.Uncommon.Front}" Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Rare_Back"  Source="{StaticResource LA.Game.Rare.Back}"  Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Rare_Front" Source="{StaticResource LA.Game.Rare.Front}" Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_VeryRare_Back"  Source="{StaticResource LA.Game.VeryRare.Back}"  Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_VeryRare_Front" Source="{StaticResource LA.Game.VeryRare.Front}" Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Legendary_Back"  Source="{StaticResource LA.Game.Legendary.Back}"  Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Legendary_Front" Source="{StaticResource LA.Game.Legendary.Front}" Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Story_Back"  Source="{StaticResource LA.Game.Story.Back}"  Width="80" Height="80" Stretch="Fill"/>
+                <Image x:Name="LA_Game_Story_Front" Source="{StaticResource LA.Game.Story.Front}" Width="80" Height="80" Stretch="Fill"/>
+            </StackPanel>
+        </StackPanel>
+    </Grid>
+</ls:UIWidget>

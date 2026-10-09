@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="heec0f838g9bc3g55fcga23bg0ae603b8042e" version="1"/>
+                    <attribute id="Guid" type="guid" value="67331f61-02e0-5139-a320-92d699740a00"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Fire_ArcaneAcuityOnFireDamage_Hat_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="49eb5b4b-c6ed-4d37-8f68-97b1128b7d56"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

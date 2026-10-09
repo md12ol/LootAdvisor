@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hb4e78798gb2b1g55bag9b31gf724777415e1" version="1"/>
+                    <attribute id="Guid" type="guid" value="7d5e5672-0d14-5265-b971-20b2500bbd9f"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_SHA_JusticiarArmor_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="42997c97-e449-4629-93a0-eb9d81e81382"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

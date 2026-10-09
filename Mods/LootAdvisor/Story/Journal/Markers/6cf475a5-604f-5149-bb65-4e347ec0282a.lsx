@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h1a70d410g73a3g5b48g80dbg8fd4c552c691" version="1"/>
+                    <attribute id="Guid" type="guid" value="6cf475a5-604f-5149-bb65-4e347ec0282a"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Gish_WeaknessBranding_Amulet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="ffb0ec61-5739-4b34-8d27-e61b1f4500ad"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

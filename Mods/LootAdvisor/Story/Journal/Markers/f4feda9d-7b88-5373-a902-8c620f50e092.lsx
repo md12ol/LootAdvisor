@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h8f6ea1a5gb623g59f4gafb4g001a4a34eb14" version="1"/>
+                    <attribute id="Guid" type="guid" value="f4feda9d-7b88-5373-a902-8c620f50e092"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_OBJ_Potion_Of_Hill_Giant_Strength_6"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="1795ac19-6fe7-4382-a05c-aa854fab3832"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

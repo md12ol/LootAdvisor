@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h5fc28fd5gf03dg5f3cga0bagca6f90d61fff" version="1"/>
+                    <attribute id="Guid" type="guid" value="17bfe09e-1b1f-574a-9bc5-1702bfcd89a9"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_CQCaster_SpellDCBonusWhileThreatened_Circlet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="3c6a641f-169e-453c-b4ee-234ca670abcc"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h3e6cdfadg2153g5f14g8659geff25a7e3b7c" version="1"/>
+                    <attribute id="Guid" type="guid" value="cf46422e-12f6-5552-ad86-897dd5ff1504"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_SHA_SharBlessing_Spear_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="16ac4f7f-f069-49a8-a8e0-8b76d9f63532"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h84656ce5g7dc2g5f56gaad1ge50bbacea225" version="1"/>
+                    <attribute id="Guid" type="guid" value="635e50cd-362f-55fb-a30e-af753e01bae0"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Shadow_SpellDCBonusWhileObscured_Circlet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="e8cd240d-7ea1-4edb-8678-e74387375c56"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h24fd8210gf96cg5f0cgaa6fg843f5caf43d5" version="1"/>
+                    <attribute id="Guid" type="guid" value="f966d573-49b3-5e53-a8a9-8316b0362b5b"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_BG_OfDexterity_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="1984c58f-6c32-476e-84ed-183dfa368d72"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

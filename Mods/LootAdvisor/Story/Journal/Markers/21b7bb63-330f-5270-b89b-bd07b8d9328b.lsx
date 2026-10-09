@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hd01b44d5ge0b3g5168gaef9gb174139b8580" version="1"/>
+                    <attribute id="Guid" type="guid" value="21b7bb63-330f-5270-b89b-bd07b8d9328b"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Radiant_RadiatingOrb_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="fc32bb9f-922e-4094-a8c6-a019cf65d074"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h13312b02g1fe9g5e36ga911g8d96c0db3b19" version="1"/>
+                    <attribute id="Guid" type="guid" value="3dcd29f9-dcf5-5c1b-aff1-9208257d6ca0"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Bhaalist_Hat_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="f22f59b6-9a87-42fb-a4ab-16c2300c3d8d"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

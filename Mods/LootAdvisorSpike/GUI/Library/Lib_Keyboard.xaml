@@ -1,0 +1,10 @@
+<ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <!-- LootAdvisor (IMAGES.md A2): NEW keys only, merged app-wide like Mods/GustavX/GUI/Library/Lib_Keyboard.xaml.
+         Prefix LA2. so a test can tell this route from the widget's LA.* keys. -->
+    <BitmapImage x:Key="LA2.FrameBack"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_back.png"/>
+    <BitmapImage x:Key="LA2.FrameFront" UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/frame1_front.png"/>
+    <BitmapImage x:Key="LA2.MapSymbol"  UriSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_symbol.png"/>
+    <ImageBrush x:Key="LA2.MapSymbolBrush" ImageSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_symbol.png" Stretch="Uniform"/>
+    <ImageBrush x:Key="LA2.MapArrowBrush"  ImageSource="pack://application:,,,/LootAdvisorSpike;component/Assets/LootAdvisor/map1_arrow_empty.png" Stretch="None"/>
+</ResourceDictionary>

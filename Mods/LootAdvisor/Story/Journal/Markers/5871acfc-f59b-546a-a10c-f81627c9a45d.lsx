@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h8dedc8c0gcaa7g51d7g9a13g7523c9f98103" version="1"/>
+                    <attribute id="Guid" type="guid" value="5871acfc-f59b-546a-a10c-f81627c9a45d"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_TheChromatic_Staff_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7a15ab31-e722-4ce0-8f1c-907025e3bef0"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

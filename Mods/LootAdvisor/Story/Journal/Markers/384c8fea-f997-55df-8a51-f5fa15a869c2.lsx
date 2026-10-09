@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h11471fd2g8de2g5bf2g8e2fg4b9d0ca8775e" version="1"/>
+                    <attribute id="Guid" type="guid" value="384c8fea-f997-55df-8a51-f5fa15a869c2"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_MeleeDebuff_AttackDebuff1_OnDamage_Helmet_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="2a5997fc-5f2a-4a13-b309-bed16da3b255"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

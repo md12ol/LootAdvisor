@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h261c0c6bg2ceeg5ad6gb4b7g5b513025ab2d" version="1"/>
+                    <attribute id="Guid" type="guid" value="c37865fa-ff63-5ea2-b2a6-101a6e2ef986"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Fire_FireDamage_Quarterstaff_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="e5462b9f-9c27-4cda-91ab-6117693cc156"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

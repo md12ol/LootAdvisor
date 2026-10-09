@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h62dd1693g812cg51fbg9263g1501e000696b" version="1"/>
+                    <attribute id="Guid" type="guid" value="1ab4fb0f-f47a-59e3-8165-27683f1eef60"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_UNI_SHA_DarkJusticiar_Boots_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="42997c97-e449-4629-93a0-eb9d81e81382"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

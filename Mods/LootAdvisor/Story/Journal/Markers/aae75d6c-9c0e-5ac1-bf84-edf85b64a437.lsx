@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="habfa516dg7a88g52ceg943eg9d8430caaeee" version="1"/>
+                    <attribute id="Guid" type="guid" value="aae75d6c-9c0e-5ac1-bf84-edf85b64a437"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Monk_Fire_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="b07b81b6-27fc-4774-a3d0-3c2241e91b0a"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

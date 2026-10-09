@@ -1,0 +1,99 @@
+<ls:UIWidget x:Name="LootAdvisorRes"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:ls="clr-namespace:ls;assembly=Code"
+             IsHitTestVisible="False" ls:UIWidget.Focusable="False">
+    <!-- LootAdvisor image holder (IMAGES_RESULTS.md recipe). Never visible (Opacity 0). Its only job: make Noesis
+         create our image objects from our own textures (GUI/Assets/LootAdvisor/*.DDS, listed in GUI/metadata.lsf);
+         Lua reads them back from the named elements (GetProperty Source/Fill) and assigns them with SetProperty.
+         The game's rarity frames are here too, to put a cell's own look back when it stops being recommended. -->
+    <ls:UIWidget.Resources>
+        <BitmapImage x:Key="LA.FrameBack" UriSource="pack://application:,,,/LootAdvisor;component/Assets/LootAdvisor/frame1_back.png"/>
+        <BitmapImage x:Key="LA.FrameFront" UriSource="pack://application:,,,/LootAdvisor;component/Assets/LootAdvisor/frame1_front.png"/>
+        <BitmapImage x:Key="LA.MapSymbol"  UriSource="pack://application:,,,/LootAdvisor;component/Assets/LootAdvisor/map1_symbol.png"/>
+        <ImageBrush x:Key="LA.MapSymbolBrush" ImageSource="pack://application:,,,/LootAdvisor;component/Assets/LootAdvisor/map1_symbol.png" Stretch="Uniform"/>
+        <ImageBrush x:Key="LA.MapArrowBrush"  ImageSource="pack://application:,,,/LootAdvisor;component/Assets/LootAdvisor/map1_arrow_empty.png" Stretch="None"/>
+        <BitmapImage x:Key="LA.Game.Uncommon.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_uncommon_back.png"/>
+        <BitmapImage x:Key="LA.Game.Uncommon.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_uncommon_front.png"/>
+        <BitmapImage x:Key="LA.Game.Rare.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_rare_back.png"/>
+        <BitmapImage x:Key="LA.Game.Rare.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_rare_front.png"/>
+        <BitmapImage x:Key="LA.Game.VeryRare.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_veryrare_back.png"/>
+        <BitmapImage x:Key="LA.Game.VeryRare.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_veryrare_front.png"/>
+        <BitmapImage x:Key="LA.Game.Legendary.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_legendary_back.png"/>
+        <BitmapImage x:Key="LA.Game.Legendary.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_legendary_front.png"/>
+        <BitmapImage x:Key="LA.Game.Story.Back"  UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_story_back.png"/>
+        <BitmapImage x:Key="LA.Game.Story.Front" UriSource="pack://application:,,,/Core;component/Assets/Shared/rarityFrame_story_front.png"/>
+
+        <!-- Loot Advisor's own text colour (aquamarine): not used by any game tooltip text. ONE resource for the item
+             advice title and the map marker item list, so both always match. -->
+        <SolidColorBrush x:Key="LA.AdviceBrush" Color="#66FFD9"/>
+
+        <!-- Item tooltip: the description strip (Control "LoreDescriptionSection") gets this template while the item
+             is recommended: the game's own description strip unchanged, then one row in the style of the tooltip's
+             other rows: our diamond in the description icon's column, a short title in our colour, one short line.
+             Lua fills the texts (LA_TipTitle / LA_TipBody / LA_TipWarn) and puts the game's template back
+             afterwards. Game resources are looked up dynamically (nothing breaks if a key is missing). -->
+        <ControlTemplate x:Key="LA.ItemAdviceTemplate" TargetType="Control">
+            <StackPanel>
+                <Control Template="{DynamicResource TooltipStripLoreTextTemplate}"/>
+                <Grid x:Name="LA_TipRow" Width="{DynamicResource MaxTooltipContentWidth}" Margin="0,0,0,16" HorizontalAlignment="Left">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Image x:Name="LA_TipIcon" Grid.Column="0" Source="{StaticResource LA.MapSymbol}" Width="44" Height="44"
+                           Stretch="Uniform" HorizontalAlignment="Left" VerticalAlignment="Top" Margin="-8,2,8,0"/>
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <TextBlock x:Name="LA_TipTitle" Text="" FontSize="{DynamicResource MediumFontSize}" FontWeight="SemiBold"
+                                   Foreground="{StaticResource LA.AdviceBrush}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="LA_TipBody" Text="" FontSize="{DynamicResource MediumFontSize}"
+                                   Foreground="{DynamicResource TooltipColor.Secondary}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                        <TextBlock x:Name="LA_TipWarn" Text="" FontSize="{DynamicResource MediumFontSize}" Visibility="Collapsed"
+                                   Foreground="{DynamicResource TooltipColor.WarningSoft}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                    </StackPanel>
+                </Grid>
+            </StackPanel>
+        </ControlTemplate>
+
+        <!-- Map marker hover label (our markers only): a title line like a game tooltip title (the game's own
+             TooltipTitleStyle) with our rainbow diamond in front, then the item names reachable there, one per line, in
+             our advice colour (LA.AdviceBrush, the same brush as the item tooltip row). Used as the label's
+             ContentTemplate while the marker is one of ours; Lua fills LA_MarkText from the marker's translated label
+             (the MapMarker VM's Name is the handle) and puts the game's template back for every other marker. -->
+        <DataTemplate x:Key="LA.MarkerTipTemplate">
+            <StackPanel>
+                <StackPanel Orientation="Horizontal">
+                    <Image x:Name="LA_MarkIcon" Source="{StaticResource LA.MapSymbol}" Width="52" Height="52" Stretch="Uniform"
+                           VerticalAlignment="Center" Margin="-6,0,8,0"/>
+                    <TextBlock x:Name="LA_MarkTitle" Text="Loot Advisor" Style="{DynamicResource TooltipTitleStyle}"
+                               VerticalAlignment="Center" TextWrapping="NoWrap"/>
+                </StackPanel>
+                <TextBlock x:Name="LA_MarkText" Text="" Foreground="{StaticResource LA.AdviceBrush}" TextWrapping="NoWrap"
+                           Margin="0,6,0,0"/>
+            </StackPanel>
+        </DataTemplate>
+    </ls:UIWidget.Resources>
+
+    <Grid x:Name="LA_Holder" Opacity="0" HorizontalAlignment="Left" VerticalAlignment="Top" Width="1" Height="1"
+          IsHitTestVisible="False">
+        <Image x:Name="LA_FrameBack"  Source="{StaticResource LA.FrameBack}"  Width="1" Height="1"/>
+        <Image x:Name="LA_FrameFront" Source="{StaticResource LA.FrameFront}" Width="1" Height="1"/>
+        <Image x:Name="LA_MapSymbol"  Source="{StaticResource LA.MapSymbol}"  Width="1" Height="1"/>
+        <Rectangle x:Name="LA_MapSymbolBrush" Fill="{StaticResource LA.MapSymbolBrush}" Width="1" Height="1"/>
+        <Rectangle x:Name="LA_MapArrowBrush"  Fill="{StaticResource LA.MapArrowBrush}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Uncommon_Back"  Source="{StaticResource LA.Game.Uncommon.Back}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Uncommon_Front" Source="{StaticResource LA.Game.Uncommon.Front}" Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Rare_Back"  Source="{StaticResource LA.Game.Rare.Back}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Rare_Front" Source="{StaticResource LA.Game.Rare.Front}" Width="1" Height="1"/>
+        <Image x:Name="LA_Game_VeryRare_Back"  Source="{StaticResource LA.Game.VeryRare.Back}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_VeryRare_Front" Source="{StaticResource LA.Game.VeryRare.Front}" Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Legendary_Back"  Source="{StaticResource LA.Game.Legendary.Back}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Legendary_Front" Source="{StaticResource LA.Game.Legendary.Front}" Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Story_Back"  Source="{StaticResource LA.Game.Story.Back}"  Width="1" Height="1"/>
+        <Image x:Name="LA_Game_Story_Front" Source="{StaticResource LA.Game.Story.Front}" Width="1" Height="1"/>
+        <!-- the game's own tooltip templates are parked in these Tags (Lua) the first time ours replaces them, so they
+             can be put back in a later tick (SE element handles do not outlive a tick) -->
+        <Control x:Name="LA_KeepItemTpl" Width="1" Height="1"/>
+        <Control x:Name="LA_KeepMarkerTpl" Width="1" Height="1"/>
+    </Grid>
+</ls:UIWidget>

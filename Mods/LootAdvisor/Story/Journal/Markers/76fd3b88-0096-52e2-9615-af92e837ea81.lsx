@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hc396398egad0fg5a7bgb1b4g395cdb84a139" version="1"/>
+                    <attribute id="Guid" type="guid" value="76fd3b88-0096-52e2-9615-af92e837ea81"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_UNI_Ravengard_Plate_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="f6620372-ebd0-4511-a39d-8c2d4ad03f03"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

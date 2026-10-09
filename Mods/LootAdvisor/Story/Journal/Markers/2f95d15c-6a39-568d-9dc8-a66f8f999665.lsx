@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hcc72702bg3558g5a0agbb74g6dcd33c3afee" version="1"/>
+                    <attribute id="Guid" type="guid" value="2f95d15c-6a39-568d-9dc8-a66f8f999665"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_WYR_Orin_Bhaalist_Dagger_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="51c312d5-ce5e-4f8c-a5ad-edc2beced3e6"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

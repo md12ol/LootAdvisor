@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="he1545f05gfbd6g598cgafc6gf1a850cee801" version="1"/>
+                    <attribute id="Guid" type="guid" value="7225dfa2-0ddd-5cfc-b718-bc451f0a8d0e"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_UNI_MassHealRing_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="5dae5413-ea24-459f-8547-d4cf4beee6b2"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

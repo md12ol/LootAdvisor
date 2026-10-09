@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hf332208cg95cfg563dga067g4002a5949fcc" version="1"/>
+                    <attribute id="Guid" type="guid" value="f462ff2f-1d4f-5665-bb2d-4a049d2d8df8"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ParalyzingRay_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="d92a207c-874a-4409-9cad-4abcec33efa1"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

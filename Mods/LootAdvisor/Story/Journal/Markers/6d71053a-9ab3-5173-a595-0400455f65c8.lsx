@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h9ab53367g665bg52a8gb43eg0a18723bd993" version="1"/>
+                    <attribute id="Guid" type="guid" value="6d71053a-9ab3-5173-a595-0400455f65c8"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_PHB_CloakOfDisplacement_Cloak_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="8e446f1a-8b2c-4ef8-8580-0476519ba5cc"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

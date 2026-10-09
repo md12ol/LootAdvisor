@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h545b60b5gd5d5g5917g8088g0686d43cb0aa" version="1"/>
+                    <attribute id="Guid" type="guid" value="723f5bab-7520-5daa-a396-2b3328e45ed5"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Infernal_Metal_Boots_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="5065d932-5680-4c2b-8a9b-b94c5f524f82"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

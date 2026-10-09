@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h6d6e613bg6306g545fg81d1g5f408a98cf9f" version="1"/>
+                    <attribute id="Guid" type="guid" value="d5037e04-b9b3-5d31-99f7-16f559d495d1"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_GleamingSorcery_Hat_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7c408b4f-8d02-43d5-9f7b-a3898afe2bf0"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

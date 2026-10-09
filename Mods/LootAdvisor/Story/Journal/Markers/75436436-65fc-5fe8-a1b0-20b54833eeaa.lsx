@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hf3ab09f9g9ce6g5addg834ag01d8bed7462b" version="1"/>
+                    <attribute id="Guid" type="guid" value="75436436-65fc-5fe8-a1b0-20b54833eeaa"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_WPN_HandCrossbow_1_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="dabc5b38-7606-48cb-99ef-e7edcc49e1a9"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h5f8eb43cg68d1g5f60g87bbg2bd55d3b0be3" version="1"/>
+                    <attribute id="Guid" type="guid" value="4c698b28-f753-58df-860a-4d840cdcb54d"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_HAV_Sylvan_Scimitar_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="91b6b200-7d00-4d62-8dc9-99e8339dfa1a"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

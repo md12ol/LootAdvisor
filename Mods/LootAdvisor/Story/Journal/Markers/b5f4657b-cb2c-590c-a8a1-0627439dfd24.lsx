@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hd72253bfg02b1g5f8dgb278g2161f88f25a9" version="1"/>
+                    <attribute id="Guid" type="guid" value="b5f4657b-cb2c-590c-a8a1-0627439dfd24"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_MagicMissile_HandCrossbow_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="2ffbe979-0c12-4564-940b-17e7f1b3fd0e"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

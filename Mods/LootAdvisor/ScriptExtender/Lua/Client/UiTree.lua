@@ -1,0 +1,87 @@
+-- Noesis helpers (client). Verified API in the installed SE v32 DLL (strings): Ext.UI.GetRoot, element:Find,
+-- :VisualChild(i) (1-based), .VisualChildrenCount, .VisualParent, .DataContext, :Resource(key), :GetProperty,
+-- :SetProperty, :GetAllProperties, .Type, .Name, :Subscribe. NOT in v32: Ext.UI.Defer, :PointToScreen,
+-- :AttachXamlChild / :SetXamlProperty (all on bg3se main = v33+). Ext.UI.Defer is used when it exists.
+
+LA = LA or {}
+LA.UI = {}
+local try = LA.try
+
+-- Run Noesis code on the UI thread when the SE build supports it (v33+), else directly (v32, like Highlighter.lua).
+function LA.UI.Run(fn)
+  if Ext.UI.Defer then Ext.UI.Defer(function() pcall(fn) end) else pcall(fn) end
+end
+
+function LA.UI.Root() return try(Ext.UI.GetRoot) end
+
+local function typeOf(e) return e.Type end
+local function nameOf(e) return e.Name end
+local function count(e) return e.VisualChildrenCount end
+local function child(e, i) return e:VisualChild(i) end
+local function dc(e) return e.DataContext end
+
+LA.UI.Type = function(e) return try(typeOf, e) end
+LA.UI.Name = function(e) return try(nameOf, e) end
+LA.UI.DC = function(e) return try(dc, e) end
+
+-- Depth-first walk; fn(el, depth) returns "skip" to not descend. budget caps visited nodes.
+function LA.UI.Walk(root, fn, budget)
+  budget = budget or 40000
+  local function go(el, d)
+    if budget <= 0 or d > 90 then return end
+    budget = budget - 1
+    if fn(el, d) == "skip" then return end
+    for i = 1, (try(count, el) or 0) do
+      local c = try(child, el, i)
+      if c then go(c, d + 1) end
+    end
+  end
+  if root then go(root, 0) end
+end
+
+-- First descendant (or self) with the given x:Name
+function LA.UI.FindNamed(root, name, maxDepth)
+  local found
+  LA.UI.Walk(root, function(el, d)
+    if found then return "skip" end
+    if LA.UI.Name(el) == name then found = el; return "skip" end
+    if maxDepth and d >= maxDepth then return "skip" end
+  end, 20000)
+  return found
+end
+
+-- A theme resource (SolidColorBrush etc.) looked up from any element; cached.
+local resCache = {}
+function LA.UI.Resource(anyElement, key)
+  if resCache[key] then return resCache[key] end
+  local r = try(function() return anyElement:Resource(key) end)
+  if r then resCache[key] = r end
+  return r
+end
+
+function LA.UI.PurpleBrush(anyElement)
+  for _, k in ipairs({}) do
+    local b = LA.UI.Resource(anyElement, k)
+    if b then return b end
+  end
+end
+
+-- Remember original values so everything can be restored (only UI objects are touched; nothing is saved).
+-- Keyed by tostring(element) (the native address), like Highlighter.lua does: Lua proxies are not unique.
+-- There is no ClearValue binding in SE, so "restore" re-sets the value read before our change.
+LA.UI.touched = {}
+function LA.UI.Key(el) return tostring(el) end
+function LA.UI.Set(el, prop, value)
+  local k = LA.UI.Key(el)
+  local t = LA.UI.touched[k]
+  if not t then t = {}; LA.UI.touched[k] = t end
+  if t[prop] == nil then t[prop] = { v = try(function() return el:GetProperty(prop) end) } end
+  return pcall(function() el:SetProperty(prop, value) end)
+end
+function LA.UI.Restore(el, prop)
+  local t = LA.UI.touched[LA.UI.Key(el)]
+  if not (t and t[prop]) then return false end
+  pcall(function() el:SetProperty(prop, t[prop].v) end)
+  t[prop] = nil
+  return true
+end

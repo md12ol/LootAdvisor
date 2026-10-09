@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h38ccbba6gd08fg5b25ga745g9df6d1812b1b" version="1"/>
+                    <attribute id="Guid" type="guid" value="5700b16c-68f3-5eef-b62d-f9addc1916d2"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Druid_Land_Magic_Leather_Armor_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="a84efcfe-3145-48fc-bc89-29e69e2036c3"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

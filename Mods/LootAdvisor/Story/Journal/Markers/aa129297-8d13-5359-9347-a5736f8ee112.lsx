@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h2aebde96g4543g5d25g9549gd6d8dcf79933" version="1"/>
+                    <attribute id="Guid" type="guid" value="aa129297-8d13-5359-9347-a5736f8ee112"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ZOC_AdvantageOnMeleeAttackWhileSurounded_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="9dc16fc4-9f80-448f-ad43-74c6a9ffb5a0"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h3d581b48g245eg5116g829dg5dc595b1eeb5" version="1"/>
+                    <attribute id="Guid" type="guid" value="772cbb1f-fcfa-59c3-ba5c-4cd89e0e54e3"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Githborn_PsionicMovement_Boots_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="54467aa9-33dd-41c4-bd77-87a71ed22c16"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

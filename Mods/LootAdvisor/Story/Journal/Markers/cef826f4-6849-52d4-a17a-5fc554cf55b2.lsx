@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hb1e9739age130g54acgb208ge5fdeb5f1e40" version="1"/>
+                    <attribute id="Guid" type="guid" value="cef826f4-6849-52d4-a17a-5fc554cf55b2"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Thunder_InflictDazeOnThunderDamage_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="2ffbe979-0c12-4564-940b-17e7f1b3fd0e"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

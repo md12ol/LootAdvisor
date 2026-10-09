@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="he711ead6g9442g536cgbca0ge7056a02fa85" version="1"/>
+                    <attribute id="Guid" type="guid" value="47ad4255-61af-5abe-9e5c-2dfab86e5989"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ALCH_Solution_Elixir_Meditation_3"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="WLD_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="7eb07d0f-0086-4cd2-bb8c-158888bbff6b"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

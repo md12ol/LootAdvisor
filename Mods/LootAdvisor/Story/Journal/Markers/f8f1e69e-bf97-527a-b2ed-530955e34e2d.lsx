@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hab057217g752fg5d24g9ccfg33c3c6b5eef5" version="1"/>
+                    <attribute id="Guid" type="guid" value="f8f1e69e-bf97-527a-b2ed-530955e34e2d"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Infernal_Metal_Gloves_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="3947e0e2-3b4c-4a39-ac53-454e95665b26"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,11 @@
+-- LootAdvisor spike (client). Dormant unless LootAdvisorSpike_settings.json has "Enabled": true.
+Ext.Require("Shared/Config.lua")
+Ext.Require("Client/UiTree.lua")
+Ext.Require("Client/Selected.lua")
+Ext.Require("Client/MapPurple.lua")
+Ext.Require("Client/InventoryBadge.lua")
+Ext.Require("Client/Tooltip.lua")
+Ext.Require("Client/WorldOverlay.lua")
+Ext.Require("Client/Probe.lua")
+Ext.Require("Client/Rainbow.lua")
+Ext.Require("Client/Main.lua")

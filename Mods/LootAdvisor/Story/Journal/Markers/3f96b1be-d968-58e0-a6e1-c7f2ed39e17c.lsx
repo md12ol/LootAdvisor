@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hfa2be65agbf9eg508cg8833g753591d88aa4" version="1"/>
+                    <attribute id="Guid" type="guid" value="3f96b1be-d968-58e0-a6e1-c7f2ed39e17c"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Frost_GenerateSurfaceOnColdDamage_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="ae2fca2e-7318-49e2-ba8d-dec73c605c17"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

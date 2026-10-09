@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h28287510g552ag5b58gbcc9g733884b775a4" version="1"/>
+                    <attribute id="Guid" type="guid" value="3df53845-1c82-561c-a1c8-404ee5cf2c93"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_ALCH_Solution_Elixir_Bloodlust_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="0128499c-adda-4941-b7f3-75792d84655c"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

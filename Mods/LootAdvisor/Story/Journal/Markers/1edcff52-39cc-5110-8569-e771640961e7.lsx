@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h50902cfag407cg5c66g89c4g1fff44a8ac4d" version="1"/>
+                    <attribute id="Guid" type="guid" value="1edcff52-39cc-5110-8569-e771640961e7"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_WATCHER_Human_Greataxe_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="00e0926f-48e7-459c-821e-70e94db802b9"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

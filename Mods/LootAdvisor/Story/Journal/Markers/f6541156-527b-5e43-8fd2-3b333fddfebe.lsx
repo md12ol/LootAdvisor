@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h1e3126b7g7e72g5074ga4feg9e7d9c8eac13" version="1"/>
+                    <attribute id="Guid" type="guid" value="f6541156-527b-5e43-8fd2-3b333fddfebe"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_WPN_Longbow_1_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="cfe93bf1-55c4-423d-8d85-f650bfb2afef"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

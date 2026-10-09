@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h648758f4gcc22g511agbed0g6cad4e577c19" version="1"/>
+                    <attribute id="Guid" type="guid" value="47541962-b493-5946-87c2-58e6d956b385"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Druid_Late_Hide_Armor_2_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="2ffbe979-0c12-4564-940b-17e7f1b3fd0e"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

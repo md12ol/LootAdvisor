@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h52dc43cfg7290g553fga61cgda4b8f588210" version="1"/>
+                    <attribute id="Guid" type="guid" value="e37177c0-92d6-58bb-b699-ea61c491e1a0"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Critical_CriticalExecution_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="9b6e66e8-3832-4bbf-b714-ffc2b0d7a911"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

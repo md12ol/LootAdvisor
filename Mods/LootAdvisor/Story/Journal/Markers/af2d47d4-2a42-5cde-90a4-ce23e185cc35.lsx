@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h264e8f00ga77dg5a41g83e6g7d5587f8a7db" version="1"/>
+                    <attribute id="Guid" type="guid" value="af2d47d4-2a42-5cde-90a4-ce23e185cc35"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Zhentarim_SleeperDagger_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="dc1ac5b0-65e2-4b98-baa8-c8de198a869c"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

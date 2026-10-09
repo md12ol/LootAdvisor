@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h1fb698ebg6bafg555cga20bg1ca2f93d84e0" version="1"/>
+                    <attribute id="Guid" type="guid" value="1dd06362-bd2e-5b67-b26d-3ecdbce973b8"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Kuotoa_Lightning_Spear_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="d3079efa-0477-4459-906d-48a7dbeefc2f"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="he7361664g489bg5358g80e0gbf3cd8e86188" version="1"/>
+                    <attribute id="Guid" type="guid" value="71976023-b46c-5fae-8985-29b1744e9901"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_BG_Sarevok_OfChaos_Greatsword_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="ae9f784a-ea64-4297-95a7-8377e85231b6"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h5471a714g5723g5404gbd70gfddc70e5f397" version="1"/>
+                    <attribute id="Guid" type="guid" value="973c04e4-fc3d-531e-89e7-73b204df7225"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Violence_LowHP_Violence_Clothes_2"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Item"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="c8e993a2-aa65-48fc-b229-500d4cf8e468"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

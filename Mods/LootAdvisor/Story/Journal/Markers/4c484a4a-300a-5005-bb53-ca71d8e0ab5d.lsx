@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h19e90ac3g4611g5a32g98cfgc77e040bb6ff" version="1"/>
+                    <attribute id="Guid" type="guid" value="4c484a4a-300a-5005-bb53-ca71d8e0ab5d"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Ambusher_Shortsword_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="BGO_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="e2a000a2-0c3f-44df-88a9-d6265947739f"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

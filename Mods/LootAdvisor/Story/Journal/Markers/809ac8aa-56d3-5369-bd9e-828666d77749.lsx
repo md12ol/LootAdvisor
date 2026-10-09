@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h0e5aff5ag6ebfg5febgbee8gad641f902662" version="1"/>
+                    <attribute id="Guid" type="guid" value="809ac8aa-56d3-5369-bd9e-828666d77749"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_DeadShot_Longbow_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CTY_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Trigger"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="17ce6dfa-8d2d-43c4-a3ff-875f91e37b04"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

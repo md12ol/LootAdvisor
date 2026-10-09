@@ -1,0 +1,12 @@
+-- LootAdvisor (server): story state, recommendation, journal map markers.
+Ext.Require("Shared/Common.lua")
+Ext.Require("Shared/LootData.lua")
+Ext.Require("Shared/ModData.lua")
+Ext.Require("Shared/Logic.lua")
+Ext.Require("Shared/Zones.lua")
+Ext.Require("Server/State.lua")
+Ext.Require("Server/Cheats.lua")
+Ext.Require("Server/Main.lua")
+Ext.Require("Shared/ShipManifest.lua")
+Ext.Require("Server/PageSync.lua")
+LA.LoadSettings()

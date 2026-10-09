@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="hf8db6ca0g9993g5ea0g95e7gb9e96cd180a7" version="1"/>
+                    <attribute id="Guid" type="guid" value="47c6ec15-05bd-5e39-bb0f-897aa3781248"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_ElementalGish_ElementalInfusion_Ring_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="CRE_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="8f599eca-cf21-42d2-a9f8-56e92aa8624c"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>

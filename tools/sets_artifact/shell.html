@@ -1,0 +1,34 @@
+<title>Loot Advisor Sets</title>
+<style>
+/*@FONTS@*/
+/*@CSS@*/
+</style>
+<div id="app" class="app">
+  <a class="skip" href="#equip">Skip to the equipment</a>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-kicker">Loot Advisor</span>
+      <h1 class="brand-title">Synergy Sets</h1>
+    </div>
+    <nav class="acts" id="acts" aria-label="Act"></nav>
+    <div class="tools">
+      <button type="button" class="btn-pill" data-legend="1">What the badges mean</button>
+      <button type="button" id="cmpToggle" class="btn-pill" aria-pressed="false" disabled aria-disabled="true">Compare two sets</button>
+    </div>
+  </header>
+  <div class="play" id="play"></div>
+  <nav class="rail" id="rail" aria-label="Origin character"></nav>
+  <div class="body">
+    <aside class="setlist" id="setlist" aria-label="Sets"></aside>
+    <main class="main" id="main"><p class="loading" role="status">@LOADING@</p></main>
+  </div>
+  <footer class="foot" id="foot"></footer>
+</div>
+<div id="ttb" class="tt-backdrop" hidden></div>
+<div id="tt" class="tt-layer" role="tooltip" hidden></div>
+<div id="legend" class="legend" hidden></div>
+<script id="la-img" type="application/json">@IMAGES@</script>
+<script id="la-data" type="application/json">@DATA@</script>
+<script>
+/*@JS@*/
+</script>

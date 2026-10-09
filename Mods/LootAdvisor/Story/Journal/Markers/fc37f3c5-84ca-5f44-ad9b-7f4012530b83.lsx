@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="h2a7e7386g3168g52f8g9b53g356208378c71" version="1"/>
+                    <attribute id="Guid" type="guid" value="fc37f3c5-84ca-5f44-ad9b-7f4012530b83"/>
+                    <attribute id="MarkerID" type="FixedString" value="LA_MAG_Absolute_Protecter_Shield_1"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="QuestMarker"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="SCL_Main_A"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="Character"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="8e75eb3b-7551-485e-8f98-2bf2e51d3e84"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>
