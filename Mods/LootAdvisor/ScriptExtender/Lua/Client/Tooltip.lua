@@ -127,7 +127,7 @@ end
 function T.Apply(res)
   local advice, tplId = {}, {}
   if res and res.rows and not res.notCovered then
-    -- decision 76: the Dark Urge is the player's own character -> the name the player gave it ("Best Ring for <name>")
+    -- the Dark Urge is the player's own character -> the name the player gave it ("Best Ring for <name>")
     local own = type(res.name) == "string" and res.name ~= "" and res.name or nil
     local who = (res.char == "darkurge" and own) or LA.CHAR_NAME[res.char] or own or "?"
     local per = {}

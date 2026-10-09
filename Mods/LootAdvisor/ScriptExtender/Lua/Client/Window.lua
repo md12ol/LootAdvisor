@@ -161,7 +161,7 @@ local function nameCell(row, r, grey)
   tip(t, table.concat(h, "\n"))
 end
 
--- "Open Sets page" (decision 83). Script Extender v32 has no way to open a URL or file or to set the clipboard
+-- "Open Sets page". Script Extender v32 has no way to open a URL or file or to set the clipboard
 -- (checked in game: Ext.IO / Utils / IMGUI / UI / Input / Debug / Mod / Types, no os / io / package), so the button
 -- shows the page's path in a read-only field: click it (selects all), Ctrl+C, then Win+R, Ctrl+V, Enter.
 W.PAGE_PATH = [[%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor\Sets.html]]

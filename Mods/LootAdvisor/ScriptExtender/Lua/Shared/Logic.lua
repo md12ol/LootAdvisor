@@ -119,7 +119,7 @@ end
 local function ownerAvailable(c, state)
   if c == "darkurge" then return state.durge end
   local cs = state.comp and state.comp[c]
-  -- decision 63: contested owners only among the ACTIVE party (a camp companion never takes an item away)
+  -- contested owners only among the ACTIVE party (a camp companion never takes an item away)
   return cs ~= nil and cs.team and cs.party == true and not cs.dead
 end
 
