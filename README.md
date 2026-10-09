@@ -25,14 +25,16 @@ rebuilt on your machine from your own BG3 install (read-only on the game folder;
 `lz4`, `zstandard`, `Pillow` and `lupa` (`pip install lz4 zstandard pillow lupa`).
 
 ### Rebuild (in this order, from the repo root)
+Checked end to end from empty `data/cache`, `data/items_all` and `data/scores` (about 3 minutes).
 ```bash
-python tools/build_cache.py            # data/cache/: loca, resolved stats, templates, level item index
+python tools/build_cache.py            # data/cache/: loca, root templates, level item index
+python tools/stats.py --dump data/cache/stats_resolved.json   # resolved stats (all later steps read it)
 python tools/class_progressions.py     # data/cache/class_progressions.json
 python tools/global_items.py           # global item placements -> data/cache
 python tools/characters.py             # NPC placements -> data/cache
-python tools/region_exits.py && python tools/level_links.py && python tools/entrances.py   # zones, teleporters, exits
 python tools/extract_weapons.py && python tools/extract_armour.py && python tools/extract_accessories.py
-python tools/extract_sources.py        # data/items_all/ (format: data/items_all/SCHEMA.md)
+python tools/extract_sources.py        # data/items_all/ (sources, levels, recipes; format: data/items_all/SCHEMA.md)
+python tools/level_links.py && python tools/entrances.py   # teleporters, zones + entrances (needs items_all/levels.json)
 python tools/match_research.py         # research names -> game ids
 python tools/score_items.py            # data/scores/ (+ lua/LootData.lua)
 python tools/gen_mod_data.py           # derived data into Mods/LootAdvisor

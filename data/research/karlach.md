@@ -304,7 +304,7 @@ Format: **Exact Name** (rarity) — effect | why for Karlach | builds | how to g
 4. **"Executioner"** — WILD-T / THROWZ crit variant
    Main: Nyrulna (or Returning Pike) · Off: Bloodthirst (off-hand Exploit Weakness = piercing vulnerability) · Chest: Bhaalist Armour (WARNING) · Head: Sarevok's Horned Helmet (crit 19–20) · Gloves: Craterflesh Gloves (WARNING) · Rings: Killer's Sweetheart + Risky Ring · Amulet: Surgeon's Subjugation Amulet.
    Why: piercing vulnerability doubles piercing hits; widened crit range + advantage + guaranteed crit after kills.
-5. **"Hellfire Karlach"** (thematic, still strong) — GWM Berserker
+5. **"Hellfire Cleave"** (thematic, still strong) — GWM Berserker
    Main: Hellfire Greataxe · Chest: Helldusk Armour · Gloves: Helldusk Gloves · Boots: Helldusk Boots · Head: Helm of Balduran (Helldusk Helmet only with Heavy proficiency) · Amulet: Amulet of Greater Health.
    Why: fire riders + Fly + teleport; Karlach's innate fire resistance and her Infernal Fury fire damage fit the theme.
 
