@@ -25,7 +25,7 @@ from game_paths import GAME_DIR, USER_DIR  # noqa: E402
 DEFAULT_SRC_ROOT = USER_DIR
 DEFAULT_SE_SETTINGS = os.path.join(GAME_DIR, "bin", "ScriptExtenderSettings.json")
 DEFAULT_DEST_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                                  "..", "backups"))   # Desktop/BG3Mods/LootAdvisor/backups (restructure 2026-10)
+                                                  "..", "backups"))   # LootAdvisor/backups next to tools/
 
 # Components of a backup. mode "exact": live folder must equal the backup exactly, extra files are moved
 # aside on restore. mode "restore_only": changed/missing files are restored, extra files are left alone.

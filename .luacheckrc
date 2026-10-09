@@ -4,5 +4,5 @@ allow_defined_top = true          -- mods share their namespace table (LA, BA, .
 max_line_length = false
 unused_args = false
 read_globals = { "Ext", "Osi", "Mods", "_C", "_D", "_P", "Game" }
-globals = { "LA", "LAS", "BA", "AP", "CAM" }
+globals = { "LA", "LAS", "BA", "AP", "CAM", "GAUNTLET", "GAUNTLET_UI" }
 exclude_files = { "analysis/*_build.lua" }  -- Builds.lua fragments, not whole chunks

@@ -1,6 +1,6 @@
-# Third-party tools (downloaded with the user's OK)
+# Third-party tools (downloaded by hand, not committed)
 
-## LSLib / ExportTool (Norbyte) - approved by the user 2026-10-09 (HANDOFF decision 22)
+## LSLib / ExportTool (Norbyte) - added 2026-10-09
 | field    | value |
 |----------|-------|
 | file     | ExportTool-v1.20.4.zip (kept in `third_party/lslib_zip/`) |
@@ -13,11 +13,10 @@
 | downloaded | 2026-10-09 |
 
 Runtime: every exe targets **net8.0** (`*.runtimeconfig.json`: Microsoft.NETCore.App 8.0.0; ConverterApp also
-Microsoft.WindowsDesktop.App 8.0.0). This PC has only .NET 6.0.11 (`C:\Program Files\dotnet\shared`), so the tools
-do NOT run yet (Divine.exe: "You must install or update .NET to run this application ... Framework
-'Microsoft.NETCore.App', version '8.0.0' (x64)"). Installing the .NET 8 runtime needs a separate OK from the user.
+Microsoft.WindowsDesktop.App 8.0.0), so the .NET 8 runtime must be installed (with only .NET 6 the tools stop with
+"You must install or update .NET to run this application ... Framework 'Microsoft.NETCore.App', version '8.0.0'").
 
-Status 2026-10-09 (later): the user installed the .NET 8 runtime (Microsoft.NETCore.App + WindowsDesktop.App 8.0.31).
+With the .NET 8 runtime (tested with Microsoft.NETCore.App + WindowsDesktop.App 8.0.31):
 - `Divine.exe -a convert-model` (GR2 -> GLB) works, but only with the working directory = `third_party/lslib/Packed/`:
   BG3 GR2 files are BitKnit-compressed (Granny compression type 4) and LSLib needs `Packed/granny2.dll` (RAD Game
   Tools' Granny runtime, shipped inside the LSLib release; not next to `Tools/Divine.exe`).

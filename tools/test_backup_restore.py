@@ -83,24 +83,24 @@ def build_tree(live, binf, real_save):
     write(os.path.join(pub, "config.lsf"), b"LSOF\x00config", t0 + 2)
     write(os.path.join(pub, "modsettings.lsx"), "<save><!-- original mod order --></save>\n", t0 + 3)
     story = os.path.join(pub, "Savegames", "Story")
-    for i, folder in enumerate(["Tav-3151261930__QuickSave_1", "The White Urge-37271261780__Undercity Ruins - 71h 09m",
-                                "Ryzen-25512515358__Selûnite Outpost - 20h 51m", "Ryzen-1612519314__AutoSave_85"]):
+    for i, folder in enumerate(["Tav-3151261930__QuickSave_1", "Shadowheart-37271261780__Undercity Ruins - 71h 09m",
+                                "Karlach-25512515358__Selûnite Outpost - 20h 51m", "Karlach-1612519314__AutoSave_85"]):
         nm = folder.split("__", 1)[1]
         write(os.path.join(story, folder, nm + ".lsv"), os.urandom(200_000 + i), t0 + 10 + i)
         write(os.path.join(story, folder, nm + ".WebP"), os.urandom(5_000 + i), t0 + 10 + i)
     # a deep folder so full paths go well past 260 characters; its name ends in a space (kept by the scripts)
-    deep = os.path.join(story, "Micah-0201262063__" + "Very long save name " * 6, "x" * 60, "y" * 60)
+    deep = os.path.join(story, "Wyll-0201262063__" + "Very long save name " * 6, "x" * 60, "y" * 60)
     write(os.path.join(deep, "deep_file_" + "z" * 40 + ".lsv"), os.urandom(1000), t0 + 20)
     write(os.path.join(story, "Tav-12345__Ends with a dot.", "x.lsv"), b"dot", t0 + 21)
     os.makedirs(lp(os.path.join(pub, "Savegames", "EmptyFolder")))
     write(os.path.join(pp, "Alt", "profile8.lsf"), b"LSOF\x00profile-alt", t0 + 30)
-    write(os.path.join(pp, "Alt", "Savegames", "Story", "Micah-122112618657__QuickSave_28", "QuickSave_28.lsv"),
+    write(os.path.join(pp, "Alt", "Savegames", "Story", "Wyll-122112618657__QuickSave_28", "QuickSave_28.lsv"),
           os.urandom(50_000), t0 + 31)
     if real_save:
         dst = os.path.join(story, os.path.basename(real_save.rstrip("\\/")))
         shutil.copytree(lp(real_save), lp(dst))      # read-only copy of one real save, mtimes kept
     write(os.path.join(live, "Mods", "BuildAdvisor.pak"), os.urandom(80_000), t0 + 40)
-    write(os.path.join(live, "Mods", "Autopilot.pak"), os.urandom(80_000), t0 + 41)
+    write(os.path.join(live, "Mods", "OtherMod.pak"), os.urandom(80_000), t0 + 41)
     se = os.path.join(live, "Script Extender")
     write(os.path.join(se, "BuildAdvisor_settings.json"), '{"a": 1}\n', t0 + 50)
     write(os.path.join(se, "BA_adv.lua"), "-- lua\n", t0 + 51)
@@ -111,16 +111,16 @@ def build_tree(live, binf, real_save):
 def simulate_test_play(live, binf):
     pp = os.path.join(live, "PlayerProfiles")
     story = os.path.join(pp, "Public", "Savegames", "Story")
-    write(os.path.join(story, "The White Urge-99999999__LOOT TEST 1", "LOOT TEST 1.lsv"), os.urandom(70_000))
-    write(os.path.join(story, "The White Urge-99999999__LOOT TEST 1", "LOOT TEST 1.WebP"), os.urandom(3_000))
-    write(os.path.join(story, "Ryzen-88888888__QuickSave_198", "QuickSave_198.lsv"), os.urandom(70_000))
-    write(os.path.join(pp, "Alt", "Savegames", "Story", "Micah-7777__AutoSave_29", "AutoSave_29.lsv"),
+    write(os.path.join(story, "Shadowheart-99999999__LOOT TEST 1", "LOOT TEST 1.lsv"), os.urandom(70_000))
+    write(os.path.join(story, "Shadowheart-99999999__LOOT TEST 1", "LOOT TEST 1.WebP"), os.urandom(3_000))
+    write(os.path.join(story, "Karlach-88888888__QuickSave_198", "QuickSave_198.lsv"), os.urandom(70_000))
+    write(os.path.join(pp, "Alt", "Savegames", "Story", "Wyll-7777__AutoSave_29", "AutoSave_29.lsv"),
           os.urandom(9_000))
     write(os.path.join(pp, "Public", "profile8.lsf"), b"LSOF\x00profile-public-MODDED")        # modified
     write(os.path.join(pp, "Public", "modsettings.lsx"), "<save><!-- LootAdvisor added --></save>\n")
     write(os.path.join(pp, "Public", "modsettings.lsx.bak"), "backup the game made\n")          # extra file
     os.remove(lp(os.path.join(story, "Tav-3151261930__QuickSave_1", "QuickSave_1.WebP")))     # deleted file
-    shutil.rmtree(lp(os.path.join(story, "Ryzen-1612519314__AutoSave_85")))                   # rotated away
+    shutil.rmtree(lp(os.path.join(story, "Karlach-1612519314__AutoSave_85")))                   # rotated away
     os.rmdir(lp(os.path.join(pp, "Public", "Savegames", "EmptyFolder")))                      # empty dir gone
     write(os.path.join(live, "Mods", "LootAdvisor.pak"), os.urandom(60_000))                    # extra mod
     write(os.path.join(live, "Mods", "BuildAdvisor.pak"), os.urandom(81_000))                  # rebuilt mod
@@ -206,10 +206,10 @@ def main():
     check(os.path.isfile(os.path.join(arch, "moved.json")), "archive with moved.json exists")
     a_snap = snapshot(arch)
     expect = {
-        "PlayerProfiles/Public/Savegames/Story/The White Urge-99999999__LOOT TEST 1/LOOT TEST 1.lsv",
-        "PlayerProfiles/Public/Savegames/Story/The White Urge-99999999__LOOT TEST 1/LOOT TEST 1.WebP",
-        "PlayerProfiles/Public/Savegames/Story/Ryzen-88888888__QuickSave_198/QuickSave_198.lsv",
-        "PlayerProfiles/Alt/Savegames/Story/Micah-7777__AutoSave_29/AutoSave_29.lsv",
+        "PlayerProfiles/Public/Savegames/Story/Shadowheart-99999999__LOOT TEST 1/LOOT TEST 1.lsv",
+        "PlayerProfiles/Public/Savegames/Story/Shadowheart-99999999__LOOT TEST 1/LOOT TEST 1.WebP",
+        "PlayerProfiles/Public/Savegames/Story/Karlach-88888888__QuickSave_198/QuickSave_198.lsv",
+        "PlayerProfiles/Alt/Savegames/Story/Wyll-7777__AutoSave_29/AutoSave_29.lsv",
         "PlayerProfiles/Public/profile8.lsf", "PlayerProfiles/Public/modsettings.lsx",
         "PlayerProfiles/Public/modsettings.lsx.bak", "Mods/LootAdvisor.pak", "Mods/BuildAdvisor.pak",
         "ScriptExtender/BuildAdvisor_settings.json", "ScriptExtenderSettings/ScriptExtenderSettings.json",

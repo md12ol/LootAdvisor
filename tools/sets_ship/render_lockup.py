@@ -3,7 +3,7 @@ tagline) as a transparent WebP from the branding sources - OUR OWN art, no game 
 and the inventory-icon strip itself (CSS + the player's own game icons, decoded at runtime).
 
     python tools/sets_ship/render_lockup.py            -> tools/sets_ship/brand_lockup.webp (720x240 CSS px drawn at 2x)
-    python tools/sets_ship/render_lockup.py private    -> brand_lockup_private.webp for the claude.ai artifact (it does
+    python tools/sets_ship/render_lockup.py private    -> brand_lockup_private.webp for the online copy (it does
                                                           not follow the game: tagline "Full loadouts for every origin...")
 
 Needs BuildAdvisor/branding/src (sibling repo) and Edge/Chrome; fonts come from Google Fonts at render time, like
@@ -30,7 +30,7 @@ from screens import WS, js  # noqa: E402
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "BuildAdvisor", "branding", "src")
 PRIVATE = sys.argv[1:2] == ["private"]
 OUT = os.path.join(HERE, "brand_lockup_private.webp" if PRIVATE else "brand_lockup.webp")
-# the shipped page syncs with the game; the private claude.ai artifact does not (branding option1_sets_private.png)
+# the shipped page syncs with the game; the private online copy does not (branding option1_sets_private.png)
 TAG = "Full loadouts for every origin, act by act" if PRIVATE else "Full loadouts for your build · follows your game live"
 BROWSERS = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",

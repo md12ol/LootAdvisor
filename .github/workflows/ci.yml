@@ -1,4 +1,4 @@
-# Everything that runs without the game. Game-data tests are local-only (pre-push hook in the BG3Mods-claude repo).
+# Everything that runs without the game. Game-data tests are local-only (the pre-push hook, see CONTRIBUTING in BG3Tools).
 # Repos are checked out side by side as on a developer machine; a sibling repo uses the branch of the same name when
 # it exists (cross-repo work), else main.
 name: CI
@@ -17,7 +17,7 @@ env:
   # lives in BG3Tools tools/build_pak.py)
   MOD: LootAdvisor
   PACKAGE_DIR: LootAdvisor
-  LUA_DIRS: Mods spike
+  LUA_DIRS: Mods tools/gauntlet
   RUFF_VERSION: "0.16.9"
   LUPA_VERSION: "2.8"
 
@@ -93,6 +93,8 @@ jobs:
         run: python LootAdvisor/tests/run.py --ci
       - name: Mutation check (every CI check goes red when its rule is broken)
         run: python LootAdvisor/tests/run.py --ci --mutate
+      - name: Gauntlet harness (Lua loads with a stubbed engine, item rule, arena, statistics)
+        run: python LootAdvisor/tests/test_gauntlet.py
       - name: Leak scan of shipped files
         run: python LootAdvisor/tools/leak_scan.py
       - name: Pak build (no install, no game) + package folder complete per INSTALL.md

@@ -21,7 +21,7 @@ Simplifications: one boss target (no kills), crits double all dice (weapon, ride
 flat bonuses not doubled; no undead/fiend smite bonus; boss saves: STR +6, WIS +4 (Act 3), lower in Acts 1-2.
 Act 3 glove/elixir kits (KITS) are compared per build and the best is reported; sensitivity runs vary fights per
 long rest, rounds per fight and boss AC, plus Risky Ring (Advantage on every attack) and an ally's Haste.
-Run: python analysis/laezel_model.py   (about 3-4 minutes; results are quoted in LAEZEL_BEST_BUILD.md)"""
+Run: python analysis/laezel_model.py   (about 3-4 minutes)"""
 import random
 
 N_DAYS = 1500
@@ -49,7 +49,7 @@ ACT_GEAR = {   # weapon dice, enchantment, rider dice (die sizes), STR override,
 }
 
 def build(key, level):
-    """Return the level-`level` profile of build `key`. Feats/levels follow Progressions.lsx (see LAEZEL_BEST_BUILD.md)."""
+    """Return the level-`level` profile of build `key`. Feats/levels follow Progressions.lsx."""
     b = dict(key=key, attacks=2, surge=False, sup=0, sup_die=8, crit=20, savage=False, gwf=True,
              slots={}, sp=0, vow=False, hp_quick=False, hp_action=False, haste=False, quick_haste=False,
              hate=0, ids=False, cha=16, str=17, prof=2 if level < 5 else (3 if level < 9 else 4), defence=0,

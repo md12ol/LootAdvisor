@@ -1,5 +1,5 @@
 /* LootAdvisor - Gilded Panel header: fills the inventory-icon strip from the PLAYER'S OWN game icons (decoded by ship.js
-   from the files the mod wrote, or the page's embedded icons in the claude.ai artifact). Nothing of the game ships with
+   from the files the mod wrote, or the page's embedded icons in the online copy). Nothing of the game ships with
    the page: DATA.hdr only names art keys of page items.
      DATA.hdr = { cols, rows, phone, la, items: [[artKey, frame, count], ...] }   best first (build_sets_ship.header_rank:
      Legendary / Very Rare items ranked by how often the sets pick them)

@@ -1,4 +1,4 @@
-"""Build the SHIPPABLE LootAdvisor Sets page (HANDOFF decision 24): the same page as the claude.ai artifact
+"""Build the SHIPPABLE LootAdvisor Sets page: the same page as the online copy
 (tools/build_sets_artifact.py + tools/sets_artifact/, all UX fixes), but with NO game art and NO game text inside.
 
     python tools/build_sets_ship.py            # -> Mods/LootAdvisor/Page/Sets.html + Shared/ShipManifest.lua
@@ -373,7 +373,7 @@ def iter_strings(o):
 
 
 # ------------------------------------------------------------------------------------------------ header
-# Gilded Panel header (branding option 1, HANDOFF decisions 58 / 70): our lockup image + CSS panel; the inventory strip
+# Gilded Panel header (branding option 1): our lockup image + CSS panel; the inventory strip
 # on the right is filled at runtime from the player's own game icons (7 columns x 3 rows, the third row cut by the panel
 # like in branding/LootAdvisor/option1_sets.png; one row on phones).
 # What goes in (user 2026-10-09): only the best and rarest items - Legendary and Very Rare page items, ranked by how
@@ -425,7 +425,7 @@ def header_cells(A, payload):
 LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_lockup.py (our own art)
 
 
-LOCKUP_PRIVATE = os.path.join(SHIP_SRC, "brand_lockup_private.webp")   # the claude.ai artifact (does not follow the game)
+LOCKUP_PRIVATE = os.path.join(SHIP_SRC, "brand_lockup_private.webp")   # the online copy (does not follow the game)
 ALT_SHIP = "Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live"
 ALT_PRIVATE = "Loot Advisor: Synergy Sets - full loadouts for every origin, act by act"
 
@@ -540,13 +540,13 @@ def build(args):
                         '<span class="bar"><i></i></span></span>')
     page = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             'content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>\n' + html + "\n</body></html>\n")
-    # the claude.ai shell has no doctype (the publisher adds it); the local page needs one
+    # the online shell has no doctype (its host adds it); the local page needs one
     os.makedirs(PAGE_DIR, exist_ok=True)
     with open(os.path.join(PAGE_DIR, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
         f.write(page)
     ver = hashlib.md5(page.encode("utf-8")).hexdigest()[:12]
     if args.release:
-        # install-folder copy (decision 82): the same single file - header, logo and our art are inside it; opened
+        # install-folder copy: the same single file - header, logo and our art are inside it; opened
         # there (no game files next to it) it shows the "load a save once, then open the live page" card
         rel = os.path.join(args.release, "Page")
         os.makedirs(rel, exist_ok=True)

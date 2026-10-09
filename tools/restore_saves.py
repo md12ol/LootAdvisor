@@ -10,8 +10,8 @@ What --apply does (it never deletes anything):
       backup; a differing live copy is first moved into the same archive (so it is kept too);
   (c) the live folders are re-hashed: PlayerProfiles and Mods must equal the backup exactly, the Script
       Extender files must match (extra Script Extender files are left in place and only listed).
-New save folders of the campaigns named with --keep-campaign (default: Tav, the helm bot - user's choice,
-2026-10-08) are left in place in (a) and in the check (c); --keep-campaign none moves every new save aside.
+New save folders of the campaigns named with --keep-campaign (default: Tav, a campaign
+kept for automated tests) are left in place in (a) and in the check (c); --keep-campaign none moves every new save aside.
 Refuses while bg3.exe / bg3_dx11.exe is running. The live folders default to where the backup was taken from
 (recorded in manifest.json); --live-root / --se-settings override that (for testing).
 """

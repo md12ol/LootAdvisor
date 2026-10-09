@@ -2,12 +2,13 @@
 
   python tools/leak_scan.py              # static scan (Lua strings, meta.lsx, mod data texts, page data + page code)
   python tools/leak_scan.py --render     # + open the sets page headless (Edge) and scan the visible text and tooltips
-  python tools/leak_scan.py -v           # also list the private Autopilot hits and the allowed ones
+  python tools/leak_scan.py -v           # also list the report-only hits and the allowed ones
 
-Exit code 1 when a shipped string leaks (Autopilot is the user's private bot: reported, never fails the run).
+Exit code 1 when a shipped string leaks. Mods listed in LEAK_SCAN_REPORT_ONLY ("Name=path,...", e.g. unpublished test
+mods) are scanned too but only reported, never failing the run.
 A "leak" is: our file names / paths (*.md, *.py, data/..., tools/...), research refs (crafted.md §24, x.md:298),
 internal ids (level / flag / stats ids, template UUIDs, loca handles, set ids, raw build ids, data field names),
-developer wording (pipeline, scorer, seed, theme, research file, the user's campaign, agent, generated ...),
+developer wording (pipeline, scorer, seed, theme, research file, private save names, agent, generated ...),
 debug lines, raw boost / condition code, TODO/FIXME. Game names and plain explanations are fine.
 
 Lua: a string literal on a line with "leak-ok" (in a comment) is skipped - only for text that is never shown to a
@@ -20,13 +21,16 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
-ROOT = os.path.dirname(LA)                     # Desktop (restructure 2026-10: one folder per mod)
+ROOT = os.path.dirname(LA)                     # parent folder of the side-by-side repos
 MODS = os.path.join(LA, "Mods")                 # LootAdvisor's own Mods/
 MOD_DIRS = {"LootAdvisor": os.path.join(LA, "Mods", "LootAdvisor"),
-            "BuildAdvisor": os.path.join(ROOT, "BuildAdvisor", "Mods", "BuildAdvisor"),
-            "Autopilot": os.path.join(ROOT, "Autopilot", "Mods", "Autopilot")}
+            "BuildAdvisor": os.path.join(ROOT, "BuildAdvisor", "Mods", "BuildAdvisor")}
 SHIPPED_MODS = ["LootAdvisor", "BuildAdvisor"]
-PRIVATE_MODS = ["Autopilot"]
+PRIVATE_MODS = []   # report-only mods (LEAK_SCAN_REPORT_ONLY)
+for _spec in filter(None, os.environ.get("LEAK_SCAN_REPORT_ONLY", "").split(",")):
+    _name, _, _path = _spec.partition("=")
+    PRIVATE_MODS.append(_name)
+    MOD_DIRS[_name] = _path or os.path.join(ROOT, _name, "Mods", _name)
 GENERATED_LUA = {"LootData.lua", "ModData.lua", "ShipManifest.lua"}   # scanned field by field below
 PAGES = [os.path.join(MODS, "LootAdvisor", "Page", "Sets.html"), os.path.join(LA, "artifact", "sets.html")]
 
@@ -53,18 +57,25 @@ HARD = [
     ("dev wording", r"\b(?:TODO|FIXME|XXX)\b|\[dev\]|\[debug\]"),
     ("internal tag", r"\b(?:melee[12]h|handxbow)\b|\bfits [\w/]+/[\w/]+"),
     ("mod name", r"\b(?:LootAdvisor|BuildAdvisor)\b"),   # shown as "Loot Advisor" / "Build Advisor"
-    ("user's campaign", r"\b(?:White Urge|Ryzen|Micah)\b|\bSeen in game\b"),
+    ("save name note", r"\bSeen in game\b"),   # private save names: the name hashes of public_text.py, see hits()
 ]
 # "soft" patterns: developer wording. Only for OUR text (not game text, which may say "seed" or "agent")
 SOFT = [
     ("dev wording", r"\b(?:pipeline|scorer|scoring data|research (?:file|ref|refs|set|sets|weight|data)|"
                     r"the user'?s|our (?:data|scorer|files?)|sub-?agents?|agents?|seed(?:ed|s)?|"
-                    r"(?:a|per|by|set|no) themes?|themed|generated\s*·|weapon_dmg|validator|fallback slot|handoff|"
+                    r"(?:a|per|by|set|no) themes?|themed|generated\s*·|weapon_dmg|validator|fallback slot|hand[o]ff|"
                     r"session \d|decision \d+|round \d|game-data fit|stats? ids?|template|placeholder|"
                     r"capture pending|debug|probe|BiS|consensus|\d{4}-\d\d-\d\d)\b"),
     ("dev wording", r"\b(?:BuildAdvisor plan|your campaign)\b"),
 ]
 HARD_RE = [(n, re.compile(p)) for n, p in HARD]
+# BG3Tools/tools/public_text.py (sibling checkout) holds the hashed private names; without it that check is skipped
+sys.path.insert(0, os.path.join(ROOT, "BG3Tools", "tools"))
+try:
+    import public_text
+    NAME_HASHES = public_text.load_names()
+except ImportError:
+    public_text = None
 SOFT_RE = [(n, re.compile(p, re.I)) for n, p in SOFT]
 
 # exact strings that may show (player instructions naming the files the mod itself writes / reads)
@@ -80,6 +91,9 @@ def hits(text, soft=True):
     for name, rx in HARD_RE + (SOFT_RE if soft else []):
         for m in rx.finditer(t):
             out.append((name, m.group(0)))
+    if public_text:   # private save / campaign names (kept there as hashes only)
+        out += [("private save name", h[3]) for h in public_text.scan_text(t, "", NAME_HASHES)
+                if h[2] == "private save / campaign name"]
     return out
 
 
@@ -143,7 +157,7 @@ def scan_lua(path, report, private):
 
 # comments ship inside the pak (readable when unpacked): no references to our own docs, tools or work notes
 COMMENT_RE = re.compile(r"[\w./-]+\.md\b|\b\w+\.py\b|\b(?:tools|analysis|artifact|design|spike|data/research|"
-                        r"data/scores)/|HANDOFF|\bdecision \d+|\bsession \d+|\bround \d\b|MOD_STATUS|FEASIBILITY|"
+                        r"data/scores)/|HAND[O]FF|\bdecision \d+|\bsession \d+|\bround \d\b|MOD_STA[T]US|FEASIBILITY|"
                         r"UX_AUDIT|IMAGES_RESULTS|\bTODO\b|\bFIXME\b")
 
 
@@ -418,7 +432,7 @@ def main():
         private = mod in PRIVATE_MODS
         base = MOD_DIRS.get(mod, os.path.join(MODS, mod))
         if private and not os.path.isdir(base):
-            counts[mod] = "not checked out"   # private repo, absent in public CI
+            counts[mod] = "not checked out"
             continue
         nlua = 0
         for dp, _, fs in os.walk(os.path.join(base, "ScriptExtender")):
@@ -445,7 +459,7 @@ def main():
             continue
         seen.add(key)
         print("%s  %-9s %-60s %-16s %r  <- %r" % ("LEAK" if kind == "fail" else "priv", "", where[:60], name, hit, s[:140]))
-    print("leaks: %d shipped, %d private (Autopilot, not failing)" % (len(fails), len(priv)))
+    print("leaks: %d shipped, %d report-only (not failing)" % (len(fails), len(priv)))
     return 1 if fails else 0
 
 

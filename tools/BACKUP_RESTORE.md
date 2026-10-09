@@ -58,13 +58,13 @@ damaged it stops without touching the live folders.
 
 - Turn Steam Cloud off for BG3 before testing, otherwise test saves can come back from the cloud after a restore.
 - Any save made after the backup counts as a test save and is moved aside on restore - including saves from
-  normal play or from the helm bot (Tav) made in between.
+  normal play or from other test runs made in between.
 - Options for testing on a copy: `--src-root`, `--se-settings`, `--dest-root` (backup) and `--live-root`,
   `--se-settings`, `--archive-root` (restore). `python test_backup_restore.py --work <scratch folder>` runs the
   full self-test on a fake tree.
 
 ## Kept campaigns (added 2026-10-08)
-By default the restore leaves NEW save folders of the **Tav** campaign (the helm bot) where they are - the user chose
-to keep them. Every other new save is still moved aside. `--keep-campaign <leader>` (repeatable) changes the list;
-`--keep-campaign none` moves every new save aside. Tested on a scratch tree: a new Tav save stays, a new Ryzen save
-is moved, and the check reports VERIFIED OK with the Tav save listed as a note.
+By default the restore leaves NEW save folders of the **Tav** campaign where they are (a campaign kept for automated
+tests). Every other new save is still moved aside. `--keep-campaign <leader>` (repeatable) changes the list;
+`--keep-campaign none` moves every new save aside. Tested on a scratch tree: a new Tav save stays, a new save of
+another campaign is moved, and the check reports VERIFIED OK with the Tav save listed as a note.

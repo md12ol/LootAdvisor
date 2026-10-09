@@ -1,5 +1,5 @@
--- Wyll verdict build, in BuildAdvisor's Builds.lua format (analysis/WYLL_BEST_BUILD.md, analysis/wyll_model.py).
--- Not merged: the main session copies the table into BA.Builds and adds "hexsorlock" to BA.Origins.wyll.builds.
+-- Wyll verdict build, in BuildAdvisor's Builds.lua format (model analysis/wyll_model.py).
+-- Reference copy: the table belongs in BA.Builds, with "hexsorlock" in BA.Origins.wyll.builds.
 -- hl strings are the game's English UI labels (loca of the Progressions / stats DisplayName). Metamagic passives are
 -- labelled "Metamagic: Quickened Spell" etc. in loca; the hl key "Quickened Spell" matches that label (and a bare
 -- "Quickened Spell") through the highlighter's substring rule. Note the British spelling "Agonising Blast".

@@ -1,9 +1,6 @@
-# LootAdvisor - PUBLIC repo (decisions 71-73, 80-81). No extracted game files; they are rebuilt locally from the
+# LootAdvisor - PUBLIC repo. No extracted game files; they are rebuilt locally from the
 # player's own BG3 install (README "Rebuild"). Allowed: our code, mod source (Mods/*), tests, own art, the built pak in
 # the install folder LootAdvisor/.
-
-# shared Claude folder: a link to ../.claude, its own private repo
-.claude
 
 # game-derived data: loca/stats/level dumps, extracted item lists, scores with game item texts
 data/cache/

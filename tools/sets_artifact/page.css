@@ -514,7 +514,7 @@ details.more li.c { color: var(--gold-hi); }
 @media (hover: none) { .tt-hint { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 
-/* ---- live sync (local Sets page shipped with the mod; unused in the claude.ai artifact) */
+/* ---- live sync (local Sets page shipped with the mod; unused in the online copy) */
 .pf.fromgame select { border-color: var(--ok); }
 .haveb.game span { color: var(--ok); }
 .haveb.game input { accent-color: var(--ok); }
