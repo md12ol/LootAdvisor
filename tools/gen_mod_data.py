@@ -34,7 +34,30 @@ MARKERS = os.path.join(MOD, "Story", "Journal", "Markers")
 sys.path.insert(0, HERE)
 
 CHARS = ["astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge"]
-NS = uuid.UUID("2e3407b4-e6ef-4cf7-9de7-25950e9f82f9")  # same namespace as spike/gen_markers.py
+# stable GUID per MarkerID (uuid5 in this namespace), so regenerating never creates new markers
+NS = uuid.UUID("2e3407b4-e6ef-4cf7-9de7-25950e9f82f9")
+# one journal map marker (.lsx), the same format as the game's own markers in Story/Journal/Markers
+TEMPLATE = """<?xml version="1.0" encoding="UTF-8"?>
+<save>
+    <version major="4" minor="0" revision="9" build="319"/>
+    <region id="Markers">
+        <node id="root">
+            <children>
+                <node id="Marker">
+                    <attribute id="DisplayText" type="TranslatedString" handle="{handle}" version="1"/>
+                    <attribute id="Guid" type="guid" value="{guid}"/>
+                    <attribute id="MarkerID" type="FixedString" value="{id}"/>
+                    <attribute id="MarkerIcon" type="FixedString" value="{icon}"/>
+                    <attribute id="MarkerLevel" type="FixedString" value="{level}"/>
+                    <attribute id="MarkerTargetObjectType" type="FixedString" value="{target_type}"/>
+                    <attribute id="MarkerTargetObjectUUID" type="FixedString" value="{target}"/>
+                    <attribute id="Radius" type="int32" value="0"/>
+                </node>
+            </children>
+        </node>
+    </region>
+</save>
+"""
 MAX_MARKERS_PER_ITEM = 6
 BOX_MARGIN = 25
 BOX_FILTER = False  # off: item boxes cannot tell interiors from real areas (Emerald Grove fell outside); see MOD_STATUS
@@ -277,8 +300,6 @@ def main():
     if os.path.isdir(MARKERS):
         shutil.rmtree(MARKERS)
     os.makedirs(MARKERS)
-    tpl = open(os.path.join(LA, "spike", "gen_markers.py"), encoding="utf-8").read()
-    TEMPLATE = re.search(r'TEMPLATE = """(.*?)"""', tpl, re.S).group(1)
 
     marker_lua = []
     interior = []

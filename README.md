@@ -13,11 +13,10 @@ line on recommended items, map markers at their spots, an **F6** list with direc
 |---|---|
 | `LootAdvisor/` | install folder: `LootAdvisor.pak`, `INSTALL.md`, `Handbook.html`, `Page/`, `Media/` (refreshed by every build, see below) |
 | `Mods/LootAdvisor/` | the mod source (Lua, GUI, the shippable Sets page) - this is what gets packed |
-| `Mods/LootAdvisorSpike/` | the map-marker spike mod (test only) |
 | `tools/` | game-file parsers ([`tools/PARSERS.md`](tools/PARSERS.md)), the item/set pipeline, page builders, save backup ([`tools/BACKUP_RESTORE.md`](tools/BACKUP_RESTORE.md)) |
 | `tests/` | regression suite: `python tests/run.py` (and `--mutate` to prove every check can fail) |
 | `data/research/` | build research notes the pipeline reads |
-| `design/`, `spike/` | design generators and the marker spike sources |
+| `design/` | design generators |
 
 ## Game data is never in this repository
 Extracted game files (item texts, loca, stats, level data, icons/textures, 3D models) are not committed. They are

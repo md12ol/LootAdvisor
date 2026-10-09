@@ -1,6 +1,6 @@
 #!/bin/sh
 # ev.sh client|server <lua file or ->: run Lua in the game through the LootAdvisor mod's dev eval hook
-# ("Dev": true in LootAdvisor_settings.json), print the output. EV_PREFIX=LootAdvisorSpike targets the old spike mod.
+# ("Dev": true in LootAdvisor_settings.json), print the output. EV_PREFIX=<Mod> targets another mod with the same hook.
 D="$LOCALAPPDATA/Larian Studios/Baldur's Gate 3/Script Extender"
 S="${EV_PREFIX:-LootAdvisor}_$1"
 rm -f "$D/${S}_eval_out.txt"
