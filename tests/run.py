@@ -42,7 +42,7 @@ except ImportError:
 import checks as C  # noqa: E402
 
 LOGIC_OWNER_OLD = "return cs ~= nil and cs.team and not cs.dead"
-# the decision-63 fix: a contested item's owner must be in the ACTIVE party (state.comp[c].party)
+# the owner fix: a contested item's owner must be in the ACTIVE party (state.comp[c].party)
 LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.dead"
 
 
