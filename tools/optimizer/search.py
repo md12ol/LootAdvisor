@@ -9,7 +9,9 @@ Legality (same rules as the set builder, tools/score_items.py):
     (conditions.md families via score_items.path_conflict);
   - acts: only items obtainable by this act (earlier-act-only items count as "keep it if you have it");
   - never items that cost an origin companion (costs:<char>), never Dark-Urge-only items for other characters,
-    nothing tagged unobtainable; one copy of a unique item.
+    nothing tagged unobtainable; one copy of a unique item;
+  - party ownership (OWNERSHIP): "party" = a unique item (or a scarce-material item) whose party owner is another
+    character is not available (owners.json); "free" = the owner gives it up (every item available).
 """
 import odata
 import model
@@ -19,10 +21,17 @@ ORDER = ["MainHand", "OffHand", "Ranged", "RangedOff", "Breast", "Gloves", "Helm
          "Cloak", "Boots", "Elixir"]
 
 
-def allowed(W, cid, bid, sid, scorer):
+OWNERSHIP = ("party", "free")
+
+
+def allowed(W, cid, bid, sid, scorer, ownership="party"):
     u = W.universe.get(sid)
     if not u:
         return False, "no source"
+    if ownership == "party":
+        own = W.blocked(sid, cid)
+        if own:
+            return False, "party owner: " + ", ".join(own)
     cond = set(u["cond"])
     if any(c.startswith("costs:") for c in cond) or "unobtainable" in cond:
         return False, "costs a companion / unobtainable"
@@ -32,7 +41,7 @@ def allowed(W, cid, bid, sid, scorer):
     return ok, why
 
 
-def candidates(W, cid, bid, act):
+def candidates(W, cid, bid, act, ownership="party"):
     """{slot: [sid, ...]} every legal, obtainable item per slot for this build and act."""
     scorer = W.scorer(cid, bid)
     plan = model.PLANS.get(bid, {})
@@ -41,7 +50,7 @@ def candidates(W, cid, bid, act):
     for sid, u in W.universe.items():
         if not W.obtainable(sid, act):
             continue
-        ok, why = allowed(W, cid, bid, sid, scorer)
+        ok, why = allowed(W, cid, bid, sid, scorer, ownership)
         if not ok:
             continue
         rec = W.items[sid]
@@ -92,11 +101,12 @@ def drop_illegal(W, loadout):
 
 
 class Searcher:
-    def __init__(self, W, cid, bid, act, switches=None, beam=8, keep=14, log=None):
+    def __init__(self, W, cid, bid, act, switches=None, beam=8, keep=14, log=None, ownership="party"):
         self.W, self.cid, self.bid, self.act = W, cid, bid, act
         self.sw = switches or {}
         self.beam, self.keep = beam, keep
-        self.cands = candidates(W, cid, bid, act)
+        self.ownership = ownership
+        self.cands = candidates(W, cid, bid, act, ownership)
         self.cache = {}
         self.evals = 0
         self.log = log
