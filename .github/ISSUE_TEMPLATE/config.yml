@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Script Extender problems
+    url: https://github.com/Norbyte/bg3se/issues
+    about: Crashes or errors that also happen without Loot Advisor belong to Script Extender.
+  - name: How to install and use Loot Advisor
+    url: https://github.com/md12ol/LootAdvisor#readme
+    about: Install steps, requirements and the player handbook.
