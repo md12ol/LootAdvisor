@@ -85,12 +85,22 @@ def owned_pass(W, S, best):
             owned_alt[slot] = sid
             best = dict(best)
             best[slot] = alt
-    # a later swap changes what an earlier one was weighed against: an item that is now clearly better goes back
+    # a later swap changes what an earlier one was weighed against: an item that is now clearly better goes back,
+    # into whichever of its slots suits it best (either ring slot)
     for slot, sid in list(owned_alt.items()):
-        t = dict(best)
-        t[slot] = sid
-        if search.legal(W, slot, sid, {k: v for k, v in best.items() if k != slot}) and                 S.score(t).score * (1 - OWNED_KEEP) > S.score(best).score:
-            best = t
+        top, top_v = None, S.score(best).score / (1 - OWNED_KEEP)
+        for k in W.universe[sid]["slots"]:
+            if k not in S.cands or best.get(k) == sid:
+                continue
+            if not search.legal(W, k, sid, {x: v for x, v in best.items() if x != k}):
+                continue
+            t = dict(best)
+            t[k] = sid
+            v = S.score(t).score
+            if v > top_v:
+                top, top_v = t, v
+        if top is not None:
+            best = top
             del owned_alt[slot]
     return best, owned_alt
 
