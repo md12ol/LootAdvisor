@@ -9,6 +9,12 @@ page (or the mod's Nexus Mods page). It holds the built `LootAdvisor.pak`, [`INS
 `Handbook.html` (the player handbook, works offline), `Page/Sets.html` and `Media/` (banner, thumbnail, logo marks,
 screenshots). Built paks are not committed to this repository.
 
+**Script Extender:** item frames and map painting (and the tooltip lines) need
+[BG3 Script Extender](https://github.com/Norbyte/bg3se) v33 or newer; on v32 the F6 list, the map markers in the
+game's own style and the Sets page work. Until v33 is a normal release, get it from the Devel channel: create a file
+`ScriptExtenderUpdaterConfig.json` in the game's `bin` folder containing `{"UpdateChannel": "Devel"}`,
+then start the game once. Delete that file to go back to normal releases.
+
 ## Repository layout
 | Path | What |
 |---|---|

@@ -17,8 +17,13 @@
 
 ## Requirements
 - Baldur's Gate 3 (Patch 8).
-- [BG3 Script Extender](https://github.com/Norbyte/bg3se) v20 or newer. It is a separate project and is not included;
+- [BG3 Script Extender](https://github.com/Norbyte/bg3se). It is a separate project and is not included;
   [BG3 Mod Manager](https://github.com/LaughingLeader/BG3ModManager) installs it in one click.
+- **Item frames and map painting need Script Extender v33 or newer** (also the tooltip lines). On v32 the rest of
+  Loot Advisor works: the F6 list, the map markers in the game's own style and the Sets page.
+  Until v33 is a normal release, get it from the Devel channel: create a file
+  `ScriptExtenderUpdaterConfig.json` in the game's `bin` folder containing `{"UpdateChannel": "Devel"}`,
+  then start the game once. Delete that file to go back to normal releases.
 
 ## Install with BG3 Mod Manager
 1. Install Script Extender: in BG3 Mod Manager choose *Tools > Download and Extract the Script Extender*.

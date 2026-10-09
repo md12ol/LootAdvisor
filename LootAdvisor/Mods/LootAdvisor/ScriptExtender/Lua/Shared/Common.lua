@@ -51,7 +51,8 @@ function LA.Norm(s)
   return r
 end
 
-LA.DEFAULTS = { Enabled = true, Hotkey = "F6", Frames = true, Markers = true, Tooltips = true, Arrows = 5, Dev = false }
+LA.DEFAULTS = { Enabled = true, Hotkey = "F6", Frames = true, Markers = true, Tooltips = true, Arrows = 5, Dev = false,
+                UnsafeUiOnOldSE = false }
 LA.Settings = {}
 for k, v in pairs(LA.DEFAULTS) do LA.Settings[k] = v end
 function LA.SaveSettings()
