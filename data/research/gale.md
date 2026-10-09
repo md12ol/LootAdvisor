@@ -607,7 +607,7 @@ Format per item: **Name** — rarity, slot. *Does:* … *Why:* … *Builds:* …
    advantage) instead of Robe of the Weave, and Amulet of the Devout (+2 DC) instead of
    Amulet of Greater Health. *Why:* same concentration protection, +2 DC more. WARNING:
    Devout needs the Tabernacle workaround.
-3. **"Inferno Acuity"** — FIRE. Markoheshkir (Flame of Wrath) + Ketheric's Shield + Hat of
+3. **"Inferno Weave"** — FIRE. Markoheshkir (Flame of Wrath) + Ketheric's Shield + Hat of
    Fire Acuity + Robe of the Weave + Cloak of the Weave + Spellmight Gloves + Helldusk
    Boots + Spellcrux Amulet + Ring of Feywild Sparks + Ring of Free Action + Elixir of
    Battlemage's Power. *Why:* Scorching Ray beams build Acuity and Spellmight adds 1d8 per

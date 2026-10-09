@@ -54,8 +54,8 @@ WHY = {
                 "Amulet of Greater Health protects concentration.",
     "gale:3:2": "Same DC stack, but Armour of Landfall gives Constitution-save advantage so the Amulet of the Devout "
                 "can add +2 DC instead.",
-    "gale:3:3": "Scorching Ray beams build Acuity and Spellmight adds a d8 to each beam; the staff's fire mode adds "
-                "more fire damage.",
+    "gale:3:3": "Spellmight adds a d8 to each Scorching Ray beam and the staff's fire mode adds more fire damage; "
+                "the Weave hood, cloak and robe raise spell attack to cover the gloves' penalty.",
     "gale:3:4": "Devout gives a second Destructive Wrath for a maximised Chain Lightning on wet targets; thunder gear "
                 "turns the hits into Daze.",
     "gale:3:5": "Weapon hits feed Acuity and Rhapsody; the Band lets Gale cast enchantments as a bonus action after a "
@@ -84,7 +84,8 @@ WHY = {
                    "garb's retaliation.",
     "karlach:3:4": "Piercing vulnerability doubles piercing hits; wider crit range, advantage and a guaranteed crit "
                    "after kills stack big crit turns.",
-    "karlach:3:5": "Fire riders, flight and teleport fit Karlach's own fire theme and resistance.",
+    "karlach:3:5": "Fire riders on the axe and gloves, the boots' teleport and Karlach's own fire resistance fit her "
+                    "fire theme.",
     # ---------------- Lae'zel
     "laezel:1:1": "Invisibility from the pike gives advantage and crits on 19 to cover the Great Weapon Master "
                   "penalty; the armour makes her crit-immune in the front line.",
