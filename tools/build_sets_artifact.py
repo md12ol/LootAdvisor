@@ -1608,9 +1608,28 @@ GILDED_CSS = """
 """
 
 
-def gilded_header(shell, css):
-    """Swap the text brand of the online page for the Gilded Panel header (wide banner image, compact panel on
-    phones). build_sets_ship.py reads shell.html itself and is not affected."""
+def gilded_header(shell, css, js=None, payload=None):
+    """Swap the text brand of the online page for the Gilded Panel header. Same header as the shipped page
+    (build_sets_ship.header_html + tools/sets_ship/header.css/.js, private tagline): the icon strip shows the best
+    Legendary / Very Rare set picks, from the icons embedded in this page. Falls back to the static banner image."""
+    if js is not None and payload is not None:
+        try:
+            import build_sets_ship as S
+            payload["hdr"], miss = S.header_cells(None, payload)
+            if miss:
+                print("  ! header strip: %s" % ", ".join(miss))
+            shell = S.header_html(shell, S.LOCKUP_PRIVATE, S.ALT_PRIVATE)
+            css += "\n" + open(os.path.join(S.SHIP_SRC, "header.css"), encoding="utf-8").read()
+            js = open(os.path.join(S.SHIP_SRC, "header.js"), encoding="utf-8").read() + "\n" + js
+            return shell, css, js
+        except (OSError, SystemExit, ImportError) as e:
+            print("  ! gilded header with the icon strip failed (%s) - static banner kept" % e)
+    shell, css = _gilded_banner(shell, css)
+    return (shell, css, js) if js is not None else (shell, css)
+
+
+def _gilded_banner(shell, css):
+    """The older static header: wide banner image (option1_sets_private.png), compact panel on phones."""
     try:
         wide = open(os.path.join(BRAND_DIR, "sets_header.webp"), "rb").read()
         mark = open(os.path.join(BRAND_DIR, "mark128.webp"), "rb").read()
@@ -1658,9 +1677,9 @@ def build(args):
                          "font-display:swap}\n" % (fam, fonts[fam_key], weight, style))
     # image CSS variables (each image once) - the page uses var(--img-<key>) or the IMG map
     img_json = json.dumps({k: A.uris[k] for k in A.uris}, separators=(",", ":"))
+    shell, css, js = gilded_header(shell, css, js, payload)   # adds payload["hdr"] (the header's icon strip)
     data_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
     n_items = len(items)
-    shell, css = gilded_header(shell, css)
     html = (shell.replace("/*@FONTS@*/", font_css)
                  .replace("/*@CSS@*/", css)
                  .replace("@IMAGES@", img_json.replace("</", "<\\/"))

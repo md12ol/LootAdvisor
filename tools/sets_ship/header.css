@@ -1,0 +1,87 @@
+/* ---- Gilded Panel header of the SHIPPED page (branding option 1; HANDOFF decisions 58 / 70).
+   Panel, frame and lockup are our own art (CSS + brand_lockup.webp); the inventory-icon strip on the right is built at
+   runtime from the player's own game icons (header.js). Wide: a 6:1 panel scaled like branding/option1_sets.png
+   (1 design px = --u); phones: the lockup over one row of icons. */
+.brand.gship { flex: 1 1 100%; }
+.brand.gship .brand-title { font-size: 0; line-height: 0; text-shadow: none; }
+.gp { --u: calc(100cqw / 1440); position: relative; display: block; width: 100%; max-width: 1440px; aspect-ratio: 6 / 1; margin: 0 auto;
+  overflow: hidden; border-radius: 3px; box-shadow: 0 6px 22px rgba(0,0,0,.55);
+  background: radial-gradient(ellipse 70% 80% at 28% 45%, #261e16 0%, #15100c 55%, #0a0806 100%); }
+.gp-wrap { container-type: inline-size; display: block; width: 100%; max-width: 1440px; margin: 0 auto; }
+.gp::after { content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .09; mix-blend-mode: overlay; z-index: 1;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 .9 0'/></filter><rect width='100%' height='100%' filter='url(%23n)'/></svg>"); }
+.gp-frame { position: absolute; inset: calc(10 * var(--u)); border: 1px solid #6e5634; pointer-events: none; z-index: 4; }
+.gp-frame::before { content: ""; position: absolute; inset: calc(7 * var(--u)); border: 1px solid rgba(110, 86, 52, .45); }
+.gp-frame i { position: absolute; width: calc(10 * var(--u)); height: calc(10 * var(--u)); transform: translate(-50%, -50%) rotate(45deg);
+  background: linear-gradient(135deg, #fff0c8, #d2a253 50%, #7a5528); box-shadow: 0 0 0 calc(3 * var(--u)) #0f0b08; }
+.gp-frame i.c { background: conic-gradient(from 45deg, #ff4d4d, #ffb84d, #f5f54d, #4dff88, #4dd2ff, #6b6bff, #d24dff, #ff4d4d); }
+.gp-frame i.m { width: calc(6 * var(--u)); height: calc(6 * var(--u)); }
+.gp-lock { position: absolute; left: 0; top: 0; height: 100%; width: auto; max-width: none; z-index: 3; }
+/* the strip: an inventory grid, 7 columns x 3 rows (the third row cut by the panel), faded in from the left */
+.gp-strip { position: absolute; right: calc(44 * var(--u)); top: calc(30 * var(--u)); width: calc(620 * var(--u)); height: calc(180 * var(--u));
+  overflow: hidden; z-index: 2; -webkit-mask-image: linear-gradient(90deg, transparent, #000 30%); mask-image: linear-gradient(90deg, transparent, #000 30%); }
+.gp-strip .gc { position: absolute; width: calc(76 * var(--u)); height: calc(76 * var(--u)); font-size: calc(30 * var(--u)); }
+.gp-bar { position: absolute; right: calc(15 * var(--u)); top: calc(4 * var(--u)); bottom: 0; width: calc(4 * var(--u)); border-radius: 2px;
+  background: linear-gradient(#c9a46a, #8a6a3e); }
+.gp-bar::before { content: ""; position: absolute; left: 50%; top: 0; width: calc(10 * var(--u)); height: calc(10 * var(--u));
+  transform: translate(-50%, -30%) rotate(45deg); background: linear-gradient(135deg, #fff0c8, #d2a253 50%, #7a5528); }
+.gp-row { display: none; }
+/* one inventory cell: dark slot, rarity frame (the game's own art, back + front) or our rainbow frame, icon, stack count */
+.gc { display: block; border-radius: 3%; background: radial-gradient(circle at 50% 40%, #1d1813, #0b0907 75%); box-shadow: inset 0 0 0 1px rgba(90, 72, 50, .55); }
+.gc > img, .gc > .rb, .gc > .rf { position: absolute; inset: 0; width: 100%; height: 100%; }
+.gc > .rb, .gc > .rf { background-size: 100% 100%; }
+.gc > img { inset: 4%; width: 92%; height: 92%; object-fit: contain; z-index: 1; }
+.gc > .rf { z-index: 2; }
+.gc.la { box-shadow: none; }
+.gc.la::before { content: ""; position: absolute; inset: 0; border-radius: 3%; padding: 3%; z-index: 2;
+  background: conic-gradient(from 45deg, #ff4d4d, #ffb84d, #f5f54d, #4dff88, #4dd2ff, #6b6bff, #d24dff, #ff4d4d);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0); filter: drop-shadow(0 0 .12em rgba(255, 240, 200, .5)); }
+.gc > b { position: absolute; right: 6%; bottom: 0; z-index: 3; font-weight: 400; line-height: 1; color: #fff; letter-spacing: -.02em;
+  text-shadow: 0 0 2px #000, 0 1px 3px #000, 0 0 6px rgba(0,0,0,.9); font-variant-numeric: lining-nums; }
+.gc.wait { animation: gpPulse 1.6s ease-in-out infinite; }
+@keyframes gpPulse { 50% { background: radial-gradient(circle at 50% 40%, #2a2219, #0b0907 75%); } }
+@media (prefers-reduced-motion: reduce) { .gc.wait { animation: none; } }
+
+@media (max-width: 860px) {
+  .gp { aspect-ratio: auto; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding: 12px 16px 16px; }
+  .gp-frame { inset: 5px; }
+  .gp-frame::before { inset: 4px; }
+  .gp-frame i { width: 8px; height: 8px; box-shadow: 0 0 0 2px #0f0b08; }
+  .gp-frame i.m { width: 5px; height: 5px; }
+  .gp-lock { position: relative; height: auto; width: min(100%, 460px); margin-left: -8px; }
+  .gp-strip { display: none; }
+  .gp-row { position: relative; z-index: 2; display: flex; gap: 6px; width: 100%; overflow: hidden; padding: 2px 0 0 4px;
+    -webkit-mask-image: linear-gradient(90deg, #000 70%, transparent); mask-image: linear-gradient(90deg, #000 70%, transparent); }
+  .gp-row .gc { position: relative; flex: none; width: 52px; height: 52px; font-size: 19px; }
+}
+
+/* ---- "not live" card: the copy in the install folder, or the live copy before the mod wrote the game files */
+.offline { max-width: 760px; margin: 28px auto; padding: 22px 26px 20px; border: 1px solid var(--rule); border-radius: 4px;
+  background: linear-gradient(#211a14, #15100c); box-shadow: inset 0 0 0 4px #1a140f, inset 0 0 0 5px rgba(175,135,104,.3), 0 10px 30px rgba(0,0,0,.5);
+  font-size: var(--fs-m); line-height: 1.55;
+  font-family: 'Quadraat', 'Palatino Linotype', 'Book Antiqua', Georgia, serif; }   /* the game font if present, else a system serif - no embedded font */
+.offline h2 { margin: 0 0 10px; font-weight: 400; font-size: var(--fs-xl); line-height: 1.15; color: var(--title); text-wrap: balance; }
+.offline p { margin: 0 0 12px; }
+.offline em { color: var(--gold-hi); }
+.offline ol { margin: 0 0 16px; padding-left: 1.4em; }
+.offline li { margin: 0 0 6px; padding-left: 4px; }
+.offline li::marker { color: var(--gold); }
+.offline b { color: var(--title); font-weight: 700; }
+.off-lab { margin-bottom: 6px !important; font-size: var(--fs-xs); letter-spacing: .2em; text-transform: uppercase; color: var(--gold); }
+.off-path { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+.off-path input { flex: 1 1 320px; min-width: 0; font: 12px/1.3 Consolas, "Cascadia Mono", monospace; color: var(--parch); background: #0d0a08;
+  border: 1px solid var(--rule); border-radius: 4px; padding: 9px 10px; }
+.off-path .btn-pill { flex: none; }
+.off-hint { margin-top: 10px !important; font-size: var(--fs-s); color: var(--lore); }
+.off-wait { display: flex; align-items: center; gap: 8px; margin: 14px 0 0 !important; font-size: var(--fs-s); color: var(--gold-lo); }
+.off-wait .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 6px var(--warn); flex: none; }
+@media (max-width: 560px) { .offline { margin: 16px 0; padding: 16px; } }
+
+/* phones: the live indicator gets its own line above the two buttons (it pushed the buttons past the screen edge) */
+@media (max-width: 560px) {
+  .topbar .tools { flex-wrap: wrap; }
+  .topbar .tools .live { flex: 1 1 100%; min-width: 0; }
+}
+.body:has(#offline) { display: block; }
+.body:has(#offline) .setlist { display: none; }
