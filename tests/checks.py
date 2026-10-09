@@ -403,6 +403,213 @@ def check_owner_active_party_only(env):
     return fails
 
 
+# ==================================================================== 7-9. Sets page sheet + set validator
+def tool_module(env, name):
+    """tools/<name>.py of the root under test, imported fresh (a scratch copy may carry a mutation)."""
+    cache = env.__dict__.setdefault("_tool_modules", {})
+    if name not in cache:
+        import importlib.util
+        import sys
+        tools = os.path.join(env.root, "tools")
+        spec = importlib.util.spec_from_file_location(f"{name}_under_test_{abs(hash(tools))}",
+                                                      os.path.join(tools, name + ".py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, tools)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path.remove(tools)
+        cache[name] = mod
+    return cache[name]
+
+
+def sheet_data(env):
+    """(build_sets_artifact module, its Data) for the root under test."""
+    B = tool_module(env, "build_sets_artifact")
+    if "_sheet_D" not in env.__dict__:
+        B.BUILDS_LUA = env.builds_lua
+        env._sheet_D = B.Data()
+    return B, env._sheet_D
+
+
+def set_sheets(B, D, char, bk, b, BI, level=12):
+    """-> [(set label, sheet)] for every set of a build (same inputs as the page generator)."""
+    out = []
+    for act, sets in (b.get("sets") or {}).items():
+        for i, s in enumerate(sets):
+            its = {k: v for k, v in (s.get("items") or {}).items() if v and v.get("sid")}
+            IB = {v["sid"]: B.item_boosts(D, v["sid"]) for v in its.values()}
+            out.append((f"{char}.{bk} act {act} set {i + 1}", B.compute_sheet(D, BI, its, IB, level)))
+    return out
+
+
+def check_sheet_subclass_features(env):
+    """Sets page sheet: every build's subclasses carry the game's names, and the subclass features the sheet models
+    switch on for them (Hexblade: Hex Warrior attacks with CHA; Draconic Bloodline: Draconic Resilience HP;
+    College of Swords / Bladesinging 6: Extra Attack; Eldritch Knight / Arcane Trickster 3: INT spellcasting)."""
+    gd = gamedata.load()
+    B, D = sheet_data(env)
+    fails, n_subs, n_feat = [], 0, 0
+    for cls, key in getattr(B, "SHEET_SUB", {}).values():
+        if key not in gd.subclass_names.get(cls, {}).values():
+            fails.append(f"sheet rule names {cls} subclass {key!r}, not a game subclass of {cls}")
+    with open(os.path.join(env.root, "tools", "sets_artifact", "app.js"), encoding="utf-8") as f:
+        for m in re.finditer(r'subCls\.(\w+)\s*===\s*"([^"]+)"', f.read()):
+            fails.append(f"app.js compares the {m.group(1)} subclass with the literal {m.group(2)!r} "
+                         "(use RULES.subs: the game's internal subclass names)")
+    for char, d in env.scores().items():
+        for bk, b in d["builds"].items():
+            BI = B.build_input(D, char, d.get("race"), bk, b)
+            internal = {}
+            for s_ in BI["subs"]:
+                n_subs += 1
+                game = gd.subclass_names.get(s_["cls"], {})
+                if s_["n"] not in game:
+                    fails.append(f"{char}.{bk}: sheet subclass {s_['cls']} {s_['n']!r} is not a game name "
+                                 f"({sorted(game)})")
+                else:
+                    internal[s_["cls"]] = game[s_["n"]]
+            lv = dict(b.get("classes") or {})
+            want = {"hexblade": internal.get("Warlock") == "Hexblade",
+                    "draconic": internal.get("Sorcerer") == "DraconicBloodline",
+                    "extra_attack": (internal.get("Bard") == "SwordsCollege" and lv.get("Bard", 0) >= 6) or
+                                    (internal.get("Wizard") == "BladesingingSchool" and lv.get("Wizard", 0) >= 6),
+                    "int_caster": (internal.get("Fighter") == "EldritchKnight" and lv.get("Fighter", 0) >= 3) or
+                                  (internal.get("Rogue") == "ArcaneTrickster" and lv.get("Rogue", 0) >= 3)}
+            if not any(want.values()):
+                continue
+            for label, sh in set_sheets(B, D, char, bk, b, BI):
+                n_feat += 1
+                if want["draconic"] and not any("Draconic Resilience" in x for x in sh["F"]["hp"]):
+                    fails.append(f"{label}: Draconic Bloodline but no Draconic Resilience in the HP ({sh['F']['hp']})")
+                if want["extra_attack"] and sh["nAtt"] < 2:
+                    fails.append(f"{label}: subclass Extra Attack missing ({sh['nAttF']})")
+                if want["int_caster"] and not (sh.get("spell") and "INT" in json.dumps(sh["spell"])):
+                    fails.append(f"{label}: INT spellcasting subclass but no INT spell row")
+                if want["hexblade"]:
+                    M = sh["mods"]
+                    for a in sh["attacks"]:
+                        rec = D.items.get(a["sid"]) or {}
+                        props = (rec.get("weapon") or {}).get("properties") or []
+                        own = M["DEX"] if a["ranged"] else max(M["STR"], M["DEX"]) if "Finesse" in props else M["STR"]
+                        proficient = any(x.startswith("proficiency") for x in a["hitf"])
+                        if proficient and M["CHA"] > own and not a["hitf"][0].startswith("CHA"):
+                            fails.append(f"{label}: Hexblade, CHA {M['CHA']:+d} > {own:+d}, yet {a['n']} attacks "
+                                         f"with {a['hitf'][0]!r} (Hex Warrior)")
+    env.counts["build subclasses"] = n_subs
+    env.counts["sets with a modelled subclass feature"] = n_feat
+    if n_subs == 0 or n_feat == 0:
+        fails.append(f"nothing checked: {n_subs} subclasses, {n_feat} sets with a modelled subclass feature")
+    return fails
+
+
+def _weapon_riders(gd, rec):
+    """The weapon's own unconditional damage riders [(amount, type)] from the game stats: WeaponDamage(...) in the
+    weapon's boosts and in its root templates' statuses (Balduran's Giantslayer: StrengthModifier Slashing)."""
+    st = gd.stats.get(rec["stats_id"]) or {}
+    texts = [st.get("DefaultBoosts") or "", st.get("Boosts") or ""]
+    for status in ((rec.get("boosts_raw") or {}).get("TemplateStatusList") or "").split(";"):
+        texts.append((gd.stats.get(status.strip()) or {}).get("Boosts") or "")
+    out = []
+    for t in texts:
+        for part in t.split(";"):
+            m = re.fullmatch(r"\s*WeaponDamage\(\s*([^,()]+?)\s*,\s*(\w+)[^()]*\)\s*", part)
+            if m:
+                out.append((m.group(1), m.group(2)))
+    return out
+
+
+def check_sheet_weapon_riders(env):
+    """Sets page sheet: each weapon's own damage riders count exactly once in its attack row - dice riders and
+    stat / number riders (Balduran's Giantslayer adds the Strength modifier). Every weapon with a rider, held alone
+    by the first build."""
+    gd = gamedata.load()
+    B, D = sheet_data(env)
+    char, d = next(iter(env.scores().items()))
+    bk, b = next(iter(d["builds"].items()))
+    BI = B.build_input(D, char, d.get("race"), bk, b)
+    abil = {"Strength": "STR", "Dexterity": "DEX", "Constitution": "CON", "Intelligence": "INT", "Wisdom": "WIS",
+            "Charisma": "CHA"}
+    fails, n_w, n_stat = [], 0, 0
+    for sid, rec in sorted(D.items.items()):
+        if not rec.get("weapon"):
+            continue
+        riders = _weapon_riders(gd, rec)
+        if not riders:
+            continue
+        n_w += 1
+        slot = "Ranged" if rec.get("slot") == "Ranged Main Weapon" else "MainHand"
+        sh = B.compute_sheet(D, BI, {slot: {"sid": sid}}, {sid: B.item_boosts(D, sid)}, 12)
+        row = next((a for a in sh["attacks"] if a["slot"] == slot), None)
+        if not row:
+            fails.append(f"{sid}: no attack row")
+            continue
+        for amount, typ in riders:
+            if re.fullmatch(r"\d+d\d+", amount):
+                hits = [x for x in row["dmgf"] if x.startswith(f"{amount} {typ} ")]
+                what = f"{amount} {typ}"
+            else:
+                m = re.fullmatch(r"(\w+?)Modifier", amount)
+                n = sh["mods"][abil[m.group(1)]] if m and m.group(1) in abil else \
+                    int(amount) if re.fullmatch(r"-?\d+", amount) else None
+                if n is None:
+                    continue
+                n_stat += 1
+                if n == 0:
+                    continue
+                hits = [x for x in row["dmgf"] if x.startswith("%+d %s" % (n, typ))]
+                what = "%+d %s (%s)" % (n, typ, amount)
+            if len(hits) != 1:
+                fails.append(f"{rec.get('name') or sid}: rider {what} counted {len(hits)} times ({row['dmgf']})")
+    env.counts["weapons with riders"] = n_w
+    env.counts["stat / number riders"] = n_stat
+    if n_w == 0 or n_stat == 0:
+        fails.append(f"nothing checked: {n_w} weapons with riders, {n_stat} stat / number riders")
+    return fails
+
+
+def check_ranged_offhand_hand_crossbow(env):
+    """Only hand crossbows can be dual-wielded as ranged weapons: the set validator (score_items.slot_ok) refuses any
+    other ranged weapon in the ranged off hand, and every current set's ranged off hand (and its main) is one.
+    Hand crossbow = the game's weapon Proficiency Group HandCrossbows."""
+    gd = gamedata.load()
+    S = tool_module(env, "score_items")
+    items = env.items_all()
+
+    def handxbow(sid):
+        return "HandCrossbows" in str((gd.stats.get(sid) or {}).get("Proficiency Group") or "")
+    ranged = sorted(sid for sid, r in items.items() if r.get("slot") == "Ranged Main Weapon" and r.get("weapon"))
+    hx = [s for s in ranged if handxbow(s)]
+    other = [s for s in ranged if not handxbow(s)]
+    fails, n_val, n_sets = [], 0, 0
+    if hx:
+        for sid in hx + other:
+            for chosen in ({}, {"Ranged": {"sid": hx[0]}}):
+                n_val += 1
+                ok = S.slot_ok(sid, "RangedOff", dict(chosen), items)
+                if ok != handxbow(sid):
+                    fails.append(f"validator: {items[sid].get('name') or sid} in the ranged off hand "
+                                 f"{'allowed' if ok else 'refused'} (next to {chosen or 'nothing'})")
+    for char, d in env.scores().items():
+        for bk, b in d["builds"].items():
+            for act, sets in (b.get("sets") or {}).items():
+                for i, s in enumerate(sets):
+                    its = s.get("items") or {}
+                    if not (its.get("RangedOff") or {}).get("sid"):
+                        continue
+                    n_sets += 1
+                    for slot in ("RangedOff", "Ranged"):
+                        sid = (its.get(slot) or {}).get("sid")
+                        if sid and not handxbow(sid):
+                            fails.append(f"{char}.{bk} act {act} set {i + 1}: {slot} {sid} is not a hand crossbow "
+                                         "but the ranged off hand is used")
+    env.counts["validator cases"] = n_val
+    env.counts["sets with a ranged off hand"] = n_sets
+    if not hx or not other or n_val == 0:
+        fails.append(f"nothing checked: {len(hx)} hand crossbows, {len(other)} other ranged weapons")
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -411,4 +618,7 @@ CHECKS = [
     ("list-only items: no frame, no tooltip text", check_list_only_no_frame_no_text, False),
     # expected to fail until Logic.lua ownerAvailable uses the active party (decision 63, Mods/ change pending)
     ("contested owners: active party only (page = F6)", check_owner_active_party_only, True),
+    ("sets page sheet: subclass features under the game's subclass names", check_sheet_subclass_features, False),
+    ("sets page sheet: weapon damage riders (dice and stat) counted once", check_sheet_weapon_riders, False),
+    ("ranged off hand: hand crossbows only (validator + sets)", check_ranged_offhand_hand_crossbow, False),
 ]

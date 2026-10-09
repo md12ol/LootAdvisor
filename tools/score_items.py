@@ -53,9 +53,10 @@ SCORING FORMULA (per item, build, act) - simple general rules, no item-specific 
 
   sets   research seed sets (alternatives "A or B" only stand in for A), then generated: best-scored loadout
          and theme sets that reach 85% of its score; never a near-copy of another set. Every set is legal:
-         two-handed / Duellist mains keep the off hand empty, dual wielding needs two Light weapons, an off-hand
-         hand crossbow needs a hand crossbow main, "no armour / no shield" items never sit next to armour /
-         a shield, and no two items whose story conditions exclude each other (conditions.md families).
+         two-handed / Duellist mains keep the off hand empty, dual wielding needs two Light weapons, the ranged
+         off hand takes only a hand crossbow (and needs a hand crossbow main), "no armour / no shield" items never
+         sit next to armour / a shield, and no two items whose story conditions exclude each other (conditions.md
+         families).
          Items that cost an origin companion are left out. Conditioned items get a fallback; unique items and
          scarce materials get a party owner (owners.json) and a party alternative for the other characters.
 """
@@ -2075,6 +2076,8 @@ def slot_ok(sid, slot, chosen, items):
             return False
         if to["weapon"] and not (me["light"] and to["light"]):
             return False
+    if slot == "RangedOff" and not me["handxbow"]:
+        return False          # only hand crossbows can be dual-wielded as ranged weapons
     if slot == "RangedOff" and other.get("Ranged") and not traits(other["Ranged"])["handxbow"]:
         return False
     if slot == "Ranged" and other.get("RangedOff") and not me["handxbow"]:
