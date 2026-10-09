@@ -826,7 +826,7 @@ def check_respec(out, sample=None):
             fails.append(f"{p['id']}: point buy {pb}")
         if sorted(rac.values()) != [1, 2]:
             fails.append(f"{p['id']}: racial bonus {rac}")
-        seq = [x["class"] for x in pl[1:]]
+        seq = [x["class"] for x in pl[1:]][:p["level"]]
         if seq != p["level_sequence"]:
             fails.append(f"{p['id']}: class sequence changed")
         if rs["tuned"]:
@@ -844,9 +844,6 @@ def check_respec(out, sample=None):
                         asi = {m2.group(2): 1} if m2.group(2) else {}
                         feats.append({"n": m2.group(1), "lv": x["level"], "asi": asi})
             BI = W.build_input(p["char"], p["build"])
-            for f in BI["feats"]:                         # ability picks after this level: the plan's
-                if f.get("lv") and f["lv"] > p["level"]:
-                    feats.append(dict(f))
             for f in feats:
                 for k, v in f["asi"].items():
                     base[k] += v

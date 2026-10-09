@@ -266,8 +266,9 @@ def tune(W, cid, bid, act, loadout, switches=None, max_evals=MAX_EVALS):
 
 
 def pick_list(sp, state, level):
-    """Exact per-level pick list for a respec: level 1 point buy + racial bonus, then each character level's class
-    and picks - the Builds.lua picks with the tuned feat / ASI and fighting-style picks put in their place."""
+    """Exact per-level pick list for a respec: level 0 = point buy + racial bonus, then every character level's
+    class and picks (all 12 levels; the set is tested at `level`) - the Builds.lua picks with the tuned feat / ASI,
+    fighting-style and cantrip picks in their place."""
     BI = sp.BI
     ba = sp.W.D.ba.get(sp.bid) or {}
     planned = [list(p) for _c, p in ba.get("levels") or []]
@@ -278,7 +279,7 @@ def pick_list(sp, state, level):
                     [f"Racial +2 {s['r2']}", f"Racial +1 {s['r1']}"]})
     style_i = 0
     cnt = {}
-    for i, c in enumerate(sp.seq[:level]):
+    for i, c in enumerate(sp.seq):
         lv = i + 1
         cnt[c] = cnt.get(c, 0) + 1
         picks = [p for p in (planned[i] if i < len(planned) else [])

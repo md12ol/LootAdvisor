@@ -334,7 +334,11 @@ def main():
     ap.add_argument("--no-switches", action="store_true")
     ap.add_argument("--ownership", default="party,free", help="variants to run: party, free or both")
     ap.add_argument("--no-tuning", action="store_true", help="skip the respec tuning and the test plans")
+    ap.add_argument("--plans-only", action="store_true",
+                    help="re-tune and re-export the test plans for the sets in .cache/optimized.json")
     a = ap.parse_args()
+    if a.plans_only:
+        return plans_only()
     if not odata.latest_scores_ready():
         print("note: data/scores/READY_FOR_MOD.txt missing - the pipeline may be mid-run")
     W = odata.World()
@@ -402,6 +406,35 @@ def main():
     bad = [s for s in out["sets"] if s["validation"]]
     print(f"\n{len(out['sets'])} optimized sets, {len(bad)} with validation issues; report {CACHE}/report.md")
     return 1 if bad else 0
+
+
+def plans_only():
+    """Respec tuning + test plans for the party optimizer sets and the research sets of an earlier run."""
+    W = odata.World()
+    with open(os.path.join(CACHE, "optimized.json"), encoding="utf-8") as f:
+        out = json.load(f)
+    out["plans"], out["tuning"] = [], []
+    for st in out["sets"]:
+        if st.get("ownership") != "party" or not st["id"].endswith(".opt"):
+            continue
+        cid, bid, act = st["char"], st["build"], st["act"]
+        lo = {k: v["sid"] for k, v in st["items"].items()}
+        plan, trow = tuned_plan(W, cid, bid, act, lo, st["id"], "optimizer", "party")
+        out["plans"].append(plan)
+        out["tuning"].append(trow)
+        st["model"]["respec_gain"] = trow["gain"]
+        for rs, rlo in research_loadouts(W, cid, bid, act, "free"):
+            plan, trow = tuned_plan(W, cid, bid, act, search.drop_illegal(W, rlo), rs.get("id") or rs.get("name"),
+                                    "research")
+            out["plans"].append(plan)
+            out["tuning"].append(trow)
+        print(st["id"], "tuned", flush=True)
+    with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
+    with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
+        json.dump(gauntlet.envelope(out["plans"], out["generated"]), f, indent=1, default=str)
+    write_report(out, os.path.join(CACHE, "report.md"))
+    return 0
 
 
 def merge_into(d, sets, yes_real):
