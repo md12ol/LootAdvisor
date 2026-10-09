@@ -4,8 +4,8 @@
 --   text = loca handles (Ext.Loca.GetTranslatedString), page = files copied from the pak (Mods/LootAdvisor/Page).
 LA = LA or {}
 LA.Ship = {
-  version = "c950b5d59069",
-  artVersion = "62fce1dadc67",
+  version = "b12b6a222418",
+  artVersion = "06c0e457bf42",
   page = { "Sets.html" },
   art = {
     "Public/Game/GUI/Assets/CharacterPanel/pane_body_bg_9s.DDS",
@@ -503,6 +503,15 @@ LA.Ship = {
     "Public/Game/GUI/AssetsLowRes/ClassIcons/Vengeance.DDS",
     "Public/Game/GUI/AssetsLowRes/ClassIcons/Warlock.DDS",
     "Public/Game/GUI/AssetsLowRes/ClassIcons/Wizard.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_LOOT_SCROLL_Shatter.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_WPN_HUM_Handaxe_A_1.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_CONS_Potion_Healing_A.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_CONS_Potion_Healing_A_Greater.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_LOOT_GEN_Goblet_Rich_Large_A.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_GRN_Bomb_A.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_CONS_Potion_Healing_A_Superior.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_LOOT_SCROLL_Longstrider.DDS",
+    "Public/Game/GUI/Assets/ControllerUIIcons/items_png/Item_LOOT_GEN_Throwable_Grenade_Confusion_A.DDS",
     "Public/Game/GUI/Assets/Fonts/QuadraatOffcPro/QuadraatOffcPro.ttf",
     "Public/Game/GUI/Assets/Fonts/QuadraatOffcPro/QuadraatOffcPro-Bold.ttf",
     "Public/Game/GUI/Assets/Fonts/QuadraatOffcPro/QuadraatOffcPro-Italic.ttf",

@@ -3,6 +3,7 @@
 
     python tools/build_sets_ship.py            # -> Mods/LootAdvisor/Page/Sets.html + Shared/ShipManifest.lua
     python tools/build_sets_ship.py --check    # also print the leak report (game text left in the page)
+    python tools/build_sets_ship.py --release [DIR]   # also write DIR/Page/Sets.html (install folder copy)
 
 What ships (our own data): set lists, scores, ids, our why / how-to texts, conditions, the sheet rules, the page code,
 and a MANIFEST of game files (paths only) plus loca handles. What does NOT ship: icons, frames, portraits, UI art, the
@@ -371,6 +372,66 @@ def iter_strings(o):
         yield o
 
 
+# ------------------------------------------------------------------------------------------------ header
+# Gilded Panel header (branding option 1, HANDOFF decisions 58 / 70): our lockup image + CSS panel; the inventory strip
+# on the right is filled at runtime from the player's own game icons. Cells by game ICON NAME (row major, 7 columns,
+# the third row is cut by the panel like in branding/LootAdvisor/option1_sets.png): [icon, frame, stack count].
+# frame "auto" = the rarity of the page item with that icon; "la" = our rainbow frame; "" = none.
+# Gear icons are page items (already in the art list); the consumables add ~10 controller icons (~21 KB each).
+HDR_COLS = 7
+HDR_CELLS = [
+    ("Item_MAG_OfTheDevout_Amulet", "auto", 0), ("Item_LOOT_SCROLL_Shatter", "rare", 0),
+    ("Item_WPN_HUM_Handaxe_A_1", "", 11), ("Item_CONS_Potion_Healing_A", "", 30),
+    ("Item_MAG_TheBulwark_Shield", "auto", 0), ("Item_ALCH_Solution_Elixir_ArcaneAcuity", "", 9),
+    ("Item_CONS_Potion_Healing_A_Greater", "", 12),
+    ("Item_LOOT_GEN_Goblet_Rich_Large_A", "", 2), ("Item_MAG_Cleric_Devotees_Mace_GLOW", "la", 0),
+    ("Item_MAG_TheChromatic_Staff", "la", 0), ("Item_MAG_SHA_SeluneBlessing_Spear_GLOW", "la", 0),
+    ("Item_GRN_Bomb_A", "", 8), ("Item_CONS_Potion_Healing_A_Superior", "", 8),
+    ("Item_ALCH_Solution_Elixir_Enlarge", "", 5),
+    ("Item_MAG_TheVictory_Longbow", "auto", 0), ("Generated_MAG_WYRM_OfBalduran_Helmet_Magic", "auto", 0),
+    ("Item_LOOT_SCROLL_Longstrider", "uncommon", 0), ("Item_MAG_TheCrimson_Shortsword", "auto", 0),
+    ("Item_LOOT_GEN_Throwable_Grenade_Confusion_A", "", 4), ("Item_MAG_TheDueller_Rapier", "auto", 0),
+    ("Item_MAG_Infernal_Plate_Armor", "auto", 0),
+]
+HDR_PHONE = [8, 3, 9, 4, 10, 11, 0, 6]   # one row on phones (cell indexes)
+RARITY_KEY = {"Uncommon": "uncommon", "Rare": "rare", "VeryRare": "veryrare", "Legendary": "legendary", "Story": "story"}
+LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_lockup.py (our own art)
+
+
+def header_cells(A, payload):
+    by_icon = {}
+    for it in payload["items"].values():
+        if it.get("icon"):
+            by_icon.setdefault(it["icon"], it.get("r"))
+    cells, missing = [], []
+    for name, frame, count in HDR_CELLS:
+        key = A.icon(name, "item", 96)
+        if not key:
+            missing.append(name)
+            key = ""
+        if frame == "auto":
+            frame = RARITY_KEY.get(by_icon.get(key), "")
+        cells.append([key, frame, count])
+    return {"cols": HDR_COLS, "cells": cells, "phone": HDR_PHONE}, missing
+
+
+def header_html(shell):
+    import base64
+    lock = base64.b64encode(open(LOCKUP, "rb").read()).decode("ascii")
+    old = re.search(r'<div class="brand">.*?</div>', shell, re.S)
+    if not old:
+        raise SystemExit("shell.html brand block not found - update build_sets_ship.header_html")
+    new = ('<div class="brand gship">\n      <h1 class="brand-title"><span class="gp-wrap"><span class="gp">'
+           '<span class="gp-frame" aria-hidden="true"><i class="c" style="left:0;top:0"></i><i class="c" style="left:100%;top:0"></i>'
+           '<i class="c" style="left:0;top:100%"></i><i class="c" style="left:100%;top:100%"></i>'
+           '<i class="m" style="left:50%;top:0"></i><i class="m" style="left:50%;top:100%"></i></span>'
+           '<img class="gp-lock" src="data:image/webp;base64,@LOCK@" width="659" height="240" '
+           'alt="Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live">'
+           '<span class="gp-strip" id="gpStrip" aria-hidden="true"></span><span class="gp-row" id="gpRow" aria-hidden="true"></span>'
+           '</span></span></h1>\n    </div>').replace("@LOCK@", lock)
+    return shell[:old.start()] + new + shell[old.end():]
+
+
 # ------------------------------------------------------------------------------------------------ build
 def lua_str(s):
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -397,6 +458,11 @@ def build(args):
                     it["ot"] = ot
     except OSError:
         pass
+
+    # ---- header strip icons (before the manifest, so the mod writes them with the other art)
+    payload["hdr"], hdr_missing = header_cells(A, payload)
+    if hdr_missing:
+        print("  ! header icons not in this game install (cells stay empty): %s" % ", ".join(hdr_missing))
 
     # ---- art manifest: keys -> path index + box (the page builds IMG[key] from the decoded textures)
     paths, pidx = [], {}
@@ -441,6 +507,9 @@ def build(args):
     app = open(os.path.join(B.TEMPLATE, "app.js"), encoding="utf-8").read()
     dds = open(os.path.join(SHIP_SRC, "dds.js"), encoding="utf-8").read()
     ship = open(os.path.join(SHIP_SRC, "ship.js"), encoding="utf-8").read()
+    hdr_js = open(os.path.join(SHIP_SRC, "header.js"), encoding="utf-8").read()
+    css += "\n" + open(os.path.join(SHIP_SRC, "header.css"), encoding="utf-8").read()
+    shell = header_html(shell)
     payload["generated"] = time.strftime("%Y-%m-%d %H:%M")
     payload["ship"] = 1
     data_json = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).replace("</", "<\\/")
@@ -450,7 +519,7 @@ def build(args):
                  .replace("/*@CSS@*/", css)
                  .replace("@IMAGES@", "{}")
                  .replace("@DATA@", data_json)
-                 .replace("/*@JS@*/", "window.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + ship))
+                 .replace("/*@JS@*/", "window.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + hdr_js + "\n" + ship))
     html = html.replace("@LOADING@", '<span class="prep" id="prep">Preparing the page from your game files...'
                         '<span class="bar"><i></i></span></span>')
     page = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
@@ -460,6 +529,14 @@ def build(args):
     with open(os.path.join(PAGE_DIR, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
         f.write(page)
     ver = hashlib.md5(page.encode("utf-8")).hexdigest()[:12]
+    if args.release:
+        # install-folder copy (decision 82): the same single file - header, logo and our art are inside it; opened
+        # there (no game files next to it) it shows the "load a save once, then open the live page" card
+        rel = os.path.join(args.release, "Page")
+        os.makedirs(rel, exist_ok=True)
+        with open(os.path.join(rel, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
+            f.write(page)
+        print("  release copy: %s" % os.path.join(rel, "Sets.html"))
 
     # ---- Lua manifest for the mod
     handles = sorted({h for h, _ in TT.T})
@@ -505,4 +582,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--no-fonts", action="store_true")
+    ap.add_argument("--release", metavar="DIR", nargs="?", const=os.path.join(REPO, "LootAdvisor"),
+                    help="also write DIR/Page/Sets.html (default DIR: the install folder LootAdvisor/LootAdvisor)")
     build(ap.parse_args())
