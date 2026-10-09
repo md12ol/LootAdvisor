@@ -15,7 +15,7 @@ import lz4.block
 import lz4.frame
 import zstandard
 
-GAME_DATA = r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\Data"
+from game_paths import GAME_DATA  # noqa: E402  game install: env BG3_DIR or the default Steam folder
 
 
 class Entry:

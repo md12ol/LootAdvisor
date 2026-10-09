@@ -10,7 +10,7 @@ Neither ever deletes anything: files are copied, or moved aside into an archive 
 | All profiles and saves, profile `.lsf` files, `modsettings.lsx` | `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\PlayerProfiles\` | `PlayerProfiles\` |
 | Installed mods (`.pak`) | `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods\` | `Mods\` |
 | Script Extender folder (mod config, Lua, probe/scan files) | `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\` | `ScriptExtender\` |
-| Script Extender settings | `D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin\ScriptExtenderSettings.json` | `ScriptExtenderSettings\` |
+| Script Extender settings | `<game>\bin\ScriptExtenderSettings.json` (game folder: env `BG3_DIR`, see `tools/game_paths.py`) | `ScriptExtenderSettings\` |
 
 Files bigger than 50 MB in the Script Extender folder are skipped and listed (there are none today; the SE logs
 go to `BuildAdvisor\se-logs\`, which is not part of the backup). Size today: about 3.0 GB (441 files).

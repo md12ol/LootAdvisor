@@ -14,7 +14,8 @@ import sys
 import xml.etree.ElementTree as ET
 
 LA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GAME_DATA = r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\Data"
+sys.path.insert(0, os.path.join(LA, "tools"))
+from game_paths import GAME_DATA  # noqa: E402  install location only (env BG3_DIR), no game logic
 # load order of the game modules that define classes (a later definition with the same UUID replaces the earlier)
 MODULES = [("Shared.pak", "Shared"), ("Shared.pak", "SharedDev"), ("Gustav.pak", "Gustav"),
            ("Gustav.pak", "GustavDev"), ("GustavX.pak", "GustavX")]
