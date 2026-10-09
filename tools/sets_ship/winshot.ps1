@@ -33,7 +33,6 @@ function Front([IntPtr]$h) {
   [WS]::keybd_event(0x12, 0, 0, [UIntPtr]::Zero); [WS]::keybd_event(0x12, 0, 2, [UIntPtr]::Zero)   # Alt tap: allows SetForegroundWindow
   [WS]::ShowWindow($h, 9) | Out-Null; [WS]::BringWindowToTop($h) | Out-Null; [WS]::SetForegroundWindow($h) | Out-Null
 }
-& "$PSScriptRoot\..\..\..\tools\bg3drive\minclaude.ps1" | Out-Null
 $game = Find "Baldur's Gate 3 (" "bg3_dx11"
 if ($ShowGame) { if ($game -ne [IntPtr]::Zero) { Front $game } }
 else {
@@ -45,4 +44,4 @@ else {
   if ($Key) { Start-Sleep -Milliseconds 300; [WS]::keybd_event([byte]$Key, 0, 0, [UIntPtr]::Zero); [WS]::keybd_event([byte]$Key, 0, 2, [UIntPtr]::Zero) }
 }
 Start-Sleep -Milliseconds $WaitMs
-if ($Out) { & "$PSScriptRoot\..\..\..\tools\bg3drive\crop.ps1" -Out $Out -MaxW 4000 | Out-Null; $Out }
+if ($Out) { & "$PSScriptRoot\..\..\..\BG3Tools\tools\testing\screenshot.ps1" -Out $Out -MaxW 4000 | Out-Null; $Out }
