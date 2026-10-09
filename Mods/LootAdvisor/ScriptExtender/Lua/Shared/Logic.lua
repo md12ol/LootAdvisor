@@ -119,10 +119,11 @@ end
 local function ownerAvailable(c, state)
   if c == "darkurge" then return state.durge end
   local cs = state.comp and state.comp[c]
-  return cs ~= nil and cs.team and not cs.dead
+  -- decision 63: contested owners only among the ACTIVE party (a camp companion never takes an item away)
+  return cs ~= nil and cs.team and cs.party == true and not cs.dead
 end
 
--- state = { act, region, durge, paths={x="yes"/"no"}, comp={c={team,dead}}, owned={[stats id]=n},
+-- state = { act, region, durge, paths={x="yes"/"no"}, comp={c={team,party,dead}}, owned={[stats id]=n},
 --           markerPos={[markerId]={x,y,z,live}} }
 function L.Recommend(charKey, ctx, state, baPick, baOrder)
   local res = { char = charKey, name = ctx.name, act = state.act, region = state.region, rows = {}, markers = {},
