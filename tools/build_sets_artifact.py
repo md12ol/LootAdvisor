@@ -1668,6 +1668,9 @@ def build(args):
                  .replace("/*@JS@*/", js))
     html = html.replace("@LOADING@", "Loading %d sets and %d items with their game icons (%.1f MB)..." % (
         n_sets, n_items, len(html.encode("utf-8")) / 1e6))
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from model3d.sets_adapter import inject_3d  # optional 3D models (artifact/3d/, built by model3d/build_parts.py)
+    html = inject_3d(html)
     os.makedirs(OUT_DIR, exist_ok=True)
     out = os.path.join(OUT_DIR, "sets.html")
     with open(out, "w", encoding="utf-8", newline="\n") as f:
