@@ -1,0 +1,128 @@
+# Releases (release-please). On every push to main, release-please keeps one open "chore: release vX.Y.Z" PR with the
+# next version and the CHANGELOG.md entry built from the Conventional Commit messages. Nothing is tagged until that PR
+# is merged; then it creates the tag and the GitHub Release, and the build job attaches <Mod>-<X.Y.Z>.zip (version
+# stamped into meta.lsx, pak built, package checked against INSTALL.md). The Nexus job runs only when the secret
+# NEXUS_API_KEY and the variables NEXUS_MOD_ID and NEXUS_FILE_ID are set (README "Releases").
+# Manual run (workflow_dispatch): rebuild and re-attach the zip of an EXISTING tag; it never creates a tag.
+name: Release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to rebuild, e.g. v0.9.0"
+        required: true
+concurrency:
+  group: release
+  cancel-in-progress: false
+env:
+  # the mod and its player package, in one place (repo layout may move: change only these; the mod source path
+  # lives in BG3Tools tools/build_pak.py)
+  MOD: LootAdvisor
+  MOD_NAME: Loot Advisor
+  PACKAGE_DIR: LootAdvisor        # the package directory the build step produces (relative to this repo)
+  SIBLINGS: BuildAdvisor BG3Tools
+
+jobs:
+  release-please:
+    name: release-please
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      release_created: ${{ steps.rp.outputs.release_created }}
+      tag_name: ${{ steps.rp.outputs.tag_name }}
+    steps:
+      - id: rp
+        uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+
+  package:
+    name: package
+    needs: release-please
+    if: ${{ !cancelled() && (needs.release-please.outputs.release_created == 'true' || github.event_name == 'workflow_dispatch') }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      nexus: ${{ steps.nexus.outputs.enabled }}
+    steps:
+      - name: Version
+        id: ver
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
+        run: |
+          v="${TAG#v}"
+          [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag must be vX.Y.Z, got '$TAG'"; exit 1; }
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: ${{ env.MOD }}
+          ref: v${{ steps.ver.outputs.version }}
+      - name: Check out sibling repos (main)
+        run: |
+          for r in $SIBLINGS; do git clone -q --depth 1 "https://github.com/md12ol/$r.git" "$r"; done
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Stamp version, build the pak and the package
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          python BG3Tools/tools/ci_release.py stamp "$MOD" "$V"
+          python BG3Tools/tools/build_pak.py "$MOD"
+      - name: Zip the package and check it against INSTALL.md
+        env:
+          V: ${{ steps.ver.outputs.version }}
+        run: python BG3Tools/tools/ci_release.py zip "$MOD" "$V" "$MOD/$PACKAGE_DIR" out
+      - name: Attach the zip to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.version }}
+        run: gh release upload "v$V" "out/$MOD-$V.zip" --repo "$GITHUB_REPOSITORY" --clobber
+      - name: Nexus upload configured?
+        id: nexus
+        env:
+          HAS_KEY: ${{ secrets.NEXUS_API_KEY != '' }}
+          MOD_ID: ${{ vars.NEXUS_MOD_ID }}
+          FILE_ID: ${{ vars.NEXUS_FILE_ID }}
+        run: |
+          if [ "$HAS_KEY" = true ] && [ -n "$MOD_ID" ] && [ -n "$FILE_ID" ]; then e=true; else e=false
+            echo "Nexus upload skipped: set secret NEXUS_API_KEY and variables NEXUS_MOD_ID, NEXUS_FILE_ID" >> "$GITHUB_STEP_SUMMARY"; fi
+          echo "enabled=$e" >> "$GITHUB_OUTPUT"
+
+  nexus:
+    name: nexus upload
+    needs: package
+    if: ${{ !cancelled() && needs.package.outputs.nexus == 'true' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      V: ${{ needs.package.outputs.version }}
+    steps:
+      - name: Fetch the release zip and notes
+        id: get
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "v$V" --repo "$GITHUB_REPOSITORY" --pattern "$MOD-$V.zip"
+          { echo "notes<<EOF_NOTES"; gh release view "v$V" --repo "$GITHUB_REPOSITORY" --json body --jq .body; echo "EOF_NOTES"; } >> "$GITHUB_OUTPUT"
+      - uses: Nexus-Mods/upload-action@c96019556046053aa26044b44396cd38929daf23 # v1.0.0-beta.10
+        with:
+          api_key: ${{ secrets.NEXUS_API_KEY }}
+          mod_id: ${{ vars.NEXUS_MOD_ID }}
+          file_id: ${{ vars.NEXUS_FILE_ID }}
+          filename: ${{ env.MOD }}-${{ env.V }}.zip
+          version: ${{ env.V }}
+          display_name: ${{ env.MOD_NAME }} ${{ env.V }}
+          changelog: ${{ steps.get.outputs.notes }}
+          archive_existing_version: "true"
+          update_mod_version: "true"

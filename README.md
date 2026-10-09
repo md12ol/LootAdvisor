@@ -54,3 +54,39 @@ Some tools read Build Advisor's build list from the sibling repository `../Build
 
 The paks contain textures we recoloured from the game's own frame and marker textures (Larian's modding terms; the
 mod is free).
+
+## Releases
+Versions are SemVer tags `vX.Y.Z`; the first release is `v0.9.0` (set by `release-as` in
+`release-please-config.json`; delete that line once v0.9.0 is out). The release workflow
+(`.github/workflows/release.yml`) runs release-please on every push to `main`: it keeps one open pull request
+"chore: release vX.Y.Z" with the next version and the `CHANGELOG.md` entry built from the Conventional Commit
+messages. **Nothing is tagged until you merge that PR.** Merging it creates the tag and the GitHub Release; the
+workflow then stamps the version into `meta.lsx` (Version64), builds the pak, zips the player package as
+`LootAdvisor-X.Y.Z.zip`, checks the zip against `INSTALL.md` and attaches it to the Release. A manual run of the workflow
+(`gh workflow run release.yml -f tag=vX.Y.Z`) rebuilds and re-attaches the zip of an existing tag.
+The release PR is opened by the workflow token, so GitHub does not run CI on it: merge it as an admin (branch
+protection lets admins through) after checking the CHANGELOG.
+
+**Nexus Mods upload** (optional, skipped until configured) uses Nexus Mods' official
+[upload-action](https://github.com/Nexus-Mods/upload-action) and Upload API. Setup, once the mod page exists:
+1. Create the mod page on Nexus Mods and upload the first file by hand (the API adds new *versions* of an existing
+   file).
+2. Note the mod ID (in the page URL) and the file ID (Files tab, "Advanced", or the Manage Files edit menu).
+3. Create an API key at <https://www.nexusmods.com/settings/api-keys>.
+4. In this repository: `gh secret set NEXUS_API_KEY`, `gh variable set NEXUS_MOD_ID --body <mod id>`,
+   `gh variable set NEXUS_FILE_ID --body <file id>`.
+From then on every release also uploads the zip to Nexus as a new version of that file (the old version is archived,
+the Release notes become the Nexus changelog).
+
+## Contributing
+- **One branch per task**, named after its topic (`ci-setup`, `sets-page-header`, ...), cut from `main`. Nobody
+  commits to `main` directly: it is protected and only takes pull requests.
+- **Commits and PR titles use [Conventional Commits](https://www.conventionalcommits.org/)**: `feat:`, `fix:`,
+  `docs:`, `chore:`, `refactor:`, `test:`, `ci:` (`feat!:` for a breaking change). A commit message is a subject line
+  plus at most one body line. No co-author, "generated with" or other attribution lines.
+- Open a pull request to `main` (`gh pr create`); the CI checks (`lint`, `tests`, `pr-title`) must be green. CI checks out the sibling
+  repositories side by side and uses their branch of the same name when it exists, else `main`.
+- Merge with **"Create a merge commit"** (`gh pr merge --merge`, i.e. `--no-ff`); squash and rebase merges are off so
+  the branch history stays readable. The PR title becomes the merge commit subject.
+- Tests that need the game's data run locally only: install the shared pre-push hook once
+  (`bash .claude/bin/install_githooks.sh` in the BG3Mods folder); it runs the full suite before every push.

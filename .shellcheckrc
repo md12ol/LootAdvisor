@@ -1,0 +1,2 @@
+# SC1017: some scripts are CRLF on purpose (bot/attempt.sh, bot/recover.sh, tools/ev.sh run from Windows tools)
+disable=SC1017
