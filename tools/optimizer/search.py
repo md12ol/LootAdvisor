@@ -13,6 +13,8 @@ Legality (same rules as the set builder, tools/score_items.py):
   - party ownership (OWNERSHIP): "party" = a unique item (or a scarce-material item) whose party owner is another
     character is not available (owners.json); "free" = the owner gives it up (every item available).
 """
+import copy
+
 import odata
 import model
 
@@ -41,14 +43,15 @@ def allowed(W, cid, bid, sid, scorer, ownership="party"):
     return ok, why
 
 
-def candidates(W, cid, bid, act, ownership="party"):
-    """{slot: [sid, ...]} every legal, obtainable item per slot for this build and act."""
+def candidates(W, cid, bid, act, ownership="party", deny=()):
+    """{slot: [sid, ...]} every legal, obtainable item per slot for this build and act, minus `deny` (unique items
+    the party gave to other characters)."""
     scorer = W.scorer(cid, bid)
     plan = model.PLANS.get(bid, {})
     prof = W.build_entry(cid, bid).get("profile") or {}
     out = {s: [] for s in ORDER}
     for sid, u in W.universe.items():
-        if not W.obtainable(sid, act):
+        if sid in deny or not W.obtainable(sid, act):
             continue
         ok, why = allowed(W, cid, bid, sid, scorer, ownership)
         if not ok:
@@ -101,12 +104,12 @@ def drop_illegal(W, loadout):
 
 
 class Searcher:
-    def __init__(self, W, cid, bid, act, switches=None, beam=8, keep=14, log=None, ownership="party"):
+    def __init__(self, W, cid, bid, act, switches=None, beam=8, keep=14, log=None, ownership="party", deny=()):
         self.W, self.cid, self.bid, self.act = W, cid, bid, act
         self.sw = switches or {}
         self.beam, self.keep = beam, keep
         self.ownership = ownership
-        self.cands = candidates(W, cid, bid, act, ownership)
+        self.cands = candidates(W, cid, bid, act, ownership, deny)
         self.cache = {}
         self.evals = 0
         self.log = log
@@ -116,9 +119,17 @@ class Searcher:
         r = self.cache.get(key)
         if r is None:
             r = model.score(self.W, self.cid, self.bid, self.act, dict(key), self.sw)
+            r.st = None              # the evaluation state (~40 KB each) kept every cached result's memory alive
             self.cache[key] = r
             self.evals += 1
         return r
+
+    def without(self, deny):
+        """This searcher with `deny` left out of the candidate lists, sharing the score cache (a score does not
+        depend on what else could have been picked)."""
+        v = copy.copy(self)
+        v.cands = {s: [c for c in lst if c not in deny] for s, lst in self.cands.items()}
+        return v
 
     def prune(self, base):
         """Top `keep` items per slot by their gain on top of `base` (the slot swapped, everything else kept)."""
@@ -158,11 +169,14 @@ class Searcher:
             for lo in nxt:
                 uniq[tuple(sorted(lo.items()))] = lo
             beam = sorted(uniq.values(), key=lambda lo: -self.score(lo).score)[: self.beam]
-        best = beam[0]
-        # coordinate descent with the FULL candidate lists (finds items the pruning dropped)
+        return self.descend(beam[0])
+
+    def descend(self, best, slots=ORDER):
+        """Coordinate descent with the FULL candidate lists (finds items the pruning dropped) over `slots` until no
+        single-slot change improves the score. -> (loadout, Result)"""
         for _pass in range(4):
             improved = False
-            for s in ORDER:
+            for s in slots:
                 cur = self.score(best).score
                 pick = None
                 for sid in self.cands[s] + [None]:
