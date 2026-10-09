@@ -20,6 +20,9 @@
   window.LA_STATE_CB = function (st) { onState(st); };
 
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // yield to the browser without a timer: hidden / background tabs clamp timers to 1 s or more, which made the icon
+  // build crawl when the page sat waiting for the game files in a tab behind the game
+  function yieldNow() { return new Promise(function (r) { var c = new MessageChannel(); c.port1.onmessage = function () { c.port1.close(); r(); }; c.port2.postMessage(0); }); }
   function loadScript(src) {
     return new Promise(function (resolve) {
       var s = document.createElement("script");
@@ -104,7 +107,7 @@
     });
     for (var k = 0; k < keys.length; k++) {
       var key = keys[k], a = DATA.art[key], pi = a[0], p = paths[pi];
-      if (k % 20 === 0) { prep("Building the icons (" + k + "/" + keys.length + ")...", 0.4 + 0.6 * k / keys.length); await sleep(0); }
+      if (k % 20 === 0) { prep("Building the icons (" + k + "/" + keys.length + ")...", 0.4 + 0.6 * k / keys.length); await yieldNow(); }
       if (canv[pi] === undefined) {
         canv[pi] = null;
         var td = Date.now();
@@ -123,18 +126,61 @@
     return { IMG: IMG, ms: Date.now() - t0, load: tLoad, decode: tDec, scale: tScale };
   }
 
+  // ---- not live (yet): the copy in the mod's install folder, or the live copy before the mod wrote the game files
+  var LIVE_PATH = "%LOCALAPPDATA%\\Larian Studios\\Baldur's Gate 3\\Script Extender\\LootAdvisor\\Sets.html";
+  var IS_LIVE_COPY = (function () {
+    var p = location.pathname || "";
+    try { p = decodeURIComponent(p); } catch (e) {}
+    return /script extender[\/\\]lootadvisor[\/\\][^\/\\]*$/i.test(p);
+  })();
+  function offline() {
+    var main = document.getElementById("main");
+    if (!main || document.getElementById("offline")) return;
+    var steps = IS_LIVE_COPY
+      ? "<li>Start Baldur's Gate 3 with Loot Advisor enabled (it needs Script Extender).</li>" +
+        "<li><b>Load a save once.</b> The mod then writes your game's icons and texts next to this page (about 10 seconds the first time).</li>" +
+        "<li>This page notices it by itself and starts - no reload needed. Later you can open it from the game with <b>F6 &gt; Open Sets page</b>.</li>"
+      : "<li>Start Baldur's Gate 3 with Loot Advisor enabled (it needs Script Extender).</li>" +
+        "<li><b>Load a save once.</b> The mod writes the live page, with your game's own icons and texts, into the Script Extender folder.</li>" +
+        "<li><b>Then open the live page:</b> in the game press <b>F6 &gt; Open Sets page</b>, or open the path below in your browser (bookmark it). " +
+        "It follows your game while it runs and shows the last state when it doesn't.</li>";
+    main.innerHTML = '<section class="offline" id="offline" aria-labelledby="offT">' +
+      '<h2 id="offT">' + (IS_LIVE_COPY ? "Load a save once - then this page comes alive" : "Load a save once - then open the live page") + "</h2>" +
+      "<p>Synergy Sets shows full loadouts for every origin and build, act by act, and ticks off what you already carry. " +
+      "It uses the item icons and texts from <em>your own</em> game install, so " +
+      (IS_LIVE_COPY ? "it waits until the mod has written them." : "this copy from the mod's download cannot show them.") + "</p>" +
+      "<ol>" + steps + "</ol>" +
+      '<p class="off-lab">The live page:</p>' +
+      '<div class="off-path"><input id="offPath" type="text" readonly value="' + esc(LIVE_PATH) + '" aria-label="Path of the live page" spellcheck="false">' +
+      '<button type="button" class="btn-pill" id="offCopy">Copy path</button></div>' +
+      '<p class="off-hint">Paste it into the address bar of the File Explorer or the Run box (Windows key + R) - the page opens in your browser; ' +
+      "bookmark it there. The game console prints the full path when the mod writes the page.</p>" +
+      '<p class="off-wait" role="status"><span class="dot"></span>' + (IS_LIVE_COPY ? "Waiting for the game files..." : "This is the copy from the mod's download - it has no game files next to it.") + "</p>" +
+      "</section>";
+    var inp = document.getElementById("offPath"), btn = document.getElementById("offCopy");
+    btn.addEventListener("click", function () {
+      var done = function () { btn.textContent = "Copied"; setTimeout(function () { btn.textContent = "Copy path"; }, 2000); };
+      var legacy = function () { inp.focus(); inp.select(); try { document.execCommand("copy"); done(); } catch (e) { btn.textContent = "Press Ctrl+C"; } };
+      try { if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(LIVE_PATH).then(done, legacy); else legacy(); } catch (e) { legacy(); }
+    });
+    inp.addEventListener("focus", function () { inp.select(); });
+  }
+
   async function boot() {
     var t0 = Date.now();
     prep("Reading the texts from your game files...", 0.02);
     while (!(await loadScript("LootAdvisor_text.js")) || !TEXT) {
-      prep("Waiting for Loot Advisor: start Baldur's Gate 3 with the Loot Advisor mod and load a save once - it writes the game texts and icons next to this page.", 0);
+      offline();
       await sleep(POLL_MS);
     }
+    var off = document.getElementById("offline");
+    if (off) off.parentNode.innerHTML = '<p class="loading" role="status"><span class="prep" id="prep">Preparing the page from your game files...<span class="bar"><i></i></span></span></p>';
     while (!(await loadScript("LootAdvisor_art_index.js")) || !ARTIDX) {
       prep("Waiting for the game icons (the mod is still writing them)...", 0.05);
       await sleep(POLL_MS);
     }
     var art = await loadArt();
+    if (window.LA_HEADER) { try { window.LA_HEADER(art.IMG); } catch (e) { console.warn("Loot Advisor: header strip", e); } }
     resolve(DATA);
     DATA_EL.textContent = JSON.stringify(DATA);
     IMG_EL.textContent = JSON.stringify(art.IMG);
@@ -165,7 +211,7 @@
     var el = document.getElementById("live");
     if (!el) return;
     var lt = el.querySelector(".lt"), st = STATE, now = Date.now() / 1000;
-    if (!st) { el.className = "live"; lt.textContent = "Waiting for the game (start Baldur's Gate 3 with Loot Advisor)"; return; }
+    if (!st) { el.className = "live"; lt.textContent = IS_LIVE_COPY ? "Waiting for the game (start Baldur's Gate 3 with Loot Advisor)" : "Not the live page · load a save once, then press F6 > Open Sets page"; return; }
     var age = Math.max(0, Math.round(now - (st.t || 0)));
     var where = (st.act ? "Act " + ROMAN[st.act] : "") + (st.regionName ? " · " + st.regionName : "") + (st.area ? " · " + st.area : "");
     var who = st.selected && st.selected.name ? " · " + st.selected.name : "";
