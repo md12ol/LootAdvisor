@@ -29,6 +29,7 @@ import model  # noqa: E402
 import search  # noqa: E402
 import gauntlet  # noqa: E402
 import respec  # noqa: E402
+import party  # noqa: E402
 
 SI = odata.SI
 PT = sys.modules.get("playertext") or __import__("playertext")
@@ -325,6 +326,31 @@ def party_conflicts(W, sets):
             if len(c) > 1]
 
 
+def party_assignment(W, objs):
+    """Per ownership variant and act: who keeps each unique item several characters' sets use (party.py). The
+    repaired loadouts stay in optimized.json only (model output, like the sets themselves)."""
+    out = []
+    for own in search.OWNERSHIP:
+        for act in (1, 2, 3):
+            sub = {(c, b): o for (ow, ac, c, b), o in objs.items() if ow == own and ac == act}
+            if len({c for c, _b in sub}) < 2:
+                continue
+            t0 = time.time()
+            res = party.resolve(W, sub, owned_pass)
+            for b in res["builds"]:
+                b["validation"] = validate(W, b["char"], b["build"], act, b["loadout"], own)
+                b["changed"] = [(s, W.items[x]["name"] if x else "-", W.items[y]["name"] if y else "-")
+                                for s, x, y in b["changed"]]
+            res.update(ownership=own, act=act, secs=round(time.time() - t0, 1),
+                       names={s: W.items[s]["name"] for s in res["claims"]})
+            out.append(res)
+            lost = [b for b in res["builds"] if b["lost"]]
+            print(f"party {own:5} A{act}: {len(res['claims'])} contested items, {len(lost)} sets give something up, "
+                  f"party value {res['total_before']} -> {res['total']} ({res['methods']}, {res['rounds']} round(s), "
+                  f"{res['valuations']} repairs, {res['secs']:.0f}s)", flush=True)
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
@@ -334,6 +360,7 @@ def main():
     ap.add_argument("--no-switches", action="store_true")
     ap.add_argument("--ownership", default="party,free", help="variants to run: party, free or both")
     ap.add_argument("--no-tuning", action="store_true", help="skip the respec tuning and the test plans")
+    ap.add_argument("--no-party", action="store_true", help="skip the party assignment of contested unique items")
     ap.add_argument("--plans-only", action="store_true",
                     help="re-tune and re-export the test plans for the sets in .cache/optimized.json")
     a = ap.parse_args()
@@ -346,7 +373,8 @@ def main():
     variants = [v for v in a.ownership.split(",") if v in search.OWNERSHIP]
     os.makedirs(CACHE, exist_ok=True)
     out = {"generated": time.strftime("%Y-%m-%d %H:%M"), "switches": {k: v["text"] for k, v in model.SWITCHES.items()},
-           "sets": [], "compare": [], "switch_results": [], "plans": [], "tuning": []}
+           "sets": [], "compare": [], "switch_results": [], "plans": [], "tuning": [], "party": []}
+    objs = {}
     for cid in odata.CHARS:
         for bid in W.origin_builds(cid):
             for act in (1, 2, 3):
@@ -355,6 +383,7 @@ def main():
                     continue
                 for own in variants:
                     o = optimize(W, cid, bid, act, ownership=own)
+                    objs[(own, act, cid, bid)] = o
                     st = to_set(W, o)
                     out["sets"].append({"char": cid, **st})
                     if own == "party" and not a.no_tuning:
@@ -391,6 +420,8 @@ def main():
                         print(f"    switch {k}={not model.SWITCHES[k]['default']}: same gear {v:.1f}, re-optimized "
                               f"{o2['result'].score:.1f}, {len(changed)} slot(s) change", flush=True)
     out["party_conflicts"] = party_conflicts(W, out["sets"])
+    if not a.no_party:
+        out["party"] = party_assignment(W, objs)
     with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
     with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:

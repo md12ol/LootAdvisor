@@ -269,8 +269,93 @@ def test_projectile_totals():
     assert not fails, fails
 
 
+def _party():
+    import party
+    return party
+
+
+def _brute_force(claims, table):
+    """Best party value over every assignment, enumerated here (independent of party.py)."""
+    items = sorted(claims)
+    chars = sorted({c for cs in claims.values() for c in cs})
+    best = None
+    for pick in itertools.product(*(claims[i] for i in items)):
+        v = sum(table[c][frozenset(i for i, w in zip(items, pick) if w == c)] for c in chars)
+        best = v if best is None else max(best, v)
+    return best
+
+
+def _value_of(assign, claims, table):
+    chars = sorted({c for cs in claims.values() for c in cs})
+    return sum(table[c][frozenset(i for i, w in assign.items() if w == c)] for c in chars)
+
+
+def test_party_solver():
+    """Party assignment of contested unique items: a hand-worked case where giving each item to the character that
+    loses most without it is wrong, independent components, and random instances against brute-force enumeration
+    (exact path) and a neighbourhood check written here (local-search path)."""
+    P = _party()
+    fails, n = [], 0
+    # hand-worked: x and y are substitutes for A (same slot), complements for B.
+    # marginal losses: x -> A 6-5=1, B 8-4=4; y the same -> greedy gives B both: 0 + 8 = 8.
+    # best: one item each, 5 + 4 = 9 (either way round).
+    fs = frozenset
+    table = {"A": {fs(): 0, fs("x"): 5, fs("y"): 5, fs("xy"): 6},
+             "B": {fs(): 0, fs("x"): 4, fs("y"): 4, fs("xy"): 8}}
+    claims = {"x": ["A", "B"], "y": ["A", "B"]}
+    for budget in (P.EXACT_BUDGET, 0):
+        n += 1
+        r = P.solve(claims, lambda c, k: table[c][k], exact_budget=budget)
+        got = _value_of(r["assign"], claims, table)
+        if abs(got - 9) > 1e-9 or abs(r["total"] - 9) > 1e-9:
+            fails.append(f"hand case (budget {budget}): {r['assign']} worth {got}, reported {r['total']}, want 9")
+    # two independent conflicts: C/D share z (C loses 3, D loses 1), E/F share w (E loses 1, F loses 2)
+    t2 = {"C": {fs(): 1, fs("z"): 4}, "D": {fs(): 1, fs("z"): 2}, "E": {fs(): 0, fs("w"): 1},
+          "F": {fs(): 0, fs("w"): 2}}
+    c2 = {"z": ["C", "D"], "w": ["E", "F"]}
+    r = P.solve(c2, lambda c, k: t2[c][k])
+    n += 1
+    if r["assign"] != {"z": "C", "w": "F"} or r["methods"]["exact"] != 2:
+        fails.append(f"two components: {r['assign']} {r['methods']}, want z->C, w->F, 2 exact")
+    rng = random.Random(11)
+    for case in range(40):
+        chars = ["c%d" % k for k in range(rng.randint(2, 4))]
+        items = ["i%d" % k for k in range(rng.randint(1, 5))]
+        claims = {i: sorted(rng.sample(chars, rng.randint(2, len(chars)))) for i in items}
+        wants = {c: [i for i in items if c in claims[i]] for c in chars}
+        table = {}
+        for c in chars:
+            table[c] = {}
+            for m in range(len(wants[c]) + 1):
+                for sub in itertools.combinations(wants[c], m):
+                    table[c][frozenset(sub)] = rng.randint(0, 20) + 5 * m
+        best = _brute_force(claims, table)
+        for budget in (10 ** 6, 0):
+            n += 1
+            r = P.solve(claims, lambda c, k, t=table: t[c][k], exact_budget=budget)
+            a = r["assign"]
+            if set(a) != set(items) or any(a[i] not in claims[i] for i in items):
+                fails.append(f"case {case}: {a} does not give each item to one of its claimants {claims}")
+                continue
+            got = _value_of(a, claims, table)
+            if abs(got - r["total"]) > 1e-9:
+                fails.append(f"case {case}: reported {r['total']} but the assignment is worth {got}")
+            if budget and abs(got - best) > 1e-9:
+                fails.append(f"case {case}: exact path {got} < brute force {best}")
+            if not budget:
+                for i in items:
+                    for c in claims[i]:
+                        if _value_of(dict(a, **{i: c}), claims, table) > got + 1e-9:
+                            fails.append(f"case {case}: moving {i} to {c} improves the local-search result")
+                for i, j in itertools.combinations(items, 2):
+                    if a[i] != a[j] and a[j] in claims[i] and a[i] in claims[j] and \
+                            _value_of(dict(a, **{i: a[j], j: a[i]}), claims, table) > got + 1e-9:
+                        fails.append(f"case {case}: swapping {i} and {j} improves the local-search result")
+    assert n and not fails, fails[:6]
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
-            test_situational_uptimes, test_projectile_totals]
+            test_situational_uptimes, test_projectile_totals, test_party_solver]
 
 
 # ============================================================================================ local-only tests
@@ -899,6 +984,61 @@ def check_test_plans(out):
     return fails, n
 
 
+def check_party(out):
+    """Party assignment (out["party"]): per ownership variant and act, no unique item (data/items_all read here) in
+    two characters' final loadouts; every unique item that several characters' optimized sets use (counted here
+    from out["sets"]) was assigned to one of them; every final loadout passes the set rules and, for the party
+    variant, the owner rulings; scores re-computed with the model; nobody gains from losing an item, and the party
+    total is the sum of the per-character means."""
+    import model
+    items = _items()
+    W = _world()
+    fails, n = [], 0
+    for r in out.get("party") or []:
+        own, act = r["ownership"], r["act"]
+        sets = [s for s in out["sets"] if s.get("ownership") == own and s["act"] == act and
+                s["id"].endswith(".opt" + ("" if own == "party" else ".free"))]
+        users = {}
+        for st in sets:
+            for e in st["items"].values():
+                if items.get(e["sid"], {}).get("unique"):
+                    users.setdefault(e["sid"], set()).add(st["char"])
+        for sid, cs in users.items():
+            if len(cs) > 1 and r["assign"].get(sid) not in cs:
+                fails.append(f"{own} A{act}: {sid} used by {sorted(cs)} assigned to {r['assign'].get(sid)}")
+        final, pseudo, per_char = {}, [], {}
+        for b in r["builds"]:
+            n += 1
+            for sid in b["loadout"].values():
+                if items.get(sid, {}).get("unique"):
+                    final.setdefault(sid, set()).add(b["char"])
+            pseudo.append({"id": f"party.{own}.{b['char']}.{b['build']}.a{act}", "char": b["char"],
+                           "build": b["build"], "act": act, "ownership": own,
+                           "items": {k: {"sid": v, "name": items.get(v, {}).get("name", v)}
+                                     for k, v in b["loadout"].items()}})
+            sw = next(((s.get("model") or {}).get("switches") or {} for s in sets
+                       if s["char"] == b["char"] and s["build"] == b["build"]), {})
+            v = model.score(W, b["char"], b["build"], act, b["loadout"], sw).score
+            if abs(v - b["score_after"]) > 0.01 + 1e-4 * v:
+                fails.append(f"{own} A{act} {b['char']} {b['build']}: model {v:.2f} != reported {b['score_after']}")
+            if b["score_after"] > b["score_before"] * 1.0001 + 0.01:
+                fails.append(f"{own} A{act} {b['char']} {b['build']}: gains by losing ({b['score_before']} -> "
+                             f"{b['score_after']})")
+            per_char.setdefault(b["char"], []).append(b["score_after"])
+        for sid, cs in final.items():
+            if len(cs) > 1:
+                fails.append(f"{own} A{act}: unique {items[sid]['name']} still with {sorted(cs)}")
+        tot = sum(sum(v) / len(v) for v in per_char.values())
+        if abs(tot - r["total"]) > 0.05:
+            fails.append(f"{own} A{act}: total {r['total']} != sum of character means {tot:.2f}")
+        fails += [f"{own} A{act} " + f for f in check_set_rules({"sets": pseudo})[0]]
+        if own == "party":
+            fails += [f"A{act} " + f for f in check_ownership({"sets": pseudo})[0]]
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
 LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_set_rules),
                 ("research sets never beat the optimizer", check_research_not_better),
                 ("why text has no leaks", check_why_text), ("switches", check_switches),
@@ -908,7 +1048,7 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
                 ("The Dead Shot crit range", check_dead_shot),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
-                ("test plans", check_test_plans)]
+                ("test plans", check_test_plans), ("party assignment of unique items", check_party)]
 
 
 def _as_test(fn):
@@ -1268,6 +1408,54 @@ def mutations():
             _CACHE.pop("P", None)
             _CACHE.pop("P_path", None)
     out.append(("respec tuning returns a respec worse than the plan", m_respec))
+
+    import party
+
+    def _ci_red(test):
+        try:
+            test()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+
+    def m_party_greedy():
+        old = party._local
+
+        def greedy(chars, items, claims, value):
+            wants = {c: frozenset(i for i in items if c in claims[i]) for c in chars}
+            return {i: max(claims[i], key=lambda c: (value(c, wants[c]) - value(c, wants[c] - {i}), c)) for i in items}
+        party._local = greedy                        # no local search after the greedy start
+        try:
+            return _ci_red(test_party_solver)
+        finally:
+            party._local = old
+    out.append(("party assignment: greedy only, no local search", m_party_greedy))
+
+    def m_party_exact():
+        old = party._exact
+        party._exact = lambda chars, items, claims, value: {i: claims[i][0] for i in items}   # first claimant
+        try:
+            return _ci_red(test_party_solver)
+        finally:
+            party._exact = old
+    out.append(("party assignment: exact path takes the first claimant", m_party_exact))
+
+    def m_party_keep():
+        import run as R
+        W = _world()
+        old = party.Act.deny
+        party.Act.deny = lambda self, cid, kept: frozenset()      # losers keep the item
+        try:
+            objs, sets = {}, []
+            for cid, bid in (("karlach", "giants"), ("wyll", "lockadin"), ("laezel", "bmgiant")):
+                o = R.optimize(W, cid, bid, 1)
+                objs[("party", 1, cid, bid)] = o
+                sets.append({"char": cid, **R.to_set(W, o)})
+            res = R.party_assignment(W, objs)
+        finally:
+            party.Act.deny = old
+        return check_party({"sets": sets, "party": res})[0]
+    out.append(("party assignment: losers keep the contested item (Act 1, three builds)", m_party_keep))
     return out
 
 

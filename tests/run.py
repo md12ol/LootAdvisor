@@ -158,6 +158,10 @@ class Scratch:
             if fn.endswith(".json") and (fn.startswith("roottemplates_") or fn in (
                     "class_progressions.json", "item_display_names.json", "stats_resolved.json")):
                 shutil.copy2(os.path.join(LA, "data", "cache", fn), os.path.join(self.root, "data", "cache", fn))
+        # score_items.py reads Builds.lua from the sibling BuildAdvisor checkout, relative to its own folder
+        lua = os.path.join(self.dir, os.path.relpath(BUILDS_LUA, ROOT))
+        os.makedirs(os.path.dirname(lua), exist_ok=True)
+        shutil.copy2(BUILDS_LUA, lua)
 
     def patch(self, rel, old, new, count=1):
         p = os.path.join(self.root, rel)
@@ -327,17 +331,21 @@ def main_mutate(verbose, ci=False):
                 return 1
         for name, desc, make, expect in muts:
             t0 = time.time()
+            env, crashed = None, False
             try:
                 env = make()
                 fails = by[name](env)
             except Exception as e:  # noqa: BLE001
+                crashed = True
                 fails = [f"mutation setup/check crashed: {e!r}"]
             red = bool(fails)
-            ok = red if expect == "red" else not red
+            # a crash proves nothing about the check, so it fails the mutation whatever was expected
+            ok = not crashed and (red if expect == "red" else not red)
             bad += not ok
-            verdict = ("caught (red)" if red else "NOT caught (green)") if expect == "red" else \
+            verdict = "CRASHED (proves nothing)" if crashed else \
+                ("caught (red)" if red else "NOT caught (green)") if expect == "red" else \
                 ("green as expected" if not red else "STILL RED")
-            note = getattr(env, "mut_note", None) if "env" in dir() else None
+            note = getattr(env, "mut_note", None)
             results.append((name, desc, expect, verdict, ok))
             print(f"[{'OK' if ok else 'BAD'}] {name}\n      mutation: {desc}{' (' + note + ')' if note else ''}\n"
                   f"      -> {verdict}; {len(fails)} failure line(s); {time.time() - t0:.1f}s")
