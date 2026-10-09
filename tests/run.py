@@ -50,7 +50,8 @@ LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.
 # from tracked files, so --ci skips them; they run in the full local suite (pre-push hook). A check can also mark
 # itself with a function attribute `local_only = True`. Any check not marked here runs in CI and must pass there.
 LOCAL_ONLY = {"check_no_heavy_armour_raging", "check_profiles_cover_builds_lua", "check_class_proficiencies",
-              "check_subclass_names"}
+              "check_subclass_names", "check_sheet_subclass_features", "check_sheet_weapon_riders",
+              "check_ranged_offhand_hand_crossbow"}
 
 
 def local_only(fn):
@@ -155,7 +156,7 @@ class Scratch:
             shutil.copytree(os.path.join(LA, "data", d), os.path.join(self.root, "data", d))
         for fn in os.listdir(os.path.join(LA, "data", "cache")):
             if fn.endswith(".json") and (fn.startswith("roottemplates_") or fn in (
-                    "class_progressions.json", "item_display_names.json")):
+                    "class_progressions.json", "item_display_names.json", "stats_resolved.json")):
                 shutil.copy2(os.path.join(LA, "data", "cache", fn), os.path.join(self.root, "data", "cache", fn))
 
     def patch(self, rel, old, new, count=1):
@@ -278,13 +279,42 @@ def mutations(sc):
             "cs.party == true", "(cs.party == true or cs.team == true)"))]})
     out.append((names[5], "ownerAvailable broken again: camp companion counts as owner", m6, "red"))
 
-    # 7. Gale's items handed to Shadowheart; Builds.lua's Shadowheart order swapped without a re-score
-    def m7a():
+    # 7. the sheet matches subclasses by the shown name again (the old "Hexblade" / "Draconic" comparisons)
+    def m7():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", 'sub_cls = {s["cls"]: s.get("k") for s in BI["subs"]}',
+                 'sub_cls = {s["cls"]: s["n"] for s in BI["subs"]}')
+        return sc.env()
+    out.append((names[6], "sheet: subclass features matched on the shown name, not the game's internal name", m7,
+                "red"))
+
+    # 8a / 8b. stat riders dropped again; the weapon's own WeaponDamage boost counted on top of its rider again
+    def m8a():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", "n = val(m.group(1))", "n = 0")
+        return sc.env()
+    out.append((names[7], "sheet: number / stat weapon riders (Giantslayer STR) ignored", m8a, "red"))
+
+    def m8b():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", 'if x["name"] == "WeaponDamage" and (d0, t) in riders:', "if False:")
+        return sc.env()
+    out.append((names[7], "sheet: the weapon's own WeaponDamage boost counted again next to its rider", m8b, "red"))
+
+    # 9. the validator lets any ranged weapon into the ranged off hand again
+    def m9():
+        sc.reset()
+        sc.patch("tools/score_items.py", 'if slot == "RangedOff" and not me["handxbow"]:', "if False:")
+        return sc.env()
+    out.append((names[8], "validator: off-hand ranged hand-crossbow rule removed", m9, "red"))
+
+    # 10. Gale's items handed to Shadowheart; Builds.lua's Shadowheart order swapped without a re-score
+    def m10a():
         sc.reset()
         return sc.env(lua_patches={"LootData.lua": [('o={"gale"}', 'o={"shadowheart"}')]})
-    out.append((names[6], "LootData: every item owned by Gale given to Shadowheart", m7a, "red"))
+    out.append((names[9], "LootData: every item owned by Gale given to Shadowheart", m10a, "red"))
 
-    def m7b():
+    def m10b():
         sc.reset()
         src = open(BUILDS_LUA, encoding="utf-8").read()
         old = 'shadowheart = { builds = { "lightquick", "lightcleric" }'
@@ -294,7 +324,7 @@ def mutations(sc):
         with open(swapped, "w", encoding="utf-8") as f:
             f.write(src.replace(old, 'shadowheart = { builds = { "lightcleric", "lightquick" }'))
         return C.Env(sc.root, MODS_LUA, swapped)
-    out.append((names[6], "Builds.lua: Shadowheart's order swapped, LootData not re-scored", m7b, "red"))
+    out.append((names[9], "Builds.lua: Shadowheart's order swapped, LootData not re-scored", m10b, "red"))
     return out, by
 
 
