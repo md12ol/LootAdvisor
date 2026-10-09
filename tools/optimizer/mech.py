@@ -7,6 +7,7 @@ weapon TemplateStatus entries and the passives' StatsFunctorContext + Conditions
 data/cache/stats_resolved.json. Conditions are evaluated as probabilities for the attack / spell event they gate
 (see PREDICATES); a predicate this model does not know counts 0.5 and is reported as a model gap.
 """
+import ast
 import math
 import re
 
@@ -39,14 +40,46 @@ def avg_expr(expr, names=None):
     def dice(m):
         return "(%s)" % (int(m.group(1)) * (int(m.group(2)) + 1) / 2)
     e2 = DICE.sub(dice, e)
-    v = BSA.safe_eval(e2.replace("/2", "*0.5") if "/" in e2 else e2, names)
-    if v is None:
-        try:
-            v = float(eval(e2, {"__builtins__": {}}, {k: v_ for k, v_ in names.items()}))  # noqa: S307 - tiny arithmetic
-        except Exception:  # noqa: BLE001
-            v = 0.0
-    tot += float(v)
+    v = float_eval(e2, names)
+    tot += float(v if v is not None else 0.0)
     return tot
+
+
+def float_eval(expr, names):
+    """Arithmetic of a stats expression (+ - * /, max / min, names) in floats - averages of dice are not whole
+    numbers (1d4 = 2.5), so nothing is rounded."""
+    try:
+        tree = ast.parse(expr, mode="eval")
+    except SyntaxError:
+        return None
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)):
+            return float(n.value)
+        if isinstance(n, ast.Name):
+            v = names.get(n.id)
+            return float(v) if isinstance(v, (int, float)) else 0.0
+        if isinstance(n, ast.UnaryOp) and isinstance(n.op, (ast.USub, ast.UAdd)):
+            return -ev(n.operand) if isinstance(n.op, ast.USub) else ev(n.operand)
+        if isinstance(n, ast.BinOp) and isinstance(n.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            a, b = ev(n.left), ev(n.right)
+            if isinstance(n.op, ast.Add):
+                return a + b
+            if isinstance(n.op, ast.Sub):
+                return a - b
+            if isinstance(n.op, ast.Mult):
+                return a * b
+            return a / b if b else 0.0
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in ("max", "min"):
+            vals = [ev(a) for a in n.args]
+            return max(vals) if n.func.id == "max" else min(vals)
+        raise ValueError(n)
+    try:
+        return ev(tree)
+    except (ValueError, TypeError, RecursionError):
+        return None
 
 
 def dice_part(expr, names=None):
@@ -173,8 +206,14 @@ def _status_p(c, args):
         return st.target_prone if "Source" not in who else 0.0
     if name in ("SG_Incapacitated", "SG_Stunned", "SG_Paralyzed"):
         return 0.08
-    if name in ("SG_Polymorph_BeastShape", "WILDSHAPE_TECHNICAL", "SG_Invisible", "INVISIBILITY"):
+    if name in ("SG_Polymorph_BeastShape", "WILDSHAPE_TECHNICAL"):
         return 0.0
+    if name.startswith("SNEAKING") or name in ("SG_Invisible", "INVISIBILITY"):
+        # the character attacks from stealth: its opener (model.STEALTH_DC), as a share of its attacks
+        return getattr(st, "sneak_share", 0.0) if ("Source" in who or c.phase in ("boost", "self")) else 0.0
+    if name in ("SURPRISED", "SG_Surprised"):
+        # the target is Surprised in round 1 after a stealth opener
+        return getattr(st, "surprised", 0.0) if "Source" not in who else 0.0
     if name in ("SG_Blinded", "BLINDED"):
         return 0.05
     # a status this loadout keeps up on itself / the target
@@ -202,6 +241,19 @@ def _hp_le(c, args):
     if "Source" in who:
         return 0.25 if pct <= 50 else 0.5          # the character at half HP or less
     return 0.99 if pct >= 99 else max(0.05, min(0.95, pct / 100 * 0.8))
+
+
+def _tagged(c, a):
+    """Tagged('<TAG>'[, entity]): the character's own tags (race, HUMANOID, PLAYABLE) when the entity is the
+    source of a boost / passive on the wearer; otherwise the enemy, true for that creature type's share of the
+    act's enemies (model.ENEMY_TYPES). When the wearer is attacked ("defence"), context.Source is the attacker."""
+    tag = (a[0] if a else "").upper()
+    who = a[1] if len(a) > 1 else ""
+    if "Source" in who and not c.ev.get("defence"):
+        return 1.0 if tag in getattr(c.st, "tags", set()) else 0.0
+    if c.phase == "self" and not who:
+        return 1.0 if tag in getattr(c.st, "tags", set()) else 0.0
+    return float(getattr(c.st, "enemy_types", {}).get(tag, 0.0))
 
 
 PREDICATES = {
@@ -257,7 +309,8 @@ PREDICATES = {
     "IsMiss": lambda c, a: 0.0,
     "IsCritical": lambda c, a: c.ev.get("crit_given_hit", 0.05),
     "IsCriticalMiss": lambda c, a: 0.05,
-    "IsKillingBlow": lambda c, a: 0.15,
+    # killing blow: damage of the hit over the enemy's HP (model.ENEMY_HP), set per event by the trigger code
+    "IsKillingBlow": lambda c, a: c.ev.get("kill_p", 0.15),
     "HasAdvantage": lambda c, a: c.ev.get("adv", 0.0),
     "HasDisadvantage": lambda c, a: 0.05,
     "IsReactionAttack": lambda c, a: 0.0,
@@ -273,11 +326,9 @@ PREDICATES = {
     "Summon": lambda c, a: 0.0,
     "Dead": lambda c, a: 0.0,
     "Combat": lambda c, a: 1.0,
-    "HadTurnInCombat": lambda c, a: 1.0,
-    "Tagged": lambda c, a: {"HUMANOID": 0.6, "UNDEAD": 0.15, "FIEND": 0.12, "CONSTRUCT": 0.05, "BEAST": 0.1,
-                            "MONSTROSITY": 0.08, "ABERRATION": 0.08, "PLANT": 0.02, "DRAGON": 0.02, "GIANT": 0.03,
-                            "ELEMENTAL": 0.03, "GOBLIN": 0.15 if c.st.act == 1 else 0.03}.get((a[0] if a else "").upper(),
-                                                                                              0.1),
+    # the target has not acted yet: round 1 when this character acts first or the enemies are Surprised
+    "HadTurnInCombat": lambda c, a: 1.0 - getattr(c.st, "first_strike", 0.0),
+    "Tagged": lambda c, a: _tagged(c, a),
     "TargetSizeEqualOrSmaller": lambda c, a: 0.85,
     "SizeEqualOrGreater": lambda c, a: 0.3,
     "HasMetalArmor": lambda c, a: 0.35,
@@ -291,7 +342,7 @@ PREDICATES = {
     "DistanceToTargetGreaterThan": lambda c, a: 0.0 if c.ev.get("melee") else 0.6,
     "HasEnemyWithinRange": lambda c, a: 1.0 if c.st.exposure >= 1.25 else 0.5,
     # the character's own state
-    "Self": lambda c, a: 1.0 if c.phase == "boost" else (1.0 if any("Source" in x for x in a) and
+    "Self": lambda c, a: 1.0 if c.phase in ("boost", "self") else (1.0 if any("Source" in x for x in a) and
                                                           any("Observer" in x for x in a) else 0.0),
     "HasStatus": _status_p,
     "HasPassive": _passive_p,
@@ -375,8 +426,11 @@ def sheet_counts(b):
     b = an entry of BSA.collect_boosts."""
     n, cond = b["name"], b["cond"]
     if not cond:
-        if n in SHEET_NAMES or n in ("DamageBonus", "CharacterWeaponDamage"):
+        if n in SHEET_NAMES or n == "DamageBonus":
             return True
+        if n == "CharacterWeaponDamage":
+            # the sheet's weapon rows add dice riders only (Caustic Band's flat 2 Acid is not on them)
+            return bool(DICE.search(b["args"][0] if b["args"] else ""))
         if n == "WeaponDamage" and b.get("scope"):
             return True
         if n == "RollBonus" and b["args"] and b["args"][0] in ("Attack", "WeaponAttack", "MeleeWeaponAttack",
@@ -552,6 +606,15 @@ def read_spell(W, sid, level, slot_level=None):
         beams = float(LMV.get(ta[14:-1], lambda lv: "1")(level))
     elif ta.isdigit():
         beams = float(ta)
+    if beams > 1 and txt:
+        # some tooltips list the damage of ALL projectiles (Scorching Ray 8d6 for 4 rays of 2d6, Magic Missile 3d4+3
+        # for 3 darts), others one projectile (Eldritch Blast 1d10 a beam): a total is used once, not per beam
+        n_tip = sum(int(a) for e, _t in dmg for a, _b in DICE.findall(e))
+        succ = [args[0] for cond, name, args in parse_boosts((sp.get("SpellSuccess") or "").replace("TARGET:", ""))
+                if name == "DealDamage" and not cond and args and "Weapon" not in args[0]]
+        n_succ = sum(int(a) for e in succ for a, _b in DICE.findall(e))
+        if (n_succ and n_tip == beams * n_succ) or (not n_succ and n_tip >= beams and n_tip % int(beams) == 0):
+            beams = 1.0
     tg = area_targets(dict(base, _id=sid))
     extra = re.search(r"SpawnExtraProjectiles\((\w+)\)", (sp.get("SpellSuccess") or "") + (base.get("SpellSuccess") or ""))
     chain = 0.0

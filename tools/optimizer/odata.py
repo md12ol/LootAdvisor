@@ -160,6 +160,11 @@ class World:
         b = self.build_entry(cid, bid)
         return SI.Scorer(self.items, cid, BP.CHARACTERS[cid], bid, set(b.get("proficiencies") or []))
 
+    def blocked(self, sid, cid):
+        """-> the party owners when this unique item (or an item made from a scarce material) belongs to OTHER
+        characters (data/scores/owners.json, the party-owner rule of the set builder), else None."""
+        return SI.blocked_for(sid, cid, self.owners) if self.owners else None
+
     def research_sets(self, cid, bid, act):
         return list(((self.build_entry(cid, bid).get("sets") or {}).get(str(act))) or [])
 
@@ -183,7 +188,7 @@ class _SheetData:
 
 
 def latest_scores_ready(scores_dir=SCORES):
-    """True when the pipeline agent marked data/scores ready (READY_FOR_MOD.txt)."""
+    """True when the score pipeline marked data/scores ready (READY_FOR_MOD.txt)."""
     return os.path.exists(os.path.join(scores_dir, "READY_FOR_MOD.txt"))
 
 
