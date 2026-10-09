@@ -5,6 +5,10 @@
                                              patched in-memory Lua load), confirm the check goes red; exit 1 if any
                                              mutation is not caught. Nothing in LootAdvisor/ or Mods/ is modified.
   -v                                         print every failure line (default: first 8 per check)
+  --ci                                       tracked files only (GitHub CI): the mod's own LootData.lua stands in for
+                                             data/scores/lua/LootData.lua; LOCAL-ONLY checks (game data: data/cache,
+                                             data/items_all, data/scores, the game paks) and their mutations are
+                                             skipped and listed as [LOCAL]. Combines with --mutate.
 
 Inputs: LootAdvisor/data/scores/*.json + lua/LootData.lua (pipeline outputs: run python tools/match_research.py &&
 python tools/score_items.py first), Mods/LootAdvisor/ScriptExtender/Lua (read-only, through lupa), Builds.lua
@@ -42,6 +46,37 @@ LOGIC_OWNER_OLD = "return cs ~= nil and cs.team and not cs.dead"
 LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.dead"
 
 
+# LOCAL-ONLY marker: checks that read game data (tests/gamedata.py, data/cache, data/items_all, data/scores) cannot run
+# from tracked files, so --ci skips them; they run in the full local suite (pre-push hook). A check can also mark
+# itself with a function attribute `local_only = True`. Any check not marked here runs in CI and must pass there.
+LOCAL_ONLY = {"check_no_heavy_armour_raging", "check_profiles_cover_builds_lua", "check_class_proficiencies",
+              "check_subclass_names"}
+
+
+def local_only(fn):
+    return bool(getattr(fn, "local_only", False)) or fn.__name__ in LOCAL_ONLY
+
+
+class CiRoot:
+    """A LootAdvisor root built from tracked files only: data/scores/lua/LootData.lua = the mod's shipped copy."""
+
+    def __init__(self):
+        self.dir = tempfile.mkdtemp(prefix="la_ci_")
+        self.root = os.path.join(self.dir, "LootAdvisor")
+        self.reset()
+
+    def reset(self):
+        lua_dir = os.path.join(self.root, "data", "scores", "lua")
+        os.makedirs(lua_dir, exist_ok=True)
+        shutil.copy2(os.path.join(MODS_LUA, "Shared", "LootData.lua"), os.path.join(lua_dir, "LootData.lua"))
+
+    def env(self, **kw):
+        return C.Env(self.root, MODS_LUA, BUILDS_LUA, **kw)
+
+    def close(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
 def run_check(fn, env):
     t0 = time.time()
     try:
@@ -76,18 +111,28 @@ def report(name, fails, env, secs, xfail, verbose):
     return tag
 
 
-def main_checks(verbose):
+def main_checks(verbose, ci=False):
     bad = 0
     tags = {}
+    ci_root = CiRoot() if ci else None
     for name, fn, xfail in C.CHECKS:
-        env = real_env()
+        if ci and local_only(fn):
+            print(f"[LOCAL] {name}  (local-only: needs game data, skipped in --ci)")
+            tags[name] = "LOCAL"
+            continue
+        env = ci_root.env() if ci else real_env()
         fails, secs = run_check(fn, env)
         tag = report(name, fails, env, secs, xfail, verbose)
         tags[name] = tag
         bad += tag in ("FAIL", "XPASS")
     print(f"\n{sum(t == 'PASS' for t in tags.values())} passed, {sum(t == 'FAIL' for t in tags.values())} failed, "
           f"{sum(t == 'XFAIL' for t in tags.values())} expected-fail, {sum(t == 'XPASS' for t in tags.values())} "
-          "unexpected pass")
+          "unexpected pass" + (f", {sum(t == 'LOCAL' for t in tags.values())} local-only skipped" if ci else ""))
+    if ci_root:
+        ci_root.close()
+    if all(t == "LOCAL" for t in tags.values()):
+        print("no check ran")
+        return 1
     return 1 if bad else 0
 
 
@@ -229,13 +274,21 @@ def mutations(sc):
     return out, by
 
 
-def main_mutate(verbose):
-    sc = Scratch()
+def main_mutate(verbose, ci=False):
+    sc = CiRoot() if ci else Scratch()
     print(f"scratch copy: {sc.root}\n")
     bad = 0
     results = []
     try:
         muts, by = mutations(sc)
+        if ci:
+            skipped = [m for m in muts if local_only(by[m[0]])]
+            muts = [m for m in muts if not local_only(by[m[0]])]
+            for name, desc, _make, _expect in skipped:
+                print(f"[LOCAL] {name}\n      mutation: {desc} (local-only, skipped in --ci)")
+            if not muts:
+                print("no mutation ran")
+                return 1
         for name, desc, make, expect in muts:
             t0 = time.time()
             try:
@@ -264,8 +317,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--mutate", action="store_true")
     ap.add_argument("-v", action="store_true")
+    ap.add_argument("--ci", action="store_true", help="tracked files only; skip LOCAL-ONLY checks")
     a = ap.parse_args()
-    sys.exit(main_mutate(a.v) if a.mutate else main_checks(a.v))
+    sys.exit(main_mutate(a.v, a.ci) if a.mutate else main_checks(a.v, a.ci))
 
 
 if __name__ == "__main__":

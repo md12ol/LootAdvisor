@@ -417,6 +417,9 @@ def main():
     for mod in SHIPPED_MODS + PRIVATE_MODS:
         private = mod in PRIVATE_MODS
         base = MOD_DIRS.get(mod, os.path.join(MODS, mod))
+        if private and not os.path.isdir(base):
+            counts[mod] = "not checked out"   # private repo, absent in public CI
+            continue
         nlua = 0
         for dp, _, fs in os.walk(os.path.join(base, "ScriptExtender")):
             for f in fs:

@@ -1,0 +1,97 @@
+# Everything that runs without the game. Game-data tests are local-only (pre-push hook in the BG3Mods-claude repo).
+# Repos are checked out side by side as on a developer machine; a sibling repo uses the branch of the same name when
+# it exists (cross-repo work), else main.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+env:
+  # the mod and its player package, in one place (repo layout may move: change only these; the mod source path
+  # lives in BG3Tools tools/build_pak.py)
+  MOD: LootAdvisor
+  PACKAGE_DIR: LootAdvisor
+  LUA_DIRS: Mods spike
+  RUFF_VERSION: "0.16.9"
+  LUPA_VERSION: "2.8"
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q lua5.4 lua-check shellcheck
+          pip install -q "ruff==$RUFF_VERSION"
+      - name: Lua syntax (luac -p, all mod Lua)
+        run: |
+          git ls-files $LUA_DIRS | grep '\.lua$' > lua_files.txt
+          echo "$(wc -l < lua_files.txt) Lua files"
+          xargs -a lua_files.txt luac5.4 -p
+      - name: luacheck (errors block, warnings reported)
+        run: |
+          set +e
+          xargs -a lua_files.txt luacheck --formatter plain --codes > luacheck.txt; rc=$?
+          echo "luacheck: $(grep -c ': (W' luacheck.txt) warnings, $(grep -c ': (E' luacheck.txt) errors" | tee -a "$GITHUB_STEP_SUMMARY"
+          grep ': (E' luacheck.txt
+          [ $rc -le 1 ]
+      - name: ruff (real errors block)
+        run: |
+          ruff check --no-cache --select E9,F63,F7,F82 --output-format github .
+      - name: ruff report (non-blocking counts)
+        run: |
+          { echo '```'; ruff check --no-cache --statistics --exit-zero .; echo '```'; } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: shellcheck (errors block, warnings reported)
+        run: |
+          git ls-files '*.sh' > sh_files.txt
+          xargs -a sh_files.txt shellcheck -S error
+          echo "shellcheck warnings: $(xargs -a sh_files.txt shellcheck -S warning -f gcc | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  tests:
+    name: tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: LootAdvisor
+      - name: Pick sibling branches
+        id: sib
+        run: |
+          br="${GITHUB_HEAD_REF:-$GITHUB_REF_NAME}"
+          for r in BuildAdvisor BG3Tools; do
+            if git ls-remote --exit-code --heads "https://github.com/md12ol/$r.git" "$br" >/dev/null; then ref=$br; else ref=main; fi
+            echo "$r=$ref" >> "$GITHUB_OUTPUT"; echo "$r @ $ref"
+          done
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: md12ol/BuildAdvisor
+          ref: ${{ steps.sib.outputs.BuildAdvisor }}
+          path: BuildAdvisor
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: md12ol/BG3Tools
+          ref: ${{ steps.sib.outputs.BG3Tools }}
+          path: BG3Tools
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: pip install -q "lupa==$LUPA_VERSION"
+      - name: Regression suite, tracked files only (local-only checks listed as [LOCAL])
+        run: python LootAdvisor/tests/run.py --ci
+      - name: Mutation check (every CI check goes red when its rule is broken)
+        run: python LootAdvisor/tests/run.py --ci --mutate
+      - name: Leak scan of shipped files
+        run: python LootAdvisor/tools/leak_scan.py
+      - name: Pak build (no install, no game) + package folder complete per INSTALL.md
+        run: python BG3Tools/tools/ci_release.py check "$MOD" "LootAdvisor/$PACKAGE_DIR"

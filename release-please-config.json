@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "simple",
+  "include-component-in-tag": false,
+  "include-v-in-tag": true,
+  "bump-minor-pre-major": true,
+  "pull-request-title-pattern": "chore: release v${version}",
+  "pull-request-header": "Release PR kept up to date by the release workflow. Merging it tags the version and publishes the release.",
+  "pull-request-footer": "Edit CHANGELOG.md here before merging if the notes need it.",
+  "packages": {
+    ".": {
+      "package-name": "LootAdvisor",
+      "changelog-path": "CHANGELOG.md",
+      "release-as": "0.9.0"
+    }
+  }
+}
