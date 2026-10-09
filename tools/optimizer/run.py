@@ -1,19 +1,23 @@
-"""Loot Advisor gear optimizer (decisions 30 / 41): an "Optimized" set per build per act for each origin's first
-two Build Advisor builds, compared with the research / generated sets under the same model.
+"""Loot Advisor gear optimizer: an "Optimized" set per build per act for each origin's first two Build Advisor
+builds, compared with the research / generated sets under the same model, in two party-ownership variants:
 
-  python tools/optimizer/run.py                 all origins, builds, acts (+ switch variants), ~10 min
+  party  a unique item whose party owner is another character is not available (owners.json); the research
+         sets are compared with their own party alternatives (party_alt) in those slots
+  free   the owner gives the item up: every item available (research sets as they are)
+
+  python tools/optimizer/run.py                 all origins, builds, acts, both variants (+ switch variants)
   python tools/optimizer/run.py --only gale     one character (or gale:tempestevoker, gale:tempestevoker:3)
   python tools/optimizer/run.py --write-scores  ALSO write data/scores/optimized.json (separate file; the
                                                 <char>.json files and LootData.lua are never touched)
   python tools/optimizer/run.py --merge-into DIR  add the Optimized sets to DIR/<char>.json (a scratch copy of
                                                 data/scores; refuses the real data/scores unless --yes-real)
 
-Outputs (gitignored, game-derived): tools/optimizer/.cache/optimized.json (sets, comparisons, switch results)
-and tools/optimizer/.cache/report.md (the tables quoted in .claude/LootAdvisor/OPTIMIZER.md).
+Outputs (gitignored, game-derived) in tools/optimizer/.cache/: optimized.json (sets, comparisons, switch results),
+report.md (the tables), test_plans.json (one machine-readable test plan per set for an in-game measurement, format
+in gauntlet.py).
 """
 import argparse
 import json
-import math
 import os
 import sys
 import time
@@ -23,6 +27,8 @@ sys.path.insert(0, HERE)
 import odata  # noqa: E402
 import model  # noqa: E402
 import search  # noqa: E402
+import gauntlet  # noqa: E402
+import respec  # noqa: E402
 
 SI = odata.SI
 PT = sys.modules.get("playertext") or __import__("playertext")
@@ -31,10 +37,22 @@ OWNED_KEEP = 0.03          # an only-if-owned earlier-act item stays only when i
 STRONG = 0.20              # optimizer ahead of the best research set by more than this -> "strong disagreement"
 
 
-def research_loadouts(W, cid, bid, act):
+def research_loadouts(W, cid, bid, act, ownership="party"):
+    """[(set, loadout)] of the research / generated sets. Under "party" ownership a slot holding an item owned by
+    another character takes the set's own party alternative (party_alt), or stays empty."""
     out = []
     for s in W.research_sets(cid, bid, act):
-        lo = {k: v["sid"] for k, v in (s.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
+        lo = {}
+        for k, v in (s.get("items") or {}).items():
+            if not v or not v.get("sid") or v["sid"] not in W.items:
+                continue
+            sid = v["sid"]
+            if ownership == "party" and W.blocked(sid, cid):
+                alt = (v.get("party_alt") or {}).get("sid")
+                if not alt or alt not in W.items or W.blocked(alt, cid):
+                    continue
+                sid = alt
+            lo[k] = sid
         out.append((s, lo))
     return out
 
@@ -104,8 +122,8 @@ def slot_entry(W, cid, act, sid, core, owned_alt=None):
               "owned_only": W.obtainable(sid, act) == "owned", "fallback": None,
               "owned_alt": ({"sid": owned_alt, "name": W.items[owned_alt]["name"]} if owned_alt else None),
               "cond_alt": None})
-    own = (W.owners.get(sid) or {}).get("owners") or []
-    if own and cid not in own:
+    own = W.blocked(sid, cid)
+    if own:
         e["owner"] = own
     return e
 
@@ -137,19 +155,17 @@ def why_text(W, cid, bid, act, r, contrib, lo, ref):
         t += f" Compared with the best community set it is {(r.score / ref - 1) * 100:+.0f}% under the same model."
     if parts:
         t += f" The pieces that matter most: {parts}."
-    if r.choice:
-        el = [v.split("_")[-1].title() for v in r.choice.values()]
-        t += " Attune Markoheshkir to " + ", ".join(el) + "." if any("CHROMATIC" in v for v in r.choice.values()) \
-            else ""
+    if r.choice and any("CHROMATIC" in v for v in r.choice.values()):
+        t += " Attune Markoheshkir to " + ", ".join(v.split("_")[-1].title() for v in r.choice.values()) + "."
     return PT.scrub(t)
 
 
-def validate(W, cid, bid, act, lo):
+def validate(W, cid, bid, act, lo, ownership="party"):
     """The set builder's rules applied to the finished set (independent re-check of every slot)."""
     issues = []
     scorer = W.scorer(cid, bid)
     for slot, sid in lo.items():
-        ok, why = search.allowed(W, cid, bid, sid, scorer)
+        ok, why = search.allowed(W, cid, bid, sid, scorer, ownership)
         if not ok:
             issues.append(f"{slot}: {W.items[sid]['name']} not allowed ({why})")
         if not W.obtainable(sid, act):
@@ -167,10 +183,10 @@ def validate(W, cid, bid, act, lo):
     return issues
 
 
-def optimize(W, cid, bid, act, switches=None, log=print):
+def optimize(W, cid, bid, act, switches=None, ownership="party", log=print):
     t0 = time.time()
-    S = search.Searcher(W, cid, bid, act, switches)
-    rs = research_loadouts(W, cid, bid, act)
+    S = search.Searcher(W, cid, bid, act, switches, ownership=ownership)
+    rs = research_loadouts(W, cid, bid, act, ownership)
     best, r = S.run([lo for _s, lo in rs] + [{}])
     best, owned_alt = owned_pass(W, S, best)
     r = model.score(W, cid, bid, act, best, switches, detail=True)
@@ -179,12 +195,19 @@ def optimize(W, cid, bid, act, switches=None, log=print):
         lo2 = search.drop_illegal(W, lo)
         rr = S.score(lo2)
         comp.append({"id": st.get("id"), "name": st.get("name"), "origin": st.get("origin"), "score": round(rr.score, 2),
-                     "dpr": round(rr.dpr, 1), "R": round(rr.R, 2), "ac": rr.dur["ac"],
-                     "dropped": sorted(set(lo) - set(lo2))})
+                     "dpr": round(rr.dpr, 1), "R": round(rr.R, 2), "ac": rr.dur["ac"], "lost": round(rr.lost, 3),
+                     "dropped": sorted(set(lo) - set(lo2)), "loadout": lo2})
     ref = max(comp, key=lambda c: c["score"]) if comp else None
     contrib = contributions(W, S, best)
-    return dict(cid=cid, bid=bid, act=act, switches=switches or {}, loadout=best, owned_alt=owned_alt, result=r,
-                contrib=contrib, comp=comp, ref=ref, evals=S.evals, secs=time.time() - t0, S=S)
+    return dict(cid=cid, bid=bid, act=act, switches=switches or {}, ownership=ownership, loadout=best,
+                owned_alt=owned_alt, result=r, contrib=contrib, comp=comp, ref=ref, evals=S.evals,
+                secs=time.time() - t0, S=S)
+
+
+def set_id(cid, bid, act, switches, ownership):
+    sw = {k: v for k, v in (switches or {}).items() if v != model.SWITCHES[k]["default"]}
+    return (f"{cid}.{bid}.a{act}.opt" + ("" if ownership == "party" else ".free") +
+            ("" if not sw else "." + ".".join(sorted(sw))))
 
 
 def to_set(W, o):
@@ -202,18 +225,19 @@ def to_set(W, o):
                 e["fallback"] = {"sid": fb, "name": W.items[fb]["name"], "act": W.universe[fb]["act"]}
         items[slot] = e
     ref = o["ref"]["score"] if o["ref"] else None
-    sw = {k: v for k, v in o["switches"].items() if v != model.SWITCHES[k]["default"]}
-    sid_ = f"{cid}.{bid}.a{act}.opt" + ("" if not sw else "." + ".".join(sorted(sw)))
-    st = {"id": sid_, "name": "Optimized", "origin": "optimizer", "build": bid, "act": act,
-          "items": items, "validation": validate(W, cid, bid, act, lo),
+    st = {"id": set_id(cid, bid, act, o["switches"], o["ownership"]), "name": "Optimized", "origin": "optimizer",
+          "build": bid, "act": act, "ownership": o["ownership"],
+          "items": items, "validation": validate(W, cid, bid, act, lo, o["ownership"]),
           "why": why_text(W, cid, bid, act, r, o["contrib"], lo, ref),
           "fallback": {s: e["fallback"]["sid"] for s, e in items.items() if e.get("fallback")},
           "owned_alt": {s: v for s, v in o["owned_alt"].items()},
           "cond_alt": {}, "warnings": [f"{e['name']}: {e['warning']}" for e in items.values() if e.get("warning")],
           "model": {"score": round(r.score, 2), "dpr": round(r.dpr, 1), "offence": round(r.offence, 1),
                     "control": round(r.control, 1), "R": round(r.R, 2), "ac": r.dur["ac"], "hp": r.dur["hp"],
-                    "choice": r.choice, "unknown_predicates": sorted(r.unknown), "events": r.events,
-                    "switches": o["switches"]}}
+                    "turns_lost": round(r.lost, 3), "threats": r.dur["threats"], "stealth_open": round(r.st.p_open, 3),
+                    "concentrating": round(r.st.concentrating, 3), "choice": r.choice,
+                    "unknown_predicates": sorted(r.unknown), "events": r.events, "switches": o["switches"],
+                    "ownership": o["ownership"]}}
     return st
 
 
@@ -237,6 +261,70 @@ def diff_slots(W, a, b):
     return out
 
 
+def compare_row(W, o, st):
+    cid, bid, act = o["cid"], o["bid"], o["act"]
+    ref = o["ref"]
+    in_sets = {v["sid"] for s in W.research_sets(cid, bid, act) for v in (s.get("items") or {}).values()
+               if v and v.get("sid")}
+    delta = (o["result"].score / ref["score"] - 1) if ref and ref["score"] else None
+    return {"char": cid, "build": bid, "act": act, "ownership": o["ownership"],
+            "opt_score": round(o["result"].score, 1), "opt_dpr": round(o["result"].dpr, 1),
+            "opt_R": round(o["result"].R, 1), "opt_ac": o["result"].dur["ac"], "opt_lost": round(o["result"].lost, 3),
+            "ref_set": ref["name"] if ref else None, "ref_score": ref["score"] if ref else None,
+            "ref_dpr": ref["dpr"] if ref else None, "ref_lost": ref["lost"] if ref else None,
+            "delta": round(delta, 3) if delta is not None else None,
+            "finds": [W.items[s]["name"] for s in o["loadout"].values() if s not in in_sets],
+            "diff": diff_slots(W, ref["loadout"] if ref else {}, o["loadout"]),
+            "strong": bool(delta is not None and delta > STRONG), "validation": st["validation"],
+            "owned_by_others": [(s, W.items[sid]["name"], W.blocked(sid, cid)) for s, sid in o["loadout"].items()
+                                if W.blocked(sid, cid)],
+            "evals": o["evals"], "secs": round(o["secs"], 1)}
+
+
+def picks_summary(BI, level, cantrip):
+    """Short text of a build's abilities (level 12 plan), feat / ASI picks up to the level, styles, cantrip."""
+    ab = " ".join(f"{k} {v}" for k, v in BI["base"].items())
+    feats = ", ".join(f"{f['n']} (L{f['lv']})" for f in BI["feats"] if f.get("lv") and f["lv"] <= level)
+    t = f"{ab}; {feats or 'no feats yet'}"
+    if BI["styles"]:
+        t += "; " + ", ".join(BI["styles"])
+    if cantrip:
+        t += "; " + cantrip
+    return t
+
+
+def tuned_plan(W, cid, bid, act, loadout, set_id, source, ownership=None):
+    """Tune the respec to this set's gear, then the test plan with the tuned build. -> (plan, tuning row)"""
+    tu = respec.tune(W, cid, bid, act, loadout)
+    r = model.score(W, cid, bid, act, loadout, detail=True, respec=tu["respec"])
+    plan = gauntlet.test_plan(W, r, set_id, loadout, source, ownership, tu)
+    lvl = odata.ACT_LEVEL[act]
+    BI0 = W.build_input(cid, bid)
+    planned = picks_summary(BI0, lvl, model.PLANS.get(bid, {}).get("cantrip"))
+    tuned = picks_summary(dict(BI0, **{k: tu["respec"][k] for k in ("base", "feats", "styles")}), lvl,
+                          tu["respec"]["cantrip"]) if tu["respec"] else "= planned"
+    row = {"id": set_id, "source": source, "char": cid, "build": bid, "act": act, "planned": planned,
+           "tuned": tuned, "untuned_score": round(tu["untuned"], 2), "tuned_score": round(tu["tuned"], 2),
+           "gain": round(tu["tuned"] / tu["untuned"] - 1, 4) if tu["untuned"] else 0.0, "evals": tu["evals"],
+           "note": tu["note"]}
+    return plan, row
+
+
+def party_conflicts(W, sets):
+    """Unique items with no party owner in owners.json that several characters' party sets use in the same act
+    (one copy exists: the party has to choose)."""
+    by = {}
+    for s in sets:
+        if s.get("ownership") != "party" or "." in s["id"].split(".opt")[-1]:
+            continue
+        for slot, e in s["items"].items():
+            sid = e["sid"]
+            if W.items[sid].get("unique") and not W.blocked(sid, s["char"]):
+                by.setdefault((s["act"], sid), set()).add(s["char"])
+    return [{"act": a, "sid": sid, "name": W.items[sid]["name"], "chars": sorted(c)} for (a, sid), c in sorted(by.items())
+            if len(c) > 1]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", default="")
@@ -244,47 +332,54 @@ def main():
     ap.add_argument("--merge-into", default="")
     ap.add_argument("--yes-real", action="store_true")
     ap.add_argument("--no-switches", action="store_true")
+    ap.add_argument("--ownership", default="party,free", help="variants to run: party, free or both")
+    ap.add_argument("--no-tuning", action="store_true", help="skip the respec tuning and the test plans")
+    ap.add_argument("--plans-only", action="store_true",
+                    help="re-tune and re-export the test plans for the sets in .cache/optimized.json")
     a = ap.parse_args()
+    if a.plans_only:
+        return plans_only()
     if not odata.latest_scores_ready():
         print("note: data/scores/READY_FOR_MOD.txt missing - the pipeline may be mid-run")
     W = odata.World()
     want = [x.split(":") for x in a.only.split(",") if x]
+    variants = [v for v in a.ownership.split(",") if v in search.OWNERSHIP]
     os.makedirs(CACHE, exist_ok=True)
     out = {"generated": time.strftime("%Y-%m-%d %H:%M"), "switches": {k: v["text"] for k, v in model.SWITCHES.items()},
-           "sets": [], "compare": [], "switch_results": []}
-    lines = []
+           "sets": [], "compare": [], "switch_results": [], "plans": [], "tuning": []}
     for cid in odata.CHARS:
         for bid in W.origin_builds(cid):
             for act in (1, 2, 3):
                 if want and not any(w[0] == cid and (len(w) < 2 or w[1] == bid) and (len(w) < 3 or int(w[2]) == act)
                                     for w in want):
                     continue
-                o = optimize(W, cid, bid, act)
-                st = to_set(W, o)
-                out["sets"].append({"char": cid, **st})
-                ref = o["ref"]
-                ref_lo = next((lo for s, lo in research_loadouts(W, cid, bid, act) if ref and s.get("id") == ref["id"]),
-                              {})
-                in_sets = {v["sid"] for s in W.research_sets(cid, bid, act) for v in (s.get("items") or {}).values()
-                           if v and v.get("sid")}
-                finds = [W.items[s]["name"] for s in o["loadout"].values() if s not in in_sets]
-                delta = (o["result"].score / ref["score"] - 1) if ref and ref["score"] else None
-                row = {"char": cid, "build": bid, "act": act, "opt_score": round(o["result"].score, 1),
-                       "opt_dpr": round(o["result"].dpr, 1), "opt_R": round(o["result"].R, 1),
-                       "opt_ac": o["result"].dur["ac"], "ref_set": ref["name"] if ref else None,
-                       "ref_score": ref["score"] if ref else None, "ref_dpr": ref["dpr"] if ref else None,
-                       "delta": round(delta, 3) if delta is not None else None, "finds": finds,
-                       "diff": diff_slots(W, ref_lo, o["loadout"]), "strong": bool(delta is not None and
-                                                                                   delta > STRONG),
-                       "validation": st["validation"], "evals": o["evals"], "secs": round(o["secs"], 1)}
-                out["compare"].append(row)
-                print(f"{cid:11} {bid:20} A{act} opt {row['opt_score']:7.1f} (dpr {row['opt_dpr']:6.1f} R "
-                      f"{row['opt_R']:5.1f}) best set {row['ref_score']} {row['ref_set']!s:32.32} "
-                      f"{(delta or 0) * 100:+6.1f}%  {o['secs']:.0f}s {'VALIDATION: ' + str(st['validation']) if st['validation'] else ''}")
-                if not a.no_switches:
+                for own in variants:
+                    o = optimize(W, cid, bid, act, ownership=own)
+                    st = to_set(W, o)
+                    out["sets"].append({"char": cid, **st})
+                    if own == "party" and not a.no_tuning:
+                        plan, trow = tuned_plan(W, cid, bid, act, o["loadout"], st["id"], "optimizer", own)
+                        out["plans"].append(plan)
+                        out["tuning"].append(trow)
+                        st["model"]["respec_gain"] = trow["gain"]
+                    row = compare_row(W, o, st)
+                    out["compare"].append(row)
+                    print(f"{cid:11} {bid:20} A{act} {own:5} opt {row['opt_score']:7.1f} (dpr {row['opt_dpr']:6.1f} "
+                          f"lost {row['opt_lost']:.2f}) best set {row['ref_score']} {row['ref_set']!s:28.28} "
+                          f"{(row['delta'] or 0) * 100:+6.1f}%  {o['secs']:.0f}s "
+                          f"{'VALIDATION: ' + str(st['validation']) if st['validation'] else ''}", flush=True)
+                    if own == "party" and not a.no_tuning:
+                        # the research sets as published (the in-game test equips them as they are)
+                        for rs, lo in research_loadouts(W, cid, bid, act, "free"):
+                            lo2 = search.drop_illegal(W, lo)
+                            plan, trow = tuned_plan(W, cid, bid, act, lo2, rs.get("id") or rs.get("name"), "research")
+                            out["plans"].append(plan)
+                            out["tuning"].append(trow)
+                    if a.no_switches or own != "party":
+                        continue
                     for k, v in affected_switches(W, o):
                         sw = {k: not model.SWITCHES[k]["default"]}
-                        o2 = optimize(W, cid, bid, act, sw)
+                        o2 = optimize(W, cid, bid, act, sw, ownership=own)
                         st2 = to_set(W, o2)
                         changed = diff_slots(W, o["loadout"], o2["loadout"])
                         out["switch_results"].append({"char": cid, "build": bid, "act": act, "switch": k,
@@ -294,9 +389,12 @@ def main():
                                                       "score_flipped_reoptimized": round(o2["result"].score, 1),
                                                       "gear_changes": changed, "set": st2})
                         print(f"    switch {k}={not model.SWITCHES[k]['default']}: same gear {v:.1f}, re-optimized "
-                              f"{o2['result'].score:.1f}, {len(changed)} slot(s) change")
+                              f"{o2['result'].score:.1f}, {len(changed)} slot(s) change", flush=True)
+    out["party_conflicts"] = party_conflicts(W, out["sets"])
     with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
-        json.dump(out, f, indent=1, default=str)
+        json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
+    with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
+        json.dump(gauntlet.envelope(out["plans"], out["generated"]), f, indent=1, default=str)
     write_report(out, os.path.join(CACHE, "report.md"))
     if a.write_scores:
         p = os.path.join(odata.SCORES, "optimized.json")
@@ -306,17 +404,47 @@ def main():
     if a.merge_into:
         merge_into(a.merge_into, out["sets"], a.yes_real)
     bad = [s for s in out["sets"] if s["validation"]]
-    print(f"\n{len(out['sets'])} optimized sets, {len(bad)} with validation issues; report {CACHE}\\report.md")
+    print(f"\n{len(out['sets'])} optimized sets, {len(bad)} with validation issues; report {CACHE}/report.md")
     return 1 if bad else 0
+
+
+def plans_only():
+    """Respec tuning + test plans for the party optimizer sets and the research sets of an earlier run."""
+    W = odata.World()
+    with open(os.path.join(CACHE, "optimized.json"), encoding="utf-8") as f:
+        out = json.load(f)
+    out["plans"], out["tuning"] = [], []
+    for st in out["sets"]:
+        if st.get("ownership") != "party" or not st["id"].endswith(".opt"):
+            continue
+        cid, bid, act = st["char"], st["build"], st["act"]
+        lo = {k: v["sid"] for k, v in st["items"].items()}
+        plan, trow = tuned_plan(W, cid, bid, act, lo, st["id"], "optimizer", "party")
+        out["plans"].append(plan)
+        out["tuning"].append(trow)
+        st["model"]["respec_gain"] = trow["gain"]
+        for rs, rlo in research_loadouts(W, cid, bid, act, "free"):
+            plan, trow = tuned_plan(W, cid, bid, act, search.drop_illegal(W, rlo), rs.get("id") or rs.get("name"),
+                                    "research")
+            out["plans"].append(plan)
+            out["tuning"].append(trow)
+        print(st["id"], "tuned", flush=True)
+    with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
+        json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
+    with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
+        json.dump(gauntlet.envelope(out["plans"], out["generated"]), f, indent=1, default=str)
+    write_report(out, os.path.join(CACHE, "report.md"))
+    return 0
 
 
 def merge_into(d, sets, yes_real):
     d = os.path.abspath(d)
     if os.path.normcase(d) == os.path.normcase(os.path.abspath(odata.SCORES)) and not yes_real:
-        raise SystemExit("refusing to merge into the real data/scores without --yes-real (decision: behind a flag)")
+        raise SystemExit("refusing to merge into the real data/scores without --yes-real")
     by = {}
     for s in sets:
-        by.setdefault(s["char"], []).append(s)
+        if s.get("ownership") == "party":
+            by.setdefault(s["char"], []).append(s)
     for cid, lst in by.items():
         p = os.path.join(d, cid + ".json")
         with open(p, encoding="utf-8") as f:
@@ -332,14 +460,41 @@ def merge_into(d, sets, yes_real):
 
 
 def write_report(out, path):
-    L = ["| Character | Build | Act | Optimized score | DPR | AC | Best research set | Its score | Delta | New items |",
-         "|---|---|---|---|---|---|---|---|---|---|"]
-    for r in out["compare"]:
-        L.append(f"| {r['char']} | {r['build']} | {r['act']} | {r['opt_score']} | {r['opt_dpr']} | {r['opt_ac']} | "
-                 f"{r['ref_set']} | {r['ref_score']} | {(r['delta'] or 0) * 100:+.0f}% | {', '.join(r['finds'][:4])} |")
-    L += ["", "Switches (unverified mechanics):", "",
-          "| Character | Build | Act | Switch -> flipped | Default score | Flipped, same gear | Flipped, re-optimized | Gear changes |",
-          "|---|---|---|---|---|---|---|---|"]
+    L = []
+    for own, title in (("party", "Party ownership respected (own nothing extra)"),
+                       ("free", "Owner gives it up (every item available)")):
+        rows = [r for r in out["compare"] if r["ownership"] == own]
+        if not rows:
+            continue
+        ds = sorted(r["delta"] for r in rows if r["delta"] is not None)
+        med = ds[len(ds) // 2] if ds else 0
+        L += [f"## {title}", "", f"median {med * 100:+.0f}%, {sum(1 for d in ds if d > STRONG)} of {len(ds)} above "
+              f"+{STRONG * 100:.0f}%", "",
+              "| Character | Build | Act | Optimized score | DPR | AC | Turns lost | Best research set | Its score | "
+              "Delta | New items | Owned by others |", "|---|---|---|---|---|---|---|---|---|---|---|---|"]
+        for r in rows:
+            L.append(f"| {r['char']} | {r['build']} | {r['act']} | {r['opt_score']} | {r['opt_dpr']} | {r['opt_ac']} | "
+                     f"{r['opt_lost']:.2f} | {r['ref_set']} | {r['ref_score']} | {(r['delta'] or 0) * 100:+.0f}% | "
+                     f"{', '.join(r['finds'][:4])} | {', '.join(f'{n} ({o[0]})' for _s, n, o in r['owned_by_others'])} |")
+        L.append("")
+    if out.get("tuning"):
+        gains = sorted(t["gain"] for t in out["tuning"])
+        L += ["## Respec tuned to each set (gauntlet sets: optimizer party sets + research sets)", "",
+              f"{len(gains)} sets, gain from tuning alone: median {gains[len(gains) // 2] * 100:+.1f}%, max "
+              f"{gains[-1] * 100:+.1f}%, {sum(1 for g in gains if g > 1e-9)} sets changed", "",
+              "| Set | Source | Planned (abilities L12; feats to this level; styles; cantrip) | Tuned | Untuned score | "
+              "Tuned score | Gain |", "|---|---|---|---|---|---|---|"]
+        for t in out["tuning"]:
+            L.append(f"| {t['id']} | {t['source']} | {t['planned']} | {t['tuned']} | {t['untuned_score']} | "
+                     f"{t['tuned_score']} | {t['gain'] * 100:+.1f}% |")
+        L.append("")
+    L += ["## Unique items without a party owner that several party sets use", "",
+          "| Act | Item | Characters |", "|---|---|---|"]
+    for c in out.get("party_conflicts") or []:
+        L.append(f"| {c['act']} | {c['name']} | {', '.join(c['chars'])} |")
+    L += ["", "## Switches (unverified mechanics, party variant)", "",
+          "| Character | Build | Act | Switch -> flipped | Default score | Flipped, same gear | Flipped, re-optimized | "
+          "Gear changes |", "|---|---|---|---|---|---|---|---|"]
     for r in out["switch_results"]:
         ch = "; ".join(f"{s}: {a} -> {b}" for s, a, b in r["gear_changes"]) or "none"
         L.append(f"| {r['char']} | {r['build']} | {r['act']} | {r['switch']} -> {not r['default']} | "

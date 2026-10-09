@@ -13,11 +13,10 @@ line on recommended items, map markers at their spots, an **F6** list with direc
 |---|---|
 | `LootAdvisor/` | install folder: `LootAdvisor.pak`, `INSTALL.md`, `Handbook.html`, `Page/`, `Media/` (refreshed by every build, see below) |
 | `Mods/LootAdvisor/` | the mod source (Lua, GUI, the shippable Sets page) - this is what gets packed |
-| `Mods/LootAdvisorSpike/` | the map-marker spike mod (test only) |
 | `tools/` | game-file parsers ([`tools/PARSERS.md`](tools/PARSERS.md)), the item/set pipeline, page builders, save backup ([`tools/BACKUP_RESTORE.md`](tools/BACKUP_RESTORE.md)) |
 | `tests/` | regression suite: `python tests/run.py` (and `--mutate` to prove every check can fail) |
 | `data/research/` | build research notes the pipeline reads |
-| `design/`, `spike/` | design generators and the marker spike sources |
+| `design/` | design generators |
 
 ## Game data is never in this repository
 Extracted game files (item texts, loca, stats, level data, icons/textures, 3D models) are not committed. They are
@@ -85,6 +84,10 @@ From then on every release also uploads the zip to Nexus as a new version of tha
 the Release notes become the Nexus changelog).
 
 ## Contributing
+Setup, building and testing in the game for both mods: see
+[CONTRIBUTING in BG3Tools](https://github.com/md12ol/BG3Tools/blob/main/CONTRIBUTING.md) (`sh setup.sh` there clones
+the repositories side by side and installs the pre-push hook).
+
 - **One branch per task**, named after its topic (`ci-setup`, `sets-page-header`, ...), cut from `main`. Nobody
   commits to `main` directly: it is protected and only takes pull requests.
 - **Commits and PR titles use [Conventional Commits](https://www.conventionalcommits.org/)**: `feat:`, `fix:`,
@@ -94,5 +97,5 @@ the Release notes become the Nexus changelog).
   repositories side by side and uses their branch of the same name when it exists, else `main`.
 - Merge with **"Create a merge commit"** (`gh pr merge --merge`, i.e. `--no-ff`); squash and rebase merges are off so
   the branch history stays readable. The PR title becomes the merge commit subject.
-- Tests that need the game's data run locally only: install the shared pre-push hook once
-  (`bash .claude/bin/install_githooks.sh` in the BG3Mods folder); it runs the full suite before every push.
+- Tests that need the game's data run locally only, in the pre-push hook (see CONTRIBUTING in
+  [BG3Tools](https://github.com/md12ol/BG3Tools)); it runs the full suite before every push.

@@ -260,18 +260,24 @@ def mutations(sc):
         return sc.env(lua_patches={"Tooltip.lua": [('if r.mode ~= "l" or r.s == "owned" then', "if true then")]})
     out.append((names[4], "Tooltip.lua T.Apply: list-only rows get text", m5b, "red"))
 
-    # 6. owners: with the decision-63 fix the check must pass; counting a camp companion as owner must fail
+    # 6. owners: Logic.lua carries the active-party fix -> the unpatched mod must pass; the pre-fix line (team only)
+    #    and a variant that lets a camp companion count must both fail
     def m6fix():
         sc.reset()
-        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_OLD, LOGIC_OWNER_FIX)]})
-    out.append((names[5], "Logic.lua ownerAvailable FIXED (active party only) - must pass", m6fix, "green"))
+        return sc.env()
+    out.append((names[5], "Logic.lua as shipped (ownerAvailable = active party only) - must pass", m6fix, "green"))
+
+    def m6old():
+        sc.reset()
+        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_FIX, LOGIC_OWNER_OLD)]})
+    out.append((names[5], "ownerAvailable back to the pre-fix line (whole team counts)", m6old, "red"))
 
     def m6():
         sc.reset()
-        # the fix applied, then broken again: a camp companion (in the team, not in the party) counts as owner
-        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_OLD, LOGIC_OWNER_FIX.replace(
+        # a camp companion (in the team, not in the party) counts as owner
+        return sc.env(lua_patches={"Logic.lua": [(LOGIC_OWNER_FIX, LOGIC_OWNER_FIX.replace(
             "cs.party == true", "(cs.party == true or cs.team == true)"))]})
-    out.append((names[5], "fixed ownerAvailable broken again: camp companion counts as owner", m6, "red"))
+    out.append((names[5], "ownerAvailable broken again: camp companion counts as owner", m6, "red"))
 
     # 7. the sheet matches subclasses by the shown name again (the old "Hexblade" / "Draconic" comparisons)
     def m7():
