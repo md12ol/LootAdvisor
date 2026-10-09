@@ -1,4 +1,4 @@
-"""Optimizer tests (decisions 30 / 41 / 69): every test can fail, expectations come from independent sources.
+"""Optimizer tests: every test can fail, expectations come from independent sources.
 
   python tests/test_optimizer.py              CI tests (pure code) + local-only tests (need the game-derived data)
   python tests/test_optimizer.py --ci         CI tests only (tracked files only; no data/items_all, data/cache)
@@ -12,7 +12,10 @@ Local-only tests read the optimizer output (tools/optimizer/.cache/optimized.jso
 tools/optimizer/run.py) and check it against the game data and Builds.lua through tests/gamedata.py (own parsers):
 one set per origin x first two Build Advisor builds x act, proficiency, Rage + heavy armour, hands, act
 obtainability, story-path families, Dark-Urge-only items, local optimality (no single swap improves the score) and
-the unverified-mechanics switches. A test with nothing to check fails.
+the unverified-mechanics switches, party ownership (owners.json read here), defensive value (status immunities
+read from the game stats here), creature-type / wearer conditions, stealth openers, the action economy of per-rest
+item spells, The Dead Shot's crit range, the respec tuning (re-scored and re-checked against the point-buy rules
+here) and the test-plan export. A test with nothing to check fails.
 """
 import itertools
 import json
@@ -65,6 +68,8 @@ class FakeState:
         self.offhand_used = False
         self.mods = {"CHA": 3}
         self.classes = {}
+        self.tags = {"GITHYANKI", "HUMANOID"}
+        self.enemy_types = {"UNDEAD": 0.15, "FIEND": 0.12, "HUMANOID": 0.6}
 
     def has_passive(self, p):
         return p == "Owned"
@@ -93,12 +98,21 @@ def test_condition_reader():
         ("Tagged('UNDEAD')", 0.15),
         ("Tagged('UNDEAD') or Tagged('FIEND')", 1 - (1 - 0.15) * (1 - 0.12)),
         ("not HasHeavyArmor(context.Source)", 0.0),
+        # the wearer's own tags (context.Source) vs the enemy's creature-type share
+        ("Tagged('GITHYANKI', context.Source)", 1.0),
+        ("Tagged('GITHYANKI')", 0.0),
+        ("Tagged('ABERRATION')", 0.0),
+        ("Tagged('HUMANOID', context.Target)", 0.6),
     ]
     fails = []
     for text, want in cases:
         got = M.cond_p(text, M.Ctx(st, ev, "boost"))
         if abs(got - want) > 1e-9:
             fails.append(f"{text!r}: {got} != {want}")
+    # being attacked: context.Source is the attacker, an enemy
+    got = M.cond_p("Tagged('UNDEAD', context.Source)", M.Ctx(st, {"defence": True}, "boost"))
+    if abs(got - 0.15) > 1e-9:
+        fails.append(f"defence Tagged(UNDEAD, Source): {got} != 0.15")
     c = M.Ctx(st, ev, "boost")
     got = M.cond_p("SomethingNobodyKnows(1) and IsMeleeAttack()", c)
     if abs(got - 0.5) > 1e-9 or "SomethingNobodyKnows" not in st.unknown:
@@ -177,7 +191,86 @@ def test_die_gains():
     assert not fails, fails
 
 
-CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains]
+def test_float_averages():
+    """Dice averages are not whole numbers: 1d4 = 2.5 (hand values)."""
+    M = _mech()
+    cases = [("1d4", 2.5), ("1d10", 5.5), ("3d4+3", 10.5), ("2d6+StrengthModifier", 12.0),
+             ("max(1,StrengthModifier)", 5.0), ("1d6/2", 1.75)]
+    fails = [f"{e}: {M.avg_expr(e, {'StrengthModifier': 5})} != {w}" for e, w in cases
+             if abs(M.avg_expr(e, {"StrengthModifier": 5}) - w) > 1e-9]
+    assert not fails, fails
+
+
+def _model():
+    import model
+    return model
+
+
+def test_situational_uptimes():
+    """Stealth check vs d20 enumeration (Advantage / Disadvantage), concentration uptime vs enumerating every
+    break sequence, the until-rest uptime vs numerical integration of the Poisson first-arrival time."""
+    m = _model()
+    fails = []
+    for bonus in (3, 7, 11):
+        for dc in (12, 15):
+            for adv, dis in ((0, 0), (1, 0), (0, 1), (1, 1)):
+                rolls = list(itertools.product(range(1, 21), repeat=2))
+                ok = 0
+                for a, b in rolls:
+                    d = max(a, b) if adv and not dis else min(a, b) if dis and not adv else a
+                    ok += d + bonus >= dc
+                want = ok / len(rolls)
+                got = m.stealth_p(bonus, dc, adv, dis)
+                if abs(got - want) > 1e-9:
+                    fails.append(f"stealth_p({bonus},{dc},{adv},{dis}) {got} != {want}")
+    for q in (0.0, 0.2, 0.5):
+        # rounds 2..4 up while not broken; broken in a round with probability q, round 1 is the cast
+        tot = 0.0
+        for seq in itertools.product((0, 1), repeat=3):
+            pr, up, alive = 1.0, 0, True
+            for b in seq:
+                pr *= q if b else 1 - q
+                alive = alive and not b
+                up += alive
+            tot += pr * up
+        want = tot / 4
+        if abs(m.conc_uptime(q, 4) - want) > 1e-9:
+            fails.append(f"conc_uptime({q}) {m.conc_uptime(q, 4)} != {want}")
+    import math as _m
+    for rate in (0.05, 0.3, 1.0):
+        T, N = 16, 20000
+        integ = sum(1 - _m.exp(-rate * (i + 0.5) * T / N) for i in range(N)) / N
+        if abs(m.persist_uptime(rate, T) - integ) > 1e-4:
+            fails.append(f"persist_uptime({rate}) {m.persist_uptime(rate, T)} != {integ}")
+    assert not fails, fails[:5]
+
+
+class _FakeW:
+    def __init__(self, stats):
+        self.stats = stats
+
+
+def test_projectile_totals():
+    """A tooltip that lists all projectiles' damage counts once; a per-beam tooltip counts per beam (worked by hand
+    from two stats entries written here)."""
+    M = _mech()
+    W = _FakeW({
+        "RayAll": {"Level": "2", "TooltipDamageList": "DealDamage(8d6,Fire)", "SpellSuccess": "DealDamage(2d6,Fire,Magical)",
+                   "SpellRoll": "Attack(AttackType.RangedSpellAttack)", "AmountOfTargets": "4", "SpellFlags": "IsSpell"},
+        "Beam": {"Level": "0", "TooltipDamageList": "DealDamage(1d10,Force)", "SpellSuccess": "DealDamage(1d10,Force,Magical)",
+                 "SpellRoll": "Attack(AttackType.RangedSpellAttack)", "AmountOfTargets": "LevelMapValue(EldritchBlast)"},
+        "Darts": {"Level": "1", "TooltipDamageList": "DealDamage(3d4+3,Force)", "AmountOfTargets": "3"}})
+    fails = []
+    for sid, lvl, want in (("RayAll", 5, 28.0), ("Beam", 5, 11.0), ("Beam", 10, 16.5), ("Darts", 5, 10.5)):
+        sp = M.read_spell(W, sid, lvl)
+        tot = sum(M.avg_expr(e) for e, _t in sp["dmg"]) * sp["beams"]
+        if abs(tot - want) > 1e-9:
+            fails.append(f"{sid} level {lvl}: {tot} != {want}")
+    assert not fails, fails
+
+
+CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
+            test_situational_uptimes, test_projectile_totals]
 
 
 # ============================================================================================ local-only tests
@@ -427,7 +520,7 @@ def check_local_optimum(out, sample=None, seed=7):
         cid, bid, act = st["char"], st["build"], st["act"]
         sw = (st.get("model") or {}).get("switches") or {}
         lo = {k: v["sid"] for k, v in st["items"].items()}
-        S = search.Searcher(W, cid, bid, act, sw)
+        S = search.Searcher(W, cid, bid, act, sw, ownership=st.get("ownership", "party"))
         cur = S.score(lo).score
         for slot in search.ORDER:
             for sid in S.cands[slot] + [None]:
@@ -479,7 +572,8 @@ def check_switches(out=None):
         ("gale", "tempestevoker", 3, "dw_chain_all", -1),        # only the main Chain Lightning target maximised
         ("shadowheart", "lightquick", 3, "rotd_char_level", -1),  # Radiance of the Dawn + Cleric level 9 (< 12)
     ]
-    outsets = {(s["char"], s["build"], s["act"]): s for s in (out or {}).get("sets", [])}
+    outsets = {(s["char"], s["build"], s["act"]): s for s in (out or {}).get("sets", [])
+               if s.get("ownership", "party") == "party" and s["id"].endswith(".opt")}
     for cid, bid, act, k, sign in cases:
         st = outsets.get((cid, bid, act))
         if st is None:
@@ -520,10 +614,301 @@ def check_why_text(out):
     return fails, n
 
 
+def _stats():
+    if "S" not in _CACHE:
+        with open(os.path.join(LA, "data", "cache", "stats_resolved.json"), encoding="utf-8") as f:
+            _CACHE["S"] = json.load(f)
+    return _CACHE["S"]
+
+
+def _owners():
+    with open(os.path.join(LA, "data", "scores", "owners.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def check_ownership(out):
+    """Party variant: no item a party owner other than this character holds (owners.json read here: unique items
+    by "owners", scarce-material items by their (character, item) pairs)."""
+    own = _owners()
+    other = {}
+    for g in own.values():
+        for sid in g["items"]:
+            if g["kind"] == "material":
+                ok = {c for c, i in g["pairs"] if i == sid}
+            else:
+                ok = set(g["owners"])
+            other.setdefault(sid, set()).update(ok)
+    fails, n = [], 0
+    for st in out["sets"]:
+        if st.get("ownership") != "party":
+            continue
+        for slot, e in st["items"].items():
+            n += 1
+            if e["sid"] in other and st["char"] not in other[e["sid"]]:
+                fails.append(f"{st['id']} {slot}: {e['name']} belongs to {sorted(other[e['sid']])}")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
+def _passive_boosts(rec):
+    S = _stats()
+    br = rec.get("boosts_raw") or {}
+    txt = br.get("Boosts", "") + ";" + br.get("DefaultBoosts", "")
+    for p in (br.get("PassivesOnEquip") or "").split(";"):
+        txt += ";" + ((S.get(p.strip()) or {}).get("Boosts") or "")
+    return txt
+
+
+def check_defence(out=None):
+    """Boots whose game data makes the wearer immune to Prone / forced movement (StatusImmunity(SG_Prone),
+    Attribute(Grounded), read here) take those threats to 0 for a front-liner; boots without them leave them."""
+    import model
+    W = _world()
+    items = _items()
+    fails, n = [], 0
+    for sid, rec in sorted(items.items()):
+        if rec.get("slot") != "Boots" or sid not in W.universe:
+            continue
+        txt = _passive_boosts(rec)
+        prone = "StatusImmunity(SG_Prone)" in txt
+        grounded = "Attribute(Grounded)" in txt
+        r = model.score(W, "laezel", "bmgiant", 3, {"Boots": sid})
+        th = r.dur.get("threats") or {}
+        if "knocked prone" not in th:
+            fails.append("no threat table in the model")
+            break
+        n += 1
+        if prone != (th["knocked prone"] == 0):
+            fails.append(f"{rec['name']}: prone immunity {prone}, model chance {th['knocked prone']}")
+        fm = next(v for k, v in th.items() if k.startswith("forced movement"))
+        if grounded != (fm == 0):
+            fails.append(f"{rec['name']}: Grounded {grounded}, model forced-movement chance {fm}")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
+def check_wearer_conditions(out=None):
+    """A passive gated by BoostConditions on the wearer (Aberration Hunter: githyanki only, read here) works for
+    Lae'zel (Githyanki) and not for Gale (Human)."""
+    import model
+    W = _world()
+    S = _stats()
+    fails, n = [], 0
+    for sid, rec in sorted(_items().items()):
+        br = rec.get("boosts_raw") or {}
+        for p in (br.get("PassivesOnEquip") or "").split(";"):
+            ps = S.get(p.strip()) or {}
+            bc = ps.get("BoostConditions") or ""
+            if "Tagged('GITHYANKI', context.Source)" not in bc or "Disadvantage(AttackTarget)" not in (ps.get("Boosts")
+                                                                                                     or ""):
+                continue
+            slot = {"Amulet": "Amulet", "Melee Main Weapon": "MainHand"}.get(rec.get("slot"))
+            if not slot:
+                continue
+            n += 1
+            g = model.score(W, "gale", "tempestevoker", 1, {slot: sid}).dur["dis"]
+            lz = model.score(W, "laezel", "bmgiant", 1, {slot: sid}).dur["dis"]
+            if g != 0 or lz <= 0:
+                fails.append(f"{rec['name']}: attacker disadvantage Gale {g}, Lae'zel {lz}")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
+def check_stealth(out=None):
+    """Body armour with stealth disadvantage (item data) lowers a Gloom Stalker's chance to open from stealth;
+    builds without a stealth subclass never open from stealth."""
+    import model
+    W = _world()
+    items = _items()
+    heavy = next(sid for sid, r in sorted(items.items()) if r.get("slot") == "Breast" and
+                 (r.get("armour") or {}).get("stealth_disadvantage"))
+    light = next(sid for sid, r in sorted(items.items()) if r.get("slot") == "Breast" and r.get("armour") and
+                 not (r.get("armour") or {}).get("stealth_disadvantage") and (r["armour"].get("category") == "Light"))
+    fails = []
+    a = model.score(W, "astarion", "gloomassassin", 3, {"Breast": light}).st.p_open
+    b = model.score(W, "astarion", "gloomassassin", 3, {"Breast": heavy}).st.p_open
+    if not (0 < b < a):
+        fails.append(f"stealth opener: {items[light]['name']} {a}, {items[heavy]['name']} {b}")
+    for cid, bid in (("laezel", "bmgiant"), ("gale", "tempestevoker")):
+        if model.score(W, cid, bid, 3, {"Breast": light}).st.p_open != 0:
+            fails.append(f"{cid}.{bid} opens from stealth")
+    return fails, 3
+
+
+def check_action_economy(out):
+    """Optimized caster sets: a per-rest item spell is cast at most its per-rest uses (Cooldown read here: once per
+    short rest = 3 windows, once per rest = 1) over the 16 rounds of a long rest, and the round's action spells
+    (item spells, levelled spells, Radiance of the Dawn) fit in one action."""
+    import model
+    W = _world()
+    S = _stats()
+    fails, n = [], 0
+    for st in out["sets"]:
+        if model.PLANS.get(st["build"], {}).get("mode") != "caster" or st.get("ownership") != "party":
+            continue
+        lo = {k: v["sid"] for k, v in st["items"].items()}
+        r = model.score(W, st["char"], st["build"], st["act"], lo, detail=True)
+        acts = 0.0
+        for e in r.plan_events:
+            n += 1
+            if e["name"].startswith("item spell"):
+                cd = (S.get(e["spell"]) or {}).get("Cooldown") or ""
+                uses = 3 if "ShortRest" in cd else 1
+                if e["n"] > uses / 16 + 1e-9:
+                    fails.append(f"{st['id']} {e['name']} {e['spell']}: {e['n']:.3f} casts a round > {uses}/16")
+                if e.get("cost") == "action":
+                    acts += e["n"]
+            elif e["name"] in ("levelled spell", "Radiance of the Dawn"):
+                acts += e["n"]
+        if acts > 1 + 1e-9:
+            fails.append(f"{st['id']}: {acts:.2f} action spells a round")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
+def check_dead_shot(out=None):
+    """The Dead Shot's crit-range passive has no condition in the game data (read here), so it applies to every
+    attack roll of the wearer - a melee attack included."""
+    import model
+    W = _world()
+    S = _stats()
+    rec = next(r for r in _items().values() if r.get("name") == "The Dead Shot")
+    ps = [S.get(p.strip()) or {} for p in (rec["boosts_raw"].get("PassivesOnEquip") or "").split(";")]
+    crit = [p for p in ps if "ReduceCriticalAttackThreshold" in (p.get("Boosts") or "")]
+    fails = []
+    if not crit or "IF(" in crit[0]["Boosts"] or crit[0].get("BoostConditions"):
+        return ["The Dead Shot's crit passive is conditional in the data - expectation changed"], 1
+    st = model.State(W, "laezel", "bmgiant", 3, {"Ranged": rec["stats_id"]}, None)
+    ev = dict(kind="weapon", weapon=True, melee=True, ranged=False, attack_roll=True, slot="MainHand",
+              attack_type="MeleeWeaponAttack", dtypes={"Slashing"})
+    m = model.event_mods(st, ev, model.all_extra_boosts(st, []), model.lmv_names(st))
+    if abs(m["crit_red"] - 1.0) > 1e-9:
+        fails.append(f"melee attack with The Dead Shot in the ranged slot: crit range -{m['crit_red']}")
+    return fails, 1
+
+
+_COST = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
+
+
+def check_respec(out, sample=None):
+    """Tuned respecs: re-scored here, never below the planned build with the same gear; the exported per-level
+    picks obey the point-buy rules (27 points, 8-15, racial +2 / +1 on two abilities) and keep the build's class
+    sequence (Builds.lua parsed here)."""
+    import model
+    import gamedata
+    W = _world()
+    plans = _plans()
+    builds, _o = gamedata.builds_lua(BUILDS_LUA)
+    fails, n = [], 0
+    ps = plans["plans"] if not sample else plans["plans"][:sample]
+    for p in ps:
+        n += 1
+        lo = {k: v["id"] for k, v in p["gear"].items()}
+        rs = p["respec"]
+        pl = rs["per_level"]
+        if not pl or pl[0]["level"] != 0:
+            fails.append(f"{p['id']}: no point buy")
+            continue
+        pb = {}
+        rac = {}
+        for x in pl[0]["picks"]:
+            m = re.match(r"Point buy (\d+) (\w+)", x)
+            if m:
+                pb[m.group(2)] = int(m.group(1))
+            m = re.match(r"Racial \+(\d) (\w+)", x)
+            if m:
+                rac[m.group(2)] = int(m.group(1))
+        if len(pb) != 6 or any(not 8 <= v <= 15 for v in pb.values()) or sum(_COST[v] for v in pb.values()) > 27:
+            fails.append(f"{p['id']}: point buy {pb}")
+        if sorted(rac.values()) != [1, 2]:
+            fails.append(f"{p['id']}: racial bonus {rac}")
+        seq = [x["class"] for x in pl[1:]][:p["level"]]
+        if seq != p["level_sequence"]:
+            fails.append(f"{p['id']}: class sequence changed")
+        if rs["tuned"]:
+            # rebuild the respec from the export alone and score it
+            base = {k: pb[k] + rac.get(k, 0) for k in pb}
+            feats = []
+            for x in pl[1:]:
+                for pk in x["picks"]:
+                    m = re.match(r"Feat: Ability Improvement (.*)", pk)
+                    if m:
+                        asi = {k: int(v) for v, k in re.findall(r"\+(\d) (\w+)", m.group(1))}
+                        feats.append({"n": "Ability Improvement " + m.group(1), "lv": x["level"], "asi": asi})
+                    elif pk.startswith("Feat: "):
+                        m2 = re.match(r"Feat: ([^(]+?)(?: \(\+1 (\w+)\))?$", pk)
+                        asi = {m2.group(2): 1} if m2.group(2) else {}
+                        feats.append({"n": m2.group(1), "lv": x["level"], "asi": asi})
+            BI = W.build_input(p["char"], p["build"])
+            for f in feats:
+                for k, v in f["asi"].items():
+                    base[k] += v
+            styles = [pk.split(": ", 1)[1] for x in pl[1:] for pk in x["picks"] if pk.startswith("Fighting Style: ")]
+            cant = next((pk.split(": ", 1)[1] for x in pl[1:] for pk in x["picks"] if pk.startswith("Cantrip: ")),
+                        None)
+            r = {"base": base, "feats": feats, "styles": styles or list(BI["styles"]), "cantrip": cant,
+                 "key": "test:" + p["id"]}
+            tuned = model.score(W, p["char"], p["build"], p["act"], lo, respec=r).score
+        else:
+            tuned = model.score(W, p["char"], p["build"], p["act"], lo).score
+        untuned = model.score(W, p["char"], p["build"], p["act"], lo).score
+        if tuned < untuned - 1e-6:
+            fails.append(f"{p['id']}: tuned {tuned:.2f} < planned {untuned:.2f}")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
+def _plans(path=None):
+    path = path or os.path.join(OPT, ".cache", "test_plans.json")
+    if "P" not in _CACHE or path != _CACHE.get("P_path"):
+        with open(path, encoding="utf-8") as f:
+            _CACHE["P"] = json.load(f)
+        _CACHE["P_path"] = path
+    return _CACHE["P"]
+
+
+def check_test_plans(out):
+    """Every party optimized set and every research set has a test plan; every action id is a spell in the game
+    stats (read here); gear ids are items."""
+    S = _stats()
+    items = _items()
+    P = _plans()
+    ids = {p["id"] for p in P["plans"]}
+    fails, n = [], 0
+    for st in out["sets"]:
+        if st.get("ownership") == "party" and ".opt." not in st["id"] + "." and st["id"] not in ids:
+            fails.append(f"no test plan for {st['id']}")
+    for p in P["plans"]:
+        n += 1
+        for rd in p["rounds"]:
+            for a in rd["actions"]:
+                if a["id"] not in S:
+                    fails.append(f"{p['id']} round {rd['round']}: unknown action {a['id']}")
+        for slot, g in p["gear"].items():
+            if g["id"] not in items:
+                fails.append(f"{p['id']} {slot}: unknown item {g['id']}")
+    if P.get("format") != "loot-advisor-test-plan/1":
+        fails.append(f"format {P.get('format')}")
+    if n == 0:
+        fails.append("nothing to check")
+    return fails, n
+
+
 LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_set_rules),
                 ("research sets never beat the optimizer", check_research_not_better),
                 ("why text has no leaks", check_why_text), ("switches", check_switches),
-                ("local optimum (sample of 6 sets)", lambda o: check_local_optimum(o, sample=6))]
+                ("local optimum (sample of 6 sets)", lambda o: check_local_optimum(o, sample=6)),
+                ("party ownership", check_ownership), ("defensive value (status immunities)", check_defence),
+                ("wearer conditions (BoostConditions)", check_wearer_conditions),
+                ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
+                ("The Dead Shot crit range", check_dead_shot),
+                ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
+                ("test plans", check_test_plans)]
 
 
 def _as_test(fn):
@@ -566,10 +951,10 @@ def run_local(out=None, checks=None):
     return bad
 
 
-def _optimize_set(cid, bid, act, switches=None):
+def _optimize_set(cid, bid, act, switches=None, ownership="party"):
     import run as R
     W = _world()
-    o = R.optimize(W, cid, bid, act, switches)
+    o = R.optimize(W, cid, bid, act, switches, ownership=ownership)
     st = R.to_set(W, o)
     return {"char": cid, **st}
 
@@ -598,6 +983,53 @@ def mutations():
         finally:
             mech.eval_cond = old
     out.append(("condition reader: 'not' ignored", m_cond_not))
+
+    def m_float():
+        old = mech.float_eval
+        mech.float_eval = lambda e, n: (lambda v: None if v is None else float(int(v)))(old(e, n))
+        try:
+            test_float_averages()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+        finally:
+            mech.float_eval = old
+    out.append(("dice averages rounded down", m_float))
+
+    def m_beams():
+        old = mech.parse_boosts
+        src = mech.read_spell
+
+        def no_total(W_, sid, level, slot_level=None):
+            r = src(W_, sid, level, slot_level)
+            sp = W_.stats.get(sid) or {}
+            ta = str(sp.get("AmountOfTargets") or "")
+            if r and ta.isdigit():
+                r["beams"] = float(ta)               # every tooltip read per projectile
+            return r
+        mech.read_spell = no_total
+        try:
+            test_projectile_totals()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+        finally:
+            mech.read_spell = src
+            mech.parse_boosts = old
+    out.append(("all-projectile tooltips counted per projectile", m_beams))
+
+    def m_uptime():
+        m = _model()
+        old = m.persist_uptime
+        m.persist_uptime = lambda rate, horizon=16: min(1.0, rate * horizon)
+        try:
+            test_situational_uptimes()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+        finally:
+            m.persist_uptime = old
+    out.append(("until-rest uptime as min(1, rate x day)", m_uptime))
 
     def m_phit():
         old = mech.p_hit
@@ -729,6 +1161,113 @@ def mutations():
         st["items"]["Ring2"] = {"sid": pair[1]}
         return [f for f in check_set_rules({"sets": [st]})[0] if "exclusive" in f]
     out.append(("two items of exclusive story paths in one set", m_path))
+
+    def m_owner():
+        old = W.blocked
+        W.blocked = lambda sid, cid: None            # ownership ignored
+        try:
+            st = _optimize_set("astarion", "thx", 3)
+        finally:
+            W.blocked = old
+        return check_ownership({"sets": [st]})[0]
+    out.append(("party ownership ignored (astarion thx Act 3 re-optimized)", m_owner))
+
+    def m_immunity():
+        old = model.THREATS
+        model.THREATS = [(t[0], (), *t[2:]) for t in old]   # status immunities no longer read
+        model._R0.clear()
+        try:
+            return check_defence()[0]
+        finally:
+            model.THREATS = old
+            model._R0.clear()
+    out.append(("status immunities ignored by the defence model", m_immunity))
+
+    def m_wearer():
+        old = mech._tagged
+        mech._tagged = lambda c, a: float(getattr(c.st, "enemy_types", {}).get((a[0] if a else "").upper(), 0.0))
+        try:
+            return check_wearer_conditions()[0]
+        finally:
+            mech._tagged = old
+    out.append(("Tagged(.., context.Source) read as the enemy", m_wearer))
+
+    def m_stealth():
+        old = model.stealth_p
+        model.stealth_p = lambda bonus, dc, adv=0.0, dis=0.0: old(bonus, dc, adv, 0.0)
+        try:
+            return check_stealth()[0]
+        finally:
+            model.stealth_p = old
+    out.append(("armour stealth disadvantage ignored", m_stealth))
+
+    def m_items():
+        old = model.item_spell_events
+
+        def per_round(st):
+            evs = old(st)
+            for ev in evs:
+                ev["n"] *= 16 / 3                    # per-rest spell counted every round
+            return evs
+        model.item_spell_events = per_round
+        model._CHOICE.clear()
+        try:
+            return check_action_economy(_output())[0]
+        finally:
+            model.item_spell_events = old
+            model._CHOICE.clear()
+    out.append(("per-rest item spells counted per round", m_items))
+
+    def m_deadshot():
+        old = model.all_extra_boosts
+
+        def scoped(st, dyn):
+            return [b if b[2] != "ReduceCriticalAttackThreshold" else b[:5] + ("Ranged",) + b[6:] for b in old(st, dyn)]
+        model.all_extra_boosts = scoped
+        try:
+            return check_dead_shot()[0]
+        finally:
+            model.all_extra_boosts = old
+    out.append(("The Dead Shot's crit range only on its own weapon", m_deadshot))
+
+    def m_respec():
+        import respec
+        old = respec.tune
+
+        def worse(W_, cid, bid, act, loadout, switches=None, max_evals=0):
+            r = old(W_, cid, bid, act, loadout, switches, max_evals=1)
+            sp = r["space"]
+            s0 = sp.initial()
+            if s0:
+                t = next(t for t in sp.neighbours(s0, 12) if t["picks"] != s0["picks"] or t["pb"] != s0["pb"])
+                t["pb"] = dict(s0["pb"])
+                k = max(t["pb"], key=t["pb"].get)    # take points out of the main ability
+                lo_ = min(t["pb"], key=t["pb"].get)
+                t["pb"][k] -= 1
+                t["pb"][lo_] += 1
+                r.update(respec=sp.respec(t), state=t, tuned=r["untuned"] * 1.01)
+            return r
+        import run as R
+        respec.tune = worse
+        try:
+            plan, _row = R.tuned_plan(W, "karlach", "giants", 3,
+                                      {k: v["sid"] for k, v in next(s for s in _output()["sets"] if s["id"] ==
+                                                                    "karlach.giants.a3.opt")["items"].items()},
+                                      "karlach.giants.a3.opt", "optimizer", "party")
+        finally:
+            respec.tune = old
+        import tempfile
+        tmp = os.path.join(tempfile.mkdtemp(), "plans.json")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"format": "loot-advisor-test-plan/1", "plans": [plan]}, f)
+        _CACHE.pop("P", None)
+        try:
+            _plans(tmp)
+            return check_respec({"sets": []})[0]
+        finally:
+            _CACHE.pop("P", None)
+            _CACHE.pop("P_path", None)
+    out.append(("respec tuning returns a respec worse than the plan", m_respec))
     return out
 
 

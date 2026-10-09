@@ -409,6 +409,6 @@ CHECKS = [
     ("class proficiencies from the game (Cleric Morningstar/Flail)", check_class_proficiencies, False),
     ("subclass names as the game shows them", check_subclass_names, False),
     ("list-only items: no frame, no tooltip text", check_list_only_no_frame_no_text, False),
-    # expected to fail until Logic.lua ownerAvailable chooses owners among the active party (mod change pending)
-    ("contested owners: active party only (page = F6)", check_owner_active_party_only, True),
+    # Logic.lua ownerAvailable chooses owners among the active party (State.lua party flag): must pass
+    ("contested owners: active party only (page = F6)", check_owner_active_party_only, False),
 ]

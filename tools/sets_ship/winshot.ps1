@@ -44,4 +44,4 @@ else {
   if ($Key) { Start-Sleep -Milliseconds 300; [WS]::keybd_event([byte]$Key, 0, 0, [UIntPtr]::Zero); [WS]::keybd_event([byte]$Key, 0, 2, [UIntPtr]::Zero) }
 }
 Start-Sleep -Milliseconds $WaitMs
-if ($Out) { & "$PSScriptRoot\..\..\..\tools\bg3drive\crop.ps1" -Out $Out -MaxW 4000 | Out-Null; $Out }
+if ($Out) { & "$PSScriptRoot\..\..\..\BG3Tools\tools\testing\screenshot.ps1" -Out $Out -MaxW 4000 | Out-Null; $Out }

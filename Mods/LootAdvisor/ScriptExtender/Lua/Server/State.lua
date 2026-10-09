@@ -69,15 +69,26 @@ function S.Team()
   return out
 end
 
+-- party = in the ACTIVE party (S.Players(), the same list PageSync uses), not just in the team (camp counts as team)
 function S.Companions()
   local out = {}
   local team = S.Team()
+  local inParty = {}
+  -- keyed by guid AND by the name part ("S_Player_Astarion_<guid>" -> "S_Player_Astarion"), as LA.Mod.companions
+  -- names its npcs by name
+  for _, u in ipairs(S.Players()) do
+    if type(u) == "string" then
+      inParty[u] = true
+      local g = guidOf(u); if g then inParty[g] = true end
+      local nm = u:match("^(.-)_%x+%-%x+%-%x+%-%x+%-%x+$"); if nm then inParty[nm] = true end
+    end
+  end
   for name, c in pairs(LA.Mod.companions or {}) do
     local d = false
     for _, f in ipairs(c.dead or {}) do if flag(f) then d = true end end
     if c.npc and c.npc ~= "" and try(Osi.IsDead, c.npc) == 1 then d = true end
     local inTeam = (c.npc ~= "" and team[c.npc]) or (c.team ~= "" and flag(c.team)) or false
-    out[name] = { team = inTeam and true or false, dead = d }
+    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d }
   end
   return out
 end

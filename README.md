@@ -84,6 +84,10 @@ From then on every release also uploads the zip to Nexus as a new version of tha
 the Release notes become the Nexus changelog).
 
 ## Contributing
+Setup, building and testing in the game for both mods: see
+[CONTRIBUTING in BG3Tools](https://github.com/md12ol/BG3Tools/blob/main/CONTRIBUTING.md) (`sh setup.sh` there clones
+the repositories side by side and installs the pre-push hook).
+
 - **One branch per task**, named after its topic (`ci-setup`, `sets-page-header`, ...), cut from `main`. Nobody
   commits to `main` directly: it is protected and only takes pull requests.
 - **Commits and PR titles use [Conventional Commits](https://www.conventionalcommits.org/)**: `feat:`, `fix:`,
