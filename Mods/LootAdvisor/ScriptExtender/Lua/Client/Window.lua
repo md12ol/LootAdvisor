@@ -161,6 +161,20 @@ local function nameCell(row, r, grey)
   tip(t, table.concat(h, "\n"))
 end
 
+-- "Open Sets page" (decision 83). Script Extender v32 has no way to open a URL or file or to set the clipboard
+-- (checked in game: Ext.IO / Utils / IMGUI / UI / Input / Debug / Mod / Types, no os / io / package), so the button
+-- shows the page's path in a read-only field: click it (selects all), Ctrl+C, then Win+R, Ctrl+V, Enter.
+W.PAGE_PATH = [[%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor\Sets.html]]
+local function pageRow(h)
+  local b = h:AddButton(W.showPath and "Hide Sets page path" or "Open Sets page")
+  try(function() b.OnClick = function() W.showPath = not W.showPath; W.Render(LA.Result) end end)
+  if not W.showPath then return end
+  local f = h:AddInputText("##la_page_path", W.PAGE_PATH)
+  try(function() f.ReadOnly = true; f.AutoSelectAll = true end)
+  try(function() f.ItemWidth = 760 end)
+  colored(h:AddText("Your browser cannot be opened from the game: click the path, press Ctrl+C, then Win+R, Ctrl+V, Enter."), GREY)
+end
+
 W.dirCells = {}
 function W.Render(res)
   if not W.window then return end
@@ -171,6 +185,7 @@ function W.Render(res)
     colored(h:AddText("Waiting for the selected character..."), GREY)
     return
   end
+  pageRow(h)
   if res.notCovered then
     colored(h:AddText(("%s: not covered - Loot Advisor covers the origin characters only (Astarion, Gale, Karlach, " ..
       "Lae'zel, Shadowheart, Wyll, the Dark Urge)."):format(tostring(res.name or "?"))), GREY)
