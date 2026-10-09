@@ -1,5 +1,5 @@
 """Loot Advisor regression checks. Each check reads the REAL pipeline outputs (data/scores/*.json,
-data/scores/lua/LootData.lua) and/or runs the mod's own Lua (Mods/LootAdvisor, loaded read-only through lupa), and
+data/scores/lua/LootData.lua) and/or runs the mod's own Lua (LootAdvisor/Mods/LootAdvisor, read-only through lupa), and
 compares them with facts taken from independent sources (game files via tests/gamedata.py, Builds.lua parsed here).
 A check that finds nothing to check FAILS (no empty passes).
 

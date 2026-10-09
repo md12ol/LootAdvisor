@@ -1,5 +1,5 @@
 -- Dark Urge verdict build (model analysis/darkurge_model.py), in Builds.lua format; reference copy for
--- Mods/BuildAdvisor/ScriptExtender/Lua/Shared/Builds.lua (needs the local L() helper from there).
+-- BuildAdvisor/Mods/BuildAdvisor/ScriptExtender/Lua/Shared/Builds.lua (needs the local L() helper from there).
 -- Suggested origin entry after the merge:
 --   darkurge = { builds = { "throwthief", "throwzerker" }, note = "Race/class free. Berserker 5 / Thief 4 / Champion 3 thrower; Bhaalist Armour (Murder Tribunal) doubles Nyrulna's piercing damage." },
 -- Level timings verified in Progressions.lsx (Shared/SharedDev/GustavX): Barbarian subclass 3, feat 4, Extra Attack 5;

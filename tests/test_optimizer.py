@@ -29,8 +29,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
 OPT = os.path.join(LA, "tools", "optimizer")
 OUT = os.path.join(OPT, ".cache", "optimized.json")
-BUILDS_LUA = os.path.join(os.path.dirname(LA), "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared",
-                          "Builds.lua")
+BUILDS_LUA = os.path.join(os.path.dirname(LA), "BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender",
+                          "Lua", "Shared", "Builds.lua")
 sys.path.insert(0, HERE)
 sys.path.insert(0, OPT)
 

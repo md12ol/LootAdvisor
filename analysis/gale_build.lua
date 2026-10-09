@@ -1,5 +1,5 @@
 -- Gale verdict build (model analysis/gale_model.py), in BA.Builds format.
--- Reference copy for Mods/BuildAdvisor/ScriptExtender/Lua/Shared/Builds.lua.
+-- Reference copy for BuildAdvisor/Mods/BuildAdvisor/ScriptExtender/Lua/Shared/Builds.lua.
 -- Suggested origin line: gale = { builds = { "tempestevoker", "stormsorc" }, note = "Human (locked). Wizard 1-5, Tempest Cleric at 6-7 (Withers), then Wizard to 10." }
 -- Levels follow the game's Progressions.lsx: Evocation at Wizard 2, feats at Wizard 4 / 8, Potent Cantrip at
 -- Wizard 6, Empowered Evocation at Wizard 10; Tempest Domain is chosen at Cleric 1 (heavy armour, martial weapons,

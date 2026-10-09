@@ -3,7 +3,7 @@
   python LootAdvisor/tests/run.py            run all checks against the real pipeline outputs + mod Lua; exit 1 on failure
   python LootAdvisor/tests/run.py --mutate   prove every check can fail: break the guarded thing in a SCRATCH COPY (or a
                                              patched in-memory Lua load), confirm the check goes red; exit 1 if any
-                                             mutation is not caught. Nothing in LootAdvisor/ or Mods/ is modified.
+                                             mutation is not caught. The repo itself is never modified.
   -v                                         print every failure line (default: first 8 per check)
   --ci                                       tracked files only (GitHub CI): the mod's own LootData.lua stands in for
                                              data/scores/lua/LootData.lua; LOCAL-ONLY checks (game data: data/cache,
@@ -11,8 +11,8 @@
                                              skipped and listed as [LOCAL]. Combines with --mutate.
 
 Inputs: LootAdvisor/data/scores/*.json + lua/LootData.lua (pipeline outputs: run python tools/match_research.py &&
-python tools/score_items.py first), Mods/LootAdvisor/ScriptExtender/Lua (read-only, through lupa), Builds.lua
-(read-only), game files (tests/gamedata.py). Needs: pip install lupa.
+python tools/score_items.py first), LootAdvisor/Mods/LootAdvisor/ScriptExtender/Lua (read-only, through lupa),
+Builds.lua (read-only), game files (tests/gamedata.py). Needs: pip install lupa.
 Expected-fail checks (XFAIL) document a known open bug; an unexpected pass (XPASS) counts as a failure so the mark
 gets removed once the bug is fixed.
 """
@@ -29,8 +29,9 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
 ROOT = os.path.dirname(LA)
-MODS_LUA = os.path.join(LA, "Mods", "LootAdvisor", "ScriptExtender", "Lua")
-BUILDS_LUA = os.path.join(ROOT, "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared", "Builds.lua")
+MODS_LUA = os.path.join(LA, "LootAdvisor", "Mods", "LootAdvisor", "ScriptExtender", "Lua")
+BUILDS_LUA = os.path.join(ROOT, "BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua",
+                          "Shared", "Builds.lua")
 sys.path.insert(0, HERE)
 
 try:

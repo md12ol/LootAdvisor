@@ -37,7 +37,7 @@ import model  # noqa: E402
 import odata  # noqa: E402
 
 TOL = 0.15
-_BUILDS_REL = ("BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared", "Builds.lua")
+_BUILDS_REL = ("BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared", "Builds.lua")
 
 
 def _builds_lua_fallback():

@@ -22,15 +22,16 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
 ROOT = os.path.dirname(LA)                     # parent folder of the side-by-side repos
-MODS = os.path.join(LA, "Mods")                 # LootAdvisor's own Mods/
-MOD_DIRS = {"LootAdvisor": os.path.join(LA, "Mods", "LootAdvisor"),
-            "BuildAdvisor": os.path.join(ROOT, "BuildAdvisor", "Mods", "BuildAdvisor")}
+MODS = os.path.join(LA, "LootAdvisor", "Mods")  # LootAdvisor's own Mods/ (the mod source LootAdvisor/Mods/LootAdvisor)
+MOD_DIRS = {"LootAdvisor": os.path.join(MODS, "LootAdvisor"),
+            "BuildAdvisor": os.path.join(ROOT, "BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor")}
 SHIPPED_MODS = ["LootAdvisor", "BuildAdvisor"]
 PRIVATE_MODS = []   # report-only mods (LEAK_SCAN_REPORT_ONLY)
 for _spec in filter(None, os.environ.get("LEAK_SCAN_REPORT_ONLY", "").split(",")):
     _name, _, _path = _spec.partition("=")
     PRIVATE_MODS.append(_name)
-    MOD_DIRS[_name] = _path or os.path.join(ROOT, _name, "Mods", _name)
+    _new = os.path.join(ROOT, _name, _name, "Mods", _name)   # <repo>/<Mod>/Mods/<Mod>, else the older <repo>/Mods/<Mod>
+    MOD_DIRS[_name] = _path or (_new if os.path.isdir(_new) else os.path.join(ROOT, _name, "Mods", _name))
 GENERATED_LUA = {"LootData.lua", "ModData.lua", "ShipManifest.lua"}   # scanned field by field below
 PAGES = [os.path.join(MODS, "LootAdvisor", "Page", "Sets.html"), os.path.join(LA, "artifact", "sets.html")]
 

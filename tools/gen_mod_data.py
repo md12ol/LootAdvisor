@@ -1,6 +1,6 @@
 """Generates the LootAdvisor mod's derived data. Read-only on the data; writes only into the mod.
 
-  python LootAdvisor/tools/gen_mod_data.py            -> Mods/LootAdvisor/...
+  python LootAdvisor/tools/gen_mod_data.py            -> LootAdvisor/Mods/LootAdvisor/...
 
 Inputs (never edited here):
   data/scores/lua/LootData.lua   items (d = per-act display, l = locations) + per-character builds/sets
@@ -9,10 +9,10 @@ Inputs (never edited here):
   data/items_all/levels.json     level -> main level (= the region a marker belongs to)
   data/cache/level_characters_index.json   NPC MapKeys for "is X dead" checks
   game paks Public/*/Flags/*.lsf  story flag names -> GUIDs (Osi.GetFlag needs "<Name>_<GUID>")
-Outputs:
-  Mods/LootAdvisor/ScriptExtender/Lua/Shared/LootData.lua   copy of the scorer's file
-  Mods/LootAdvisor/ScriptExtender/Lua/Shared/ModData.lua    markers per item, build classes, flags, NPC uuids
-  Mods/LootAdvisor/Story/Journal/Markers/<guid>.lsx          one journal marker per (item, source) target
+Outputs (in the mod source LootAdvisor/Mods/LootAdvisor/):
+  ScriptExtender/Lua/Shared/LootData.lua   copy of the scorer's file
+  ScriptExtender/Lua/Shared/ModData.lua    markers per item, build classes, flags, NPC uuids
+  Story/Journal/Markers/<guid>.lsx         one journal marker per (item, source) target
 
 Marker rule: an item gets markers in an act whose display char is 'm' (fixed
 world / container / NPC sources with chance 1) or 't' (trader sources: marker on the trader). Random loot,
@@ -27,8 +27,8 @@ import uuid
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 LA = os.path.dirname(HERE)
-ROOT = LA                      # the repo root holds Mods/LootAdvisor
-MOD = os.path.join(ROOT, "Mods", "LootAdvisor")
+ROOT = LA                      # the repo root holds the mod source LootAdvisor/Mods/LootAdvisor
+MOD = os.path.join(ROOT, "LootAdvisor", "Mods", "LootAdvisor")
 SHARED = os.path.join(MOD, "ScriptExtender", "Lua", "Shared")
 MARKERS = os.path.join(MOD, "Story", "Journal", "Markers")
 sys.path.insert(0, HERE)
