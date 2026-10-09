@@ -42,9 +42,11 @@ jobs:
       - name: luacheck (errors block, warnings reported)
         run: |
           set +e
-          xargs -a lua_files.txt luacheck --formatter plain --codes > luacheck.txt; rc=$?
+          mapfile -t files < lua_files.txt
+          luacheck --formatter plain --codes "${files[@]}" > luacheck.txt; rc=$?   # 0 ok, 1 warnings, 2+ errors
           echo "luacheck: $(grep -c ': (W' luacheck.txt) warnings, $(grep -c ': (E' luacheck.txt) errors" | tee -a "$GITHUB_STEP_SUMMARY"
-          grep ': (E' luacheck.txt
+          grep -v ': (W' luacheck.txt
+          echo "luacheck exit code $rc"
           [ $rc -le 1 ]
       - name: ruff (real errors block)
         run: |
