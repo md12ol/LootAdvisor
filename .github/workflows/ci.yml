@@ -1,4 +1,4 @@
-# Everything that runs without the game. Game-data tests are local-only (pre-push hook in the BG3Mods-claude repo).
+# Everything that runs without the game. Game-data tests are local-only (the pre-push hook, see CONTRIBUTING in BG3Tools).
 # Repos are checked out side by side as on a developer machine; a sibling repo uses the branch of the same name when
 # it exists (cross-repo work), else main.
 name: CI

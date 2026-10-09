@@ -1,8 +1,7 @@
--- Lae'zel verdict build (analysis/LAEZEL_BEST_BUILD.md, model analysis/laezel_model.py). Builds.lua format.
--- NOT merged: the main session decides. Suggested origin line:
+-- Lae'zel verdict build (model analysis/laezel_model.py). Builds.lua format, reference copy. Suggested origin line:
 --   laezel = { builds = { "bmgiant", "oathbreaker" }, note = "Githyanki (locked). Stays Fighter: Battle Master with an advantage source; Vengeance Paladin 12 is the runner-up (respec with Withers)." },
 -- (The runner-up is Vengeance Paladin 12 with Haste; Builds.lua's "oathbreaker" entry starts as Vengeance and reaches
---  it if the oath is never broken - see the doc. The current "sorcadin" entry has an illegal pick, see doc section 7.)
+--  it if the oath is never broken. The current "sorcadin" entry has an illegal pick.)
 -- All hl labels are the game's UI names (loca of the stats DisplayName); levels follow Progressions.lsx:
 -- Fighter style 1, Action Surge 2, subclass 3, feats 4/6/8/12, Extra Attack 5, Indomitable 9,
 -- Improved Combat Superiority 10, Improved Extra Attack 11; manoeuvres 3 at 3, 2 at 7, 2 at 10.

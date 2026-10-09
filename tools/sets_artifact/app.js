@@ -49,7 +49,7 @@
 
   // ================================================================= live sync (local Sets page shipped with the mod)
   // The mod writes the running game's state; the page loader passes it to LootAdvisorSets.live(state). In the
-  // claude.ai artifact LIVE stays null and nothing below changes the page.
+  // online copy LIVE stays null and nothing below changes the page.
   var LIVE = null, LIVE_HAVE = {}, LIVE_PLAY = {}, OVR = store.json("ovr", {}), liveSel = null, liveAct = null;
   var PLAY_KEYS = ["durge", "grove", "night", "isobel"];
   var LIVE_SKIP = { shar: 1, selune: 1, goblins: 1, tieflings: 1, isobel_kill: 1, isobel_dead: 1, isobel_alive: 1 };

@@ -1,4 +1,4 @@
-# items_all - shared schema (all extraction agents follow this)
+# items_all - shared schema (every extraction script follows this)
 
 Inputs (already built, read-only game access):
 - `tools/pak.py` (pak reader), `tools/lsf.py`, `tools/loca.py`, `tools/stats.py` (stats with `using` inheritance,
@@ -42,7 +42,7 @@ referenced by an item root template), skip pure abstract bases (names starting "
 }
 ```
 
-## Source records - `data/items_all/sources.jsonl` (recipes + locations agent)
+## Source records - `data/items_all/sources.jsonl` (recipes + locations)
 One line per (item, source):
 ```
 {"stats_id": "...", "template": "<MapKey>", "kind": "world|container|npc_equipped|npc_inventory|trader|treasure|reward|combo|forge|other",

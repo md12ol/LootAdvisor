@@ -519,7 +519,7 @@ details.more li.c { color: var(--gold-hi); }
 @media (hover: none) { .tt-hint { display: none; } }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; scroll-behavior: auto !important; } }
 
-/* ---- live sync (local Sets page shipped with the mod; unused in the claude.ai artifact) */
+/* ---- live sync (local Sets page shipped with the mod; unused in the online copy) */
 .pf.fromgame select { border-color: var(--ok); }
 .haveb.game span { color: var(--ok); }
 .haveb.game input { accent-color: var(--ok); }
@@ -615,7 +615,7 @@ window.LA_APP = function () {
 
   // ================================================================= live sync (local Sets page shipped with the mod)
   // The mod writes the running game's state; the page loader passes it to LootAdvisorSets.live(state). In the
-  // claude.ai artifact LIVE stays null and nothing below changes the page.
+  // online copy LIVE stays null and nothing below changes the page.
   var LIVE = null, LIVE_HAVE = {}, LIVE_PLAY = {}, OVR = store.json("ovr", {}), liveSel = null, liveAct = null;
   var PLAY_KEYS = ["durge", "grove", "night", "isobel"];
   var LIVE_SKIP = { shar: 1, selune: 1, goblins: 1, tieflings: 1, isobel_kill: 1, isobel_dead: 1, isobel_alive: 1 };

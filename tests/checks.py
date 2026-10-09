@@ -1,4 +1,4 @@
-"""Loot Advisor regression checks (decision 66). Each check reads the REAL pipeline outputs (data/scores/*.json,
+"""Loot Advisor regression checks. Each check reads the REAL pipeline outputs (data/scores/*.json,
 data/scores/lua/LootData.lua) and/or runs the mod's own Lua (Mods/LootAdvisor, loaded read-only through lupa), and
 compares them with facts taken from independent sources (game files via tests/gamedata.py, Builds.lua parsed here).
 A check that finds nothing to check FAILS (no empty passes).
@@ -351,7 +351,7 @@ def check_list_only_no_frame_no_text(env):
     return sorted(set(fails))
 
 
-# ==================================================================== 6. contested owners: ACTIVE party only (dec. 63)
+# ============================================================ 6. contested owners: chosen among the ACTIVE party only
 def check_owner_active_party_only(env):
     """Owner `o` of a unique item is in camp (team, not in the active party): the viewer must NOT see "better on
     <owner>". Positive control: the same owner in the active party -> "better on <owner>" must appear."""
@@ -409,6 +409,6 @@ CHECKS = [
     ("class proficiencies from the game (Cleric Morningstar/Flail)", check_class_proficiencies, False),
     ("subclass names as the game shows them", check_subclass_names, False),
     ("list-only items: no frame, no tooltip text", check_list_only_no_frame_no_text, False),
-    # expected to fail until Logic.lua ownerAvailable uses the active party (decision 63, Mods/ change pending)
+    # expected to fail until Logic.lua ownerAvailable chooses owners among the active party (mod change pending)
     ("contested owners: active party only (page = F6)", check_owner_active_party_only, True),
 ]

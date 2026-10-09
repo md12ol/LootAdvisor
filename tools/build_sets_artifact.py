@@ -1,4 +1,4 @@
-"""Build the LootAdvisor sets artifact (PLAN step 6): artifact/sets.html, one self-contained page.
+"""Build the LootAdvisor sets artifact: artifact/sets.html, one self-contained page.
 
     python tools/build_sets_artifact.py            # re-run any time; ~10-20 s cold, a few s with the icon cache
     python tools/build_sets_artifact.py --no-fonts # skip the embedded game fonts (smaller page)
@@ -1609,7 +1609,7 @@ GILDED_CSS = """
 
 
 def gilded_header(shell, css):
-    """Swap the text brand of the claude.ai artifact for the Gilded Panel header (wide banner image, compact panel on
+    """Swap the text brand of the online page for the Gilded Panel header (wide banner image, compact panel on
     phones). build_sets_ship.py reads shell.html itself and is not affected."""
     try:
         wide = open(os.path.join(BRAND_DIR, "sets_header.webp"), "rb").read()

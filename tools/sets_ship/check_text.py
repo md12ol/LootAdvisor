@@ -1,5 +1,5 @@
 """Check the ship page's text tokens: resolve them like ship.js does (with the English loca) and compare every string
-with the claude.ai artifact's page data. Run after build_sets_ship.py:  python tools/sets_ship/check_text.py"""
+with the online page's data. Run after build_sets_ship.py:  python tools/sets_ship/check_text.py"""
 import json, os, re, sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))

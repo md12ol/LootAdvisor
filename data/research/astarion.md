@@ -127,7 +127,6 @@ neutral NPC, or a story choice) and `MISSABLE`.
 - **The Deathstalker Mantle** (Rare). Once per turn, killing an enemy makes you Invisible for 2 turns. *Great for
   chaining Assassin/Gloom opening kills. [GSA][GSA7][TM].* **Get:** Sceleritas Fel gives it to the **Dark Urge** at camp
   in Act 1, and it can then be handed to Astarion. `WARNING`/`MISSABLE`: it only exists in a **Dark Urge campaign**.
-  The user's "The White Urge" campaign is one.
 
 #### Gloves
 - **Gloves of Archery** (Uncommon). Bow proficiency and **+2 damage on ranged weapon attacks**. *The consensus Act 1-2
@@ -411,7 +410,7 @@ Sells Bhaalist Armour, Bhaalist Gloves, Assassin of Bhaal Cowl, Craterflesh Glov
 Dread Iron Dagger and Fleshrender.
 `WARNING:` you can only buy here after "Impress the Murder Tribunal", which makes you an Unholy Assassin.
 That requires **killing Investigator Valeria**, the hollyphant: a neutral or good NPC and a major story choice. It also
-breaks a Paladin's oath. A "White Urge" (resisting) Dark Urge run would normally refuse this.
+breaks a Paladin's oath. A resisting Dark Urge run would normally refuse this.
 A known exploit exists: pickpocket the ghost summoned through Sarevok's "I'm ready to be judged" dialogue. Failing it
 turns the Tribunal hostile.
 

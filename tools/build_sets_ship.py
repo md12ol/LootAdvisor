@@ -1,4 +1,4 @@
-"""Build the SHIPPABLE LootAdvisor Sets page (HANDOFF decision 24): the same page as the claude.ai artifact
+"""Build the SHIPPABLE LootAdvisor Sets page: the same page as the online copy
 (tools/build_sets_artifact.py + tools/sets_artifact/, all UX fixes), but with NO game art and NO game text inside.
 
     python tools/build_sets_ship.py            # -> Mods/LootAdvisor/Page/Sets.html + Shared/ShipManifest.lua
@@ -455,7 +455,7 @@ def build(args):
                         '<span class="bar"><i></i></span></span>')
     page = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             'content="width=device-width, initial-scale=1, viewport-fit=cover"></head><body>\n' + html + "\n</body></html>\n")
-    # the claude.ai shell has no doctype (the publisher adds it); the local page needs one
+    # the online shell has no doctype (its host adds it); the local page needs one
     os.makedirs(PAGE_DIR, exist_ok=True)
     with open(os.path.join(PAGE_DIR, "Sets.html"), "w", encoding="utf-8", newline="\n") as f:
         f.write(page)

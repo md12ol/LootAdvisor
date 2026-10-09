@@ -58,8 +58,8 @@ end
 
 local function guidOf(s) return type(s) == "string" and (s:match("(%x+%-%x+%-%x+%-%x+%-%x+)$") or s) or nil end
 
--- uuid set of everyone in the player's team (party + camp): Osiris DB_PartOfTheTeam (verified in game: Ryzen's
--- Lae'zel is not in it although she is alive - she left; DB_InCamp lists camp members)
+-- uuid set of everyone in the player's team (party + camp): Osiris DB_PartOfTheTeam (verified in game: a
+-- Lae'zel who left the party is not in it although she is alive - she left; DB_InCamp lists camp members)
 function S.Team()
   local out = {}
   for _, r in ipairs(try(function() return Osi.DB_PartOfTheTeam:Get(nil) end) or {}) do
@@ -108,7 +108,7 @@ function S.IsDurgeCampaign()
 end
 
 -- Camp chests: DB_Camp_UserCampChest lists one chest per user, but the party's items can sit in other camp chest
--- instances (verified in game: White Urge's Traveller's Chest is CONT_PlayerCampChest_B, while the DB names _A).
+-- instances (verified in game: one save's Traveller's Chest is CONT_PlayerCampChest_B, while the DB names _A).
 -- So every placed instance of the camp chest templates counts (CONT_PlayerCampChest_A..D, all children of one parent
 -- template); found once per level by an entity scan, plus whatever the DB names.
 local CHEST_TEMPLATES = { ["96eab9d1-74b1-42f7-b1ad-061a9fcea8c4"] = true, ["f68b5862-887c-4adf-b9f8-bb29e4d73b0f"] = true,

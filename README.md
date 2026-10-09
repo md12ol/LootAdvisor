@@ -93,5 +93,5 @@ the Release notes become the Nexus changelog).
   repositories side by side and uses their branch of the same name when it exists, else `main`.
 - Merge with **"Create a merge commit"** (`gh pr merge --merge`, i.e. `--no-ff`); squash and rebase merges are off so
   the branch history stays readable. The PR title becomes the merge commit subject.
-- Tests that need the game's data run locally only: install the shared pre-push hook once
-  (`bash .claude/bin/install_githooks.sh` in the BG3Mods folder); it runs the full suite before every push.
+- Tests that need the game's data run locally only, in the pre-push hook (see CONTRIBUTING in
+  [BG3Tools](https://github.com/md12ol/BG3Tools)); it runs the full suite before every push.
