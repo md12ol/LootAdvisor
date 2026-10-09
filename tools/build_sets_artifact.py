@@ -135,8 +135,19 @@ def split_top(s, sep=";"):
 BOOST_RE = re.compile(r"^([A-Za-z]+)\s*\((.*)\)$", re.S)
 
 
+_PARSED = {}
+
+
 def parse_boosts(s):
-    """'IF(c):AC(1);Ability(Strength,2)' -> [(cond|None, name, [args])]."""
+    """'IF(c):AC(1);Ability(Strength,2)' -> [(cond|None, name, [args])]. Memoised per string (the optimizer parses
+    the same few thousand boost strings millions of times); callers get fresh lists."""
+    r = _PARSED.get(s)
+    if r is None:
+        r = _PARSED[s] = tuple((c, n, tuple(a)) for c, n, a in _parse_boosts(s))
+    return [(c, n, list(a)) for c, n, a in r]
+
+
+def _parse_boosts(s):
     res = []
     for part in split_top(s):
         cond = None

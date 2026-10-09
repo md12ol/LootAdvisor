@@ -13,6 +13,8 @@ Legality (same rules as the set builder, tools/score_items.py):
   - party ownership (OWNERSHIP): "party" = a unique item (or a scarce-material item) whose party owner is another
     character is not available (owners.json); "free" = the owner gives it up (every item available).
 """
+import copy
+
 import odata
 import model
 
@@ -117,9 +119,17 @@ class Searcher:
         r = self.cache.get(key)
         if r is None:
             r = model.score(self.W, self.cid, self.bid, self.act, dict(key), self.sw)
+            r.st = None              # the evaluation state (~40 KB each) kept every cached result's memory alive
             self.cache[key] = r
             self.evals += 1
         return r
+
+    def without(self, deny):
+        """This searcher with `deny` left out of the candidate lists, sharing the score cache (a score does not
+        depend on what else could have been picked)."""
+        v = copy.copy(self)
+        v.cands = {s: [c for c in lst if c not in deny] for s, lst in self.cands.items()}
+        return v
 
     def prune(self, base):
         """Top `keep` items per slot by their gain on top of `base` (the slot swapped, everything else kept)."""

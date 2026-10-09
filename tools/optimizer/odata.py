@@ -63,6 +63,7 @@ class World:
 
     def __init__(self, scores_dir=SCORES, quiet=False):
         self.scores_dir = scores_dir
+        self._bi = {}
         self.items = LC.load_items()
         self.sources = LC.load_sources()
         self.levels = LC.load_levels()
@@ -154,7 +155,12 @@ class World:
         return self.scores[cid].get("race") or BP.CHARACTERS[cid]["race"]
 
     def build_input(self, cid, bid):
-        return BSA.build_input(self.D, cid, self.race(cid), bid, self.build_entry(cid, bid))
+        """The sheet engine's build input, built once per build (every model evaluation reads it; nothing
+        changes it: State and respec copy what they alter)."""
+        key = (cid, bid)
+        if key not in self._bi:
+            self._bi[key] = BSA.build_input(self.D, cid, self.race(cid), bid, self.build_entry(cid, bid))
+        return self._bi[key]
 
     def scorer(self, cid, bid):
         b = self.build_entry(cid, bid)

@@ -7,6 +7,10 @@ builds, compared with the research / generated sets under the same model, in two
 
   python tools/optimizer/run.py                 all origins, builds, acts, both variants (+ switch variants)
   python tools/optimizer/run.py --only gale     one character (or gale:tempestevoker, gale:tempestevoker:3)
+  python tools/optimizer/run.py --jobs 8        worker processes, one job per (character, build, act); --jobs 1 runs
+                                                everything in this process (same results)
+  python tools/optimizer/run.py --resume        skip the jobs whose file in .cache/jobs/ is already written
+  python tools/optimizer/run.py --merge-jobs    only the merge step: outputs + party assignment from the job files
   python tools/optimizer/run.py --write-scores  ALSO write data/scores/optimized.json (separate file; the
                                                 <char>.json files and LootData.lua are never touched)
   python tools/optimizer/run.py --merge-into DIR  add the Optimized sets to DIR/<char>.json (a scratch copy of
@@ -14,7 +18,7 @@ builds, compared with the research / generated sets under the same model, in two
 
 Outputs (gitignored, game-derived) in tools/optimizer/.cache/: optimized.json (sets, comparisons, switch results),
 report.md (the tables), test_plans.json (one machine-readable test plan per set for an in-game measurement, format
-in gauntlet.py).
+in gauntlet.py), jobs/<char>_<build>_a<act>.json (one per job, merged into the others).
 """
 import argparse
 import json
@@ -81,6 +85,13 @@ def owned_pass(W, S, best):
             owned_alt[slot] = sid
             best = dict(best)
             best[slot] = alt
+    # a later swap changes what an earlier one was weighed against: an item that is now clearly better goes back
+    for slot, sid in list(owned_alt.items()):
+        t = dict(best)
+        t[slot] = sid
+        if search.legal(W, slot, sid, {k: v for k, v in best.items() if k != slot}) and                 S.score(t).score * (1 - OWNED_KEEP) > S.score(best).score:
+            best = t
+            del owned_alt[slot]
     return best, owned_alt
 
 
@@ -327,101 +338,278 @@ def party_conflicts(W, sets):
 
 
 def party_assignment(W, objs):
-    """Per ownership variant and act: who keeps each unique item several characters' sets use (party.py). The
-    repaired loadouts stay in optimized.json only (model output, like the sets themselves)."""
+    """Per ownership variant and act: who keeps each unique item several characters' sets use (party.py), in this
+    process. objs = {(ownership, act, cid, bid): {"loadout", "act", "switches", "ownership"}} (optimize() results
+    will do). The repaired loadouts stay in optimized.json only (model output, like the sets themselves)."""
     out = []
     for own in search.OWNERSHIP:
         for act in (1, 2, 3):
             sub = {(c, b): o for (ow, ac, c, b), o in objs.items() if ow == own and ac == act}
-            if len({c for c, _b in sub}) < 2:
-                continue
-            t0 = time.time()
-            res = party.resolve(W, sub, owned_pass)
-            for b in res["builds"]:
-                b["validation"] = validate(W, b["char"], b["build"], act, b["loadout"], own)
-                b["changed"] = [(s, W.items[x]["name"] if x else "-", W.items[y]["name"] if y else "-")
-                                for s, x, y in b["changed"]]
-            res.update(ownership=own, act=act, secs=round(time.time() - t0, 1),
-                       names={s: W.items[s]["name"] for s in res["claims"]})
-            out.append(res)
-            lost = [b for b in res["builds"] if b["lost"]]
-            print(f"party {own:5} A{act}: {len(res['claims'])} contested items, {len(lost)} sets give something up, "
-                  f"party value {res['total_before']} -> {res['total']} ({res['methods']}, {res['rounds']} round(s), "
-                  f"{res['valuations']} repairs, {res['secs']:.0f}s)", flush=True)
+            if len({c for c, _b in sub}) >= 2:
+                out.append(_party_one(W, own, act, sub))
+                show_party(out[-1])
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--only", default="")
-    ap.add_argument("--write-scores", action="store_true")
-    ap.add_argument("--merge-into", default="")
-    ap.add_argument("--yes-real", action="store_true")
-    ap.add_argument("--no-switches", action="store_true")
-    ap.add_argument("--ownership", default="party,free", help="variants to run: party, free or both")
-    ap.add_argument("--no-tuning", action="store_true", help="skip the respec tuning and the test plans")
-    ap.add_argument("--no-party", action="store_true", help="skip the party assignment of contested unique items")
-    ap.add_argument("--plans-only", action="store_true",
-                    help="re-tune and re-export the test plans for the sets in .cache/optimized.json")
-    a = ap.parse_args()
-    if a.plans_only:
-        return plans_only()
-    if not odata.latest_scores_ready():
-        print("note: data/scores/READY_FOR_MOD.txt missing - the pipeline may be mid-run")
-    W = odata.World()
-    want = [x.split(":") for x in a.only.split(",") if x]
-    variants = [v for v in a.ownership.split(",") if v in search.OWNERSHIP]
-    os.makedirs(CACHE, exist_ok=True)
-    out = {"generated": time.strftime("%Y-%m-%d %H:%M"), "switches": {k: v["text"] for k, v in model.SWITCHES.items()},
-           "sets": [], "compare": [], "switch_results": [], "plans": [], "tuning": [], "party": []}
-    objs = {}
+def show_party(res):
+    lost = [b for b in res["builds"] if b["lost"]]
+    print(f"party {res['ownership']:5} A{res['act']}: {len(res['claims'])} contested items, {len(lost)} sets give "
+          f"something up, party value {res['total_before']} -> {res['total']} ({res['methods']}, {res['rounds']} "
+          f"round(s), {res['valuations']} repairs, {res['evals']} model evaluations, {res['secs']:.0f}s, peak "
+          f"{res['peak_mb']} MB)", flush=True)
+
+
+def _party_one(W, own, act, sub):
+    t0 = time.time()
+    model.reset_caches()                 # the result must not depend on what this process evaluated before
+    res = party.resolve(W, sub, owned_pass)
+    for b in res["builds"]:
+        b["validation"] = validate(W, b["char"], b["build"], act, b["loadout"], own)
+        b["changed"] = [(s, W.items[x]["name"] if x else "-", W.items[y]["name"] if y else "-")
+                        for s, x, y in b["changed"]]
+    res.update(ownership=own, act=act, secs=round(time.time() - t0, 1), peak_mb=peak_mb(), pid=os.getpid(),
+               names={s: W.items[s]["name"] for s in res["claims"]})
+    return res
+
+
+# ============================================================================================ jobs
+# One job = one (character, build, act) with all its variants (ownership, switches, tuning, test plans). Each job
+# writes its own file, so a crash loses only that job and --resume skips the finished ones; the merge step then
+# assembles optimized.json / report.md / test_plans.json and runs the party assignment once over all jobs.
+JOBS = os.path.join(CACHE, "jobs")
+_WORKER = {}
+
+
+def job_path(cid, bid, act):
+    return os.path.join(JOBS, f"{cid}_{bid}_a{act}.json")
+
+
+def job_list(W, only=""):
+    want = [x.split(":") for x in only.split(",") if x]
+    out = []
     for cid in odata.CHARS:
         for bid in W.origin_builds(cid):
             for act in (1, 2, 3):
                 if want and not any(w[0] == cid and (len(w) < 2 or w[1] == bid) and (len(w) < 3 or int(w[2]) == act)
                                     for w in want):
                     continue
-                for own in variants:
-                    o = optimize(W, cid, bid, act, ownership=own)
-                    objs[(own, act, cid, bid)] = o
-                    st = to_set(W, o)
-                    out["sets"].append({"char": cid, **st})
-                    if own == "party" and not a.no_tuning:
-                        plan, trow = tuned_plan(W, cid, bid, act, o["loadout"], st["id"], "optimizer", own)
-                        out["plans"].append(plan)
-                        out["tuning"].append(trow)
-                        st["model"]["respec_gain"] = trow["gain"]
-                    row = compare_row(W, o, st)
-                    out["compare"].append(row)
-                    print(f"{cid:11} {bid:20} A{act} {own:5} opt {row['opt_score']:7.1f} (dpr {row['opt_dpr']:6.1f} "
+                out.append((cid, bid, act))
+    return out
+
+
+def run_job(W, cid, bid, act, params):
+    """Every variant of one (character, build, act). -> dict with the rows of each output table, the party
+    inputs and the log lines."""
+    t0 = time.time()
+    model.reset_caches()                 # the result must not depend on what this process evaluated before
+    out = {"char": cid, "build": bid, "act": act, "params": params, "sets": [], "compare": [], "switch_results": [],
+           "plans": [], "tuning": [], "party_input": [], "log": []}
+    tuning = not params["no_tuning"]
+    for own in params["variants"]:
+        o = optimize(W, cid, bid, act, ownership=own)
+        out["party_input"].append({"ownership": own, "act": act, "switches": o["switches"], "loadout": o["loadout"]})
+        st = to_set(W, o)
+        out["sets"].append({"char": cid, **st})
+        if own == "party" and tuning:
+            plan, trow = tuned_plan(W, cid, bid, act, o["loadout"], st["id"], "optimizer", own)
+            out["plans"].append(plan)
+            out["tuning"].append(trow)
+            st["model"]["respec_gain"] = trow["gain"]
+        row = compare_row(W, o, st)
+        out["compare"].append(row)
+        out["log"].append(f"{cid:11} {bid:20} A{act} {own:5} opt {row['opt_score']:7.1f} (dpr {row['opt_dpr']:6.1f} "
                           f"lost {row['opt_lost']:.2f}) best set {row['ref_score']} {row['ref_set']!s:28.28} "
                           f"{(row['delta'] or 0) * 100:+6.1f}%  {o['secs']:.0f}s "
-                          f"{'VALIDATION: ' + str(st['validation']) if st['validation'] else ''}", flush=True)
-                    if own == "party" and not a.no_tuning:
-                        # the research sets as published (the in-game test equips them as they are)
-                        for rs, lo in research_loadouts(W, cid, bid, act, "free"):
-                            lo2 = search.drop_illegal(W, lo)
-                            plan, trow = tuned_plan(W, cid, bid, act, lo2, rs.get("id") or rs.get("name"), "research")
-                            out["plans"].append(plan)
-                            out["tuning"].append(trow)
-                    if a.no_switches or own != "party":
-                        continue
-                    for k, v in affected_switches(W, o):
-                        sw = {k: not model.SWITCHES[k]["default"]}
-                        o2 = optimize(W, cid, bid, act, sw, ownership=own)
-                        st2 = to_set(W, o2)
-                        changed = diff_slots(W, o["loadout"], o2["loadout"])
-                        out["switch_results"].append({"char": cid, "build": bid, "act": act, "switch": k,
-                                                      "default": model.SWITCHES[k]["default"],
-                                                      "score_default": round(o["result"].score, 1),
-                                                      "score_flipped_same_gear": round(v, 1),
-                                                      "score_flipped_reoptimized": round(o2["result"].score, 1),
-                                                      "gear_changes": changed, "set": st2})
-                        print(f"    switch {k}={not model.SWITCHES[k]['default']}: same gear {v:.1f}, re-optimized "
-                              f"{o2['result'].score:.1f}, {len(changed)} slot(s) change", flush=True)
+                          f"{'VALIDATION: ' + str(st['validation']) if st['validation'] else ''}")
+        if own == "party" and tuning:
+            # the research sets as published (the in-game test equips them as they are)
+            for rs, lo in research_loadouts(W, cid, bid, act, "free"):
+                lo2 = search.drop_illegal(W, lo)
+                plan, trow = tuned_plan(W, cid, bid, act, lo2, rs.get("id") or rs.get("name"), "research")
+                out["plans"].append(plan)
+                out["tuning"].append(trow)
+        if params["no_switches"] or own != "party":
+            continue
+        for k, v in affected_switches(W, o):
+            sw = {k: not model.SWITCHES[k]["default"]}
+            o2 = optimize(W, cid, bid, act, sw, ownership=own)
+            st2 = to_set(W, o2)
+            changed = diff_slots(W, o["loadout"], o2["loadout"])
+            out["switch_results"].append({"char": cid, "build": bid, "act": act, "switch": k,
+                                          "default": model.SWITCHES[k]["default"],
+                                          "score_default": round(o["result"].score, 1),
+                                          "score_flipped_same_gear": round(v, 1),
+                                          "score_flipped_reoptimized": round(o2["result"].score, 1),
+                                          "gear_changes": changed, "set": st2})
+            out["log"].append(f"    switch {k}={not model.SWITCHES[k]['default']}: same gear {v:.1f}, re-optimized "
+                              f"{o2['result'].score:.1f}, {len(changed)} slot(s) change")
+    out["secs"] = round(time.time() - t0, 1)
+    out["peak_mb"] = peak_mb()
+    return out
+
+
+def write_job(res):
+    """Written through a temporary file, so a half-written file never counts as a finished job."""
+    p = job_path(res["char"], res["build"], res["act"])
+    os.makedirs(JOBS, exist_ok=True)
+    with open(p + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(res, f, indent=1, default=str)
+    os.replace(p + ".tmp", p)
+
+
+def read_job(cid, bid, act):
+    try:
+        with open(job_path(cid, bid, act), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def peak_mb():
+    """Peak memory of this process in MB (peak working set on Windows, max RSS elsewhere)."""
+    if sys.platform != "win32":
+        import resource
+        return round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("PageFaultCount", wintypes.DWORD)] + [
+            (n, ctypes.c_size_t) for n in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                           "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage",
+                                           "QuotaNonPagedPoolUsage", "PagefileUsage", "PeakPagefileUsage")]
+    c = Counters()
+    c.cb = ctypes.sizeof(Counters)
+    k = ctypes.windll.kernel32
+    k.GetCurrentProcess.restype = wintypes.HANDLE
+    get = ctypes.windll.psapi.GetProcessMemoryInfo
+    get.argtypes = [wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD]
+    get(k.GetCurrentProcess(), ctypes.byref(c), c.cb)
+    return round(c.PeakWorkingSetSize / 2 ** 20)
+
+
+def set_cache(d):
+    global CACHE, JOBS
+    CACHE, JOBS = d, os.path.join(d, "jobs")
+
+
+def _init_worker(cache):
+    """Worker initializer: the world data is loaded once per process, never pickled per task."""
+    set_cache(cache)
+    _WORKER["W"] = odata.World(quiet=True)
+
+
+def _job_task(args):
+    cid, bid, act, params = args
+    res = run_job(_WORKER["W"], cid, bid, act, params)
+    write_job(res)
+    return cid, bid, act, res["secs"], res["peak_mb"], os.getpid(), res["log"]
+
+
+def _party_task(args):
+    return _party_one(_WORKER["W"], *args)
+
+
+def pool(n):
+    import concurrent.futures
+    return concurrent.futures.ProcessPoolExecutor(max_workers=n, initializer=_init_worker, initargs=(CACHE,))
+
+
+def run_all(W, jobs, params, n, resume=False, party_step=True, run_jobs=True):
+    """Run the jobs and the party solves in one pool of n worker processes (n <= 1: in this process), then merge.
+    Act 3 jobs go first, and each act's two party solves (one per ownership variant) start as soon as that act's
+    jobs are written, so the longest solves overlap the remaining jobs. Finished job files are kept with --resume;
+    run_jobs=False (--merge-jobs) only solves and merges what is on disk."""
+    todo = []
+    for cid, bid, act in (jobs if run_jobs else []):
+        old = read_job(cid, bid, act) if resume else None
+        if old is not None and old.get("params") == params:
+            print(f"{cid}:{bid}:{act} done before, skipped (--resume)", flush=True)
+            continue
+        todo.append((cid, bid, act, params))
+    todo.sort(key=lambda t: -t[2])
+    left = {act: sum(1 for t in todo if t[2] == act) for act in {j[2] for j in jobs}}
+    check = params if run_jobs else None
+    t0 = time.time()
+    peaks, solved = {}, {}
+
+    def job_done(cid, bid, act, secs, peak, pid, log):
+        peaks[pid] = max(peaks.get(pid, 0), peak)
+        print("\n".join(log) + f"\n    [{cid}:{bid}:{act} {secs:.0f}s, process {pid} peak {peak} MB]", flush=True)
+        left[act] -= 1
+        return party_tasks(W, jobs, act, check) if party_step and left[act] == 0 else []
+
+    def solve_done(res):
+        solved[(res["ownership"], res["act"])] = res
+        pid = res.pop("pid")
+        peaks[pid] = max(peaks.get(pid, 0), res["peak_mb"])
+        show_party(res)
+
+    ready = [t for act in sorted(left, reverse=True) if left[act] == 0 and party_step
+             for t in party_tasks(W, jobs, act, check)]
+    if n <= 1:
+        for t in ready:
+            solve_done(_party_one(W, *t))
+        for cid, bid, act, _p in todo:
+            res = run_job(W, cid, bid, act, params)
+            write_job(res)
+            for t in job_done(cid, bid, act, res["secs"], res["peak_mb"], os.getpid(), res["log"]):
+                solve_done(_party_one(W, *t))
+    elif todo or ready:
+        import concurrent.futures as cf
+        with pool(n) as ex:
+            pending = {ex.submit(_party_task, t): "party" for t in ready}
+            pending.update({ex.submit(_job_task, t): "job" for t in todo})
+            while pending:
+                done, _rest = cf.wait(pending, return_when=cf.FIRST_COMPLETED)
+                for f in done:
+                    kind = pending.pop(f)
+                    if kind == "party":
+                        solve_done(f.result())
+                    else:
+                        pending.update({ex.submit(_party_task, t): "party" for t in job_done(*f.result())})
+    print(f"{len(todo)} job(s) and {len(solved)} party solve(s) in {time.time() - t0:.0f}s with {max(1, n)} "
+          f"process(es); peak memory per process (MB): {sorted(peaks.values(), reverse=True)}", flush=True)
+    out = merge_jobs(W, jobs, check)
+    out["party"] = [solved[(own, act)] for own in search.OWNERSHIP for act in (1, 2, 3) if (own, act) in solved]
+    return out
+
+
+def party_tasks(W, jobs, act, params=None):
+    """The party solves of one act, from its job files: [(ownership, act, {(cid, bid): party input})] for each
+    variant with at least two characters."""
+    sub = {}
+    for cid, bid, a in jobs:
+        if a != act:
+            continue
+        res = read_job(cid, bid, a)
+        if res is None or (params is not None and res.get("params") != params):
+            raise SystemExit(f"job file missing or written with other options (run it first): {cid}:{bid}:{a}")
+        for pi in res["party_input"]:
+            sub.setdefault(pi["ownership"], {})[(cid, bid)] = pi
+    return [(own, act, sub[own]) for own in search.OWNERSHIP
+            if own in sub and len({c for c, _b in sub[own]}) >= 2]
+
+
+def merge_jobs(W, jobs, params=None):
+    """Assemble the outputs from the job files, in job order."""
+    out = {"generated": time.strftime("%Y-%m-%d %H:%M"), "switches": {k: v["text"] for k, v in model.SWITCHES.items()},
+           "sets": [], "compare": [], "switch_results": [], "plans": [], "tuning": [], "party": []}
+    missing = []
+    for cid, bid, act in jobs:
+        res = read_job(cid, bid, act)
+        if res is None or (params is not None and res.get("params") != params):
+            missing.append(f"{cid}:{bid}:{act}")
+            continue
+        for k in ("sets", "compare", "switch_results", "plans", "tuning"):
+            out[k] += res[k]
+    if missing:
+        raise SystemExit("job files missing or written with other options (run them first): " + ", ".join(missing))
     out["party_conflicts"] = party_conflicts(W, out["sets"])
-    if not a.no_party:
-        out["party"] = party_assignment(W, objs)
+    return out
+
+
+def write_outputs(out, a):
     with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
     with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
@@ -434,8 +622,42 @@ def main():
         print("wrote", p, "(separate file; <char>.json and LootData.lua untouched)")
     if a.merge_into:
         merge_into(a.merge_into, out["sets"], a.yes_real)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--only", default="")
+    ap.add_argument("--write-scores", action="store_true")
+    ap.add_argument("--merge-into", default="")
+    ap.add_argument("--yes-real", action="store_true")
+    ap.add_argument("--no-switches", action="store_true")
+    ap.add_argument("--ownership", default="party,free", help="variants to run: party, free or both")
+    ap.add_argument("--no-tuning", action="store_true", help="skip the respec tuning and the test plans")
+    ap.add_argument("--no-party", action="store_true", help="skip the party assignment of contested unique items")
+    ap.add_argument("--plans-only", action="store_true",
+                    help="re-tune and re-export the test plans for the sets in .cache/optimized.json")
+    ap.add_argument("--jobs", type=int, default=8, help="worker processes (1 = everything in this process)")
+    ap.add_argument("--resume", action="store_true", help="skip jobs whose file in .cache/jobs/ is already written")
+    ap.add_argument("--merge-jobs", action="store_true",
+                    help="only the merge step: outputs and party assignment from the job files in .cache/jobs/")
+    ap.add_argument("--cache", default=CACHE, help="output directory (default tools/optimizer/.cache)")
+    a = ap.parse_args(argv)
+    set_cache(os.path.abspath(a.cache))
+    if a.plans_only:
+        return plans_only()
+    if not odata.latest_scores_ready():
+        print("note: data/scores/READY_FOR_MOD.txt missing - the pipeline may be mid-run")
+    t0 = time.time()
+    W = odata.World()
+    os.makedirs(CACHE, exist_ok=True)
+    jobs = job_list(W, a.only)
+    params = {"variants": [v for v in a.ownership.split(",") if v in search.OWNERSHIP],
+              "no_tuning": a.no_tuning, "no_switches": a.no_switches}
+    out = run_all(W, jobs, params, a.jobs, a.resume, not a.no_party, not a.merge_jobs)
+    write_outputs(out, a)
     bad = [s for s in out["sets"] if s["validation"]]
-    print(f"\n{len(out['sets'])} optimized sets, {len(bad)} with validation issues; report {CACHE}/report.md")
+    print(f"\n{len(out['sets'])} optimized sets, {len(bad)} with validation issues; report {CACHE}/report.md "
+          f"({time.time() - t0:.0f}s)")
     return 1 if bad else 0
 
 

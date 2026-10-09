@@ -22,7 +22,9 @@ import json
 import os
 import random
 import re
+import shutil
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -988,8 +990,8 @@ def check_party(out):
     """Party assignment (out["party"]): per ownership variant and act, no unique item (data/items_all read here) in
     two characters' final loadouts; every unique item that several characters' optimized sets use (counted here
     from out["sets"]) was assigned to one of them; every final loadout passes the set rules and, for the party
-    variant, the owner rulings; scores re-computed with the model; nobody gains from losing an item, and the party
-    total is the sum of the per-character means."""
+    variant, the owner rulings; scores re-computed with the model; nobody gains from losing an item (beyond the
+    keep-it-if-owned margin), and the party total is the sum of the per-character means."""
     import model
     items = _items()
     W = _world()
@@ -1021,7 +1023,9 @@ def check_party(out):
             v = model.score(W, b["char"], b["build"], act, b["loadout"], sw).score
             if abs(v - b["score_after"]) > 0.01 + 1e-4 * v:
                 fails.append(f"{own} A{act} {b['char']} {b['build']}: model {v:.2f} != reported {b['score_after']}")
-            if b["score_after"] > b["score_before"] * 1.0001 + 0.01:
+            # the keep-it-if-owned rule may leave an optimized set up to 3% short of its best single swap (the same
+            # margin as the local-optimum check), so a repair can come out that much ahead; more is a solver bug
+            if b["score_after"] > b["score_before"] * 1.031 + 0.01:
                 fails.append(f"{own} A{act} {b['char']} {b['build']}: gains by losing ({b['score_before']} -> "
                              f"{b['score_after']})")
             per_char.setdefault(b["char"], []).append(b["score_after"])
@@ -1039,6 +1043,49 @@ def check_party(out):
     return fails, n
 
 
+PARALLEL_SUBSET = "karlach:giants:1,wyll:lockadin:1,laezel:bmgiant:1"
+
+
+def _strip_timing(x):
+    if isinstance(x, dict):
+        return {k: _strip_timing(v) for k, v in x.items() if k not in ("secs", "generated", "peak_mb")}
+    if isinstance(x, list):
+        return [_strip_timing(v) for v in x]
+    return x
+
+
+def check_jobs_parallel(_out=None, only=PARALLEL_SUBSET):
+    """run.py --jobs 1 and --jobs 2 on a small subset (three Act 1 builds that contest unique items, both ownership
+    variants so the party step also runs in workers) write the same optimized.json and test_plans.json, timings
+    aside; each run goes to its own scratch cache directory."""
+    import contextlib
+    import io
+    import run as R
+    got, fails = {}, []
+    for n in (1, 2):
+        d = tempfile.mkdtemp(prefix=f"opt_jobs{n}_")
+        old = R.CACHE
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                R.main(["--only", only, "--jobs", str(n), "--no-switches", "--cache", d])
+            got[n] = {}
+            for name in ("optimized.json", "test_plans.json"):
+                with open(os.path.join(d, name), encoding="utf-8") as f:
+                    got[n][name] = _strip_timing(json.load(f))
+            got[n]["jobs"] = sorted(os.listdir(os.path.join(d, "jobs")))
+        finally:
+            R.set_cache(old)
+            shutil.rmtree(d, ignore_errors=True)
+    for k in got[1]:
+        if got[1][k] != got[2][k]:
+            fails.append(f"{k}: --jobs 1 and --jobs 2 differ")
+    if len(got[1]["jobs"]) != len(only.split(",")):
+        fails.append(f"job files {got[1]['jobs']}")
+    if not got[1]["optimized.json"].get("party"):
+        fails.append("no party assignment in the subset")
+    return fails, len(got[1]["optimized.json"].get("sets") or [])
+
+
 LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_set_rules),
                 ("research sets never beat the optimizer", check_research_not_better),
                 ("why text has no leaks", check_why_text), ("switches", check_switches),
@@ -1048,7 +1095,8 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
                 ("The Dead Shot crit range", check_dead_shot),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
-                ("test plans", check_test_plans), ("party assignment of unique items", check_party)]
+                ("test plans", check_test_plans), ("party assignment of unique items", check_party),
+                ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
 
 
 def _as_test(fn):
