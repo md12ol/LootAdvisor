@@ -1,0 +1,128 @@
+# Adapted from the issue templates of BG3 Script Extender (Norbyte/bg3se, itself from tModLoader),
+# BG3 Mod Manager (LaughingLeader/BG3ModManager) and BG3 Community Library.
+
+name: Bug report
+description: Something in Loot Advisor is broken or behaves wrongly
+labels: ["bug"]
+body:
+
+- type: markdown
+  attributes:
+    value: |
+      # Before you create an issue...
+
+      Please search the [issues](../issues) first. If your problem is already there, add to it or react
+      with 👍 instead of opening a new one.
+
+      Report only problems with **Loot Advisor** here. Problems with Script Extender itself belong at
+      [Norbyte/bg3se](https://github.com/Norbyte/bg3se/issues); problems with another mod go to its author.
+
+- type: checkboxes
+  id: preflight
+  attributes:
+    label: Checks
+    options:
+      - label: I am on the latest Loot Advisor release.
+        required: true
+      - label: Script Extender is installed and up to date for my game version.
+        required: true
+      - label: The problem still happens with only Loot Advisor, Script Extender and its dependencies enabled (or I say below which other mods are needed).
+        required: false
+
+
+- type: input
+  id: mod-version
+  attributes:
+    label: Loot Advisor version
+    description: Shown in your mod manager, or the file name of the zip you installed.
+    placeholder: 0.9.0
+  validations:
+    required: true
+
+- type: input
+  id: game-version
+  attributes:
+    label: Game version
+    description: Patch and hotfix, shown at the bottom of the main menu.
+    placeholder: Patch 8 Hotfix 36
+  validations:
+    required: true
+
+- type: input
+  id: se-version
+  attributes:
+    label: Script Extender version
+    description: Printed at the top of the Script Extender console, or in BG3 Mod Manager.
+    placeholder: v32
+  validations:
+    required: true
+
+- type: dropdown
+  id: platform
+  attributes:
+    label: Platform
+    options:
+      - Steam
+      - GOG
+      - Other
+  validations:
+    required: true
+
+- type: dropdown
+  id: os
+  attributes:
+    label: OS
+    options:
+      - Windows 11
+      - Windows 10
+      - Linux (Proton / Wine)
+      - Other
+  validations:
+    required: true
+
+- type: textarea
+  id: description
+  attributes:
+    label: What happened?
+    description: Describe the problem. If the game crashed, say when.
+  validations:
+    required: true
+
+- type: textarea
+  id: steps
+  attributes:
+    label: Steps to reproduce
+    placeholder: |
+      1. Load a save in Act ...
+      2. Open ...
+      3. See ...
+  validations:
+    required: true
+
+- type: textarea
+  id: expected
+  attributes:
+    label: What did you expect instead?
+  validations:
+    required: true
+
+- type: textarea
+  id: logs
+  attributes:
+    label: Script Extender log
+    description: |
+      Attach the newest log from `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\` (or copy the
+      console lines that mention the mod). Drag files into this box to attach them.
+    render: text
+
+- type: textarea
+  id: load-order
+  attributes:
+    label: Load order
+    description: In BG3 Mod Manager, *File > Export Order to Text File*, then attach it (or paste the list).
+
+- type: textarea
+  id: screenshots
+  attributes:
+    label: Screenshots
+    description: Screenshots or a short video help a lot. Drag files into this box.

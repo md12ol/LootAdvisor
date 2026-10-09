@@ -1,0 +1,75 @@
+# Adapted from the issue templates of BG3 Script Extender (Norbyte/bg3se, itself from tModLoader),
+# BG3 Mod Manager (LaughingLeader/BG3ModManager) and BG3 Community Library.
+
+name: Wrong or missing recommendation
+description: An item is recommended wrongly, missing, in the wrong place, or for the wrong character
+labels: ["recommendation"]
+body:
+- type: markdown
+  attributes:
+    value: |
+      Use this form when the advice itself looks wrong (not when something is broken - use *Bug report* for that).
+      Recommendations follow game data, including known game bugs, so please say *why* you think it is wrong.
+
+- type: input
+  id: item
+  attributes:
+    label: Item
+    placeholder: Helldusk Armour
+  validations:
+    required: true
+
+- type: input
+  id: character
+  attributes:
+    label: Character and build
+    description: Who it was recommended for (or should be), and the build shown in the F6 list header.
+    placeholder: Karlach - Throwing Barbarian
+  validations:
+    required: true
+
+- type: input
+  id: where
+  attributes:
+    label: Act and area
+    placeholder: Act 3, Lower City
+  validations:
+    required: true
+
+- type: dropdown
+  id: kind
+  attributes:
+    label: What is wrong?
+    multiple: true
+    options:
+      - The item should not be recommended for this character
+      - A better item is missing
+      - The map marker is in the wrong place or missing
+      - The item can no longer be obtained in my story
+      - It says "Better on <someone>" but that is wrong
+      - The tooltip or F6 text is wrong or unclear
+      - Something else
+  validations:
+    required: true
+
+- type: textarea
+  id: why
+  attributes:
+    label: Why do you think so?
+    description: E.g. the item's real effect, a story choice you made, or the item you would pick instead.
+  validations:
+    required: true
+
+- type: input
+  id: version
+  attributes:
+    label: Loot Advisor version
+    placeholder: 0.9.0
+  validations:
+    required: true
+
+- type: textarea
+  id: screenshots
+  attributes:
+    label: Screenshots
+    description: The F6 list and the item tooltip are the most useful. Drag files into this box.

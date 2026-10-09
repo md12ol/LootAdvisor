@@ -1,0 +1,32 @@
+# Adapted from the issue templates of BG3 Script Extender (Norbyte/bg3se, itself from tModLoader),
+# BG3 Mod Manager (LaughingLeader/BG3ModManager) and BG3 Community Library.
+
+name: Feature request
+description: Suggest an idea for Loot Advisor
+labels: ["enhancement"]
+body:
+- type: textarea
+  id: problem
+  attributes:
+    label: What problem would it solve?
+    description: E.g. "I always lose track of ..."
+  validations:
+    required: true
+
+- type: textarea
+  id: solution
+  attributes:
+    label: What would you like to happen?
+  validations:
+    required: true
+
+- type: textarea
+  id: alternatives
+  attributes:
+    label: Alternatives you have considered
+
+- type: textarea
+  id: context
+  attributes:
+    label: Anything else
+    description: Screenshots, examples from other mods or games.
