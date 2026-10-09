@@ -7,9 +7,29 @@ LA = LA or {}
 LA.UI = {}
 local try = LA.try
 
--- Run Noesis code on the UI thread when the SE build supports it (v33+), else directly (v32, like Highlighter.lua).
+-- Every read or write of the Noesis tree goes through LA.UI.Run. Noesis renders in parallel with Lua, so a walk
+-- from the game tick can reach an element the UI has just freed and crash the game inside VisualChild (seen in
+-- combat, where the HUD is rebuilt all the time). Ext.UI.Defer (SE v33+) runs the code at the start of the next
+-- UI update, where that cannot happen. Older SE has no safe moment, so the code is skipped there unless the
+-- player opts in with the setting UnsafeUiOnOldSE. Returns true when fn was run or queued.
+local warnedOldSE = false
 function LA.UI.Run(fn)
-  if Ext.UI.Defer then Ext.UI.Defer(function() pcall(fn) end) else pcall(fn) end
+  local defer = try(function() return Ext.UI.Defer end)
+  if defer then
+    defer(function() pcall(fn) end)
+    return true
+  end
+  if LA.Settings and LA.Settings.UnsafeUiOnOldSE == true then
+    pcall(fn)
+    return true
+  end
+  if not warnedOldSE then
+    warnedOldSE = true
+    Ext.Utils.Print("[Loot Advisor] item frames, tooltip advice and the rainbow map marker style need Script Extender"
+      .. " v33 or newer; this Script Extender is older, so they are off. The F6 list, map markers and the Sets page"
+      .. " still work.")
+  end
+  return false
 end
 
 function LA.UI.Root() return try(Ext.UI.GetRoot) end

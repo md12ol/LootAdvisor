@@ -262,7 +262,7 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
       <div class="mods" style="grid-template-columns: minmax(0, 1fr)">
         <a class="mod-card" href="#lootadvisor">
           <h2><span class="glyph g-la" aria-hidden="true"></span>Loot Advisor</h2>
-          <dl><dt>Hotkey</dt><dd><kbd>F6</kbd> item list</dd><dt>For</dt><dd>the 7 origin characters</dd><dt>Needs</dt><dd>Script Extender v20 or newer</dd></dl>
+          <dl><dt>Hotkey</dt><dd><kbd>F6</kbd> item list</dd><dt>For</dt><dd>the 7 origin characters</dd><dt>Needs</dt><dd>Script Extender v33 or newer for frames and map painting</dd></dl>
         </a>
       </div>
       <div class="note">
@@ -277,7 +277,7 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
       </div>
       <h3 id="se">Script Extender and a mod manager</h3>
       <ol class="steps">
-        <li>Get <a href="https://github.com/LaughingLeader/BG3ModManager">BG3 Mod Manager</a> (free). In it, choose <i>Tools &gt; Download and Extract the Script Extender</i>. That installs <a href="https://github.com/Norbyte/bg3se">BG3 Script Extender</a> (version 20 or newer) in one click. Script Extender is a separate community project and is not included with this mod.</li>
+        <li>Get <a href="https://github.com/LaughingLeader/BG3ModManager">BG3 Mod Manager</a> (free). In it, choose <i>Tools &gt; Download and Extract the Script Extender</i>. That installs <a href="https://github.com/Norbyte/bg3se">BG3 Script Extender</a> in one click. Loot Advisor's marks inside the game's own interface need version 33 or newer; until v33 is a normal release, get it from the Devel channel: create a file <code>ScriptExtenderUpdaterConfig.json</code> in the game's <code>bin</code> folder containing <code>{"UpdateChannel": "Devel"}</code>, then start the game once. Delete that file to go back to normal releases. Script Extender is a separate community project and is not included with this mod.</li>
         <li>Drag <code>LootAdvisor.pak</code> into BG3 Mod Manager (or <i>File &gt; Import Mod</i>), move Loot Advisor to the active mods list, then <i>Save Load Order</i> and <i>Export Load Order to Game</i>.</li>
         <li>Start the game. If a <b>Mod Verification</b> dialog lists Loot Advisor, tick it and choose Start Game.</li>
       </ol>
@@ -315,12 +315,12 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
 
       <h3 id="la-install">Requirements and install</h3>
       <div class="facts">
-        <div class="fact"><span class="eyebrow">Needs</span><b>Script Extender v20+</b><br><small>tested with v32</small></div>
+        <div class="fact"><span class="eyebrow">Needs</span><b>Script Extender v33+</b><br><small>for frames and map painting; the list and Sets page work on v32</small></div>
         <div class="fact"><span class="eyebrow">Optional</span><b>Build Advisor</b><br><small>your build pick there is used to break ties</small></div>
         <div class="fact"><span class="eyebrow">Disk</span><b>3.75 MB pak</b><br><small>+ about 18 MB for the Sets page, built on first load</small></div>
       </div>
       <ol class="steps">
-        <li>Install Script Extender.</li>
+        <li>Install Script Extender. Item frames and map painting need v33 or newer. Until v33 is a normal release, get it from the Devel channel: create a file <code>ScriptExtenderUpdaterConfig.json</code> in the game's <code>bin</code> folder containing <code>{"UpdateChannel": "Devel"}</code>, then start the game once. Delete that file to go back to normal releases.</li>
         <li>Import <code>LootAdvisor.pak</code> with BG3 Mod Manager and enable it (or copy it to the game's <code>Mods</code> folder and enable it in the game's mod manager).</li>
         <li>Start the game and load a save. Tick Loot Advisor if the <b>Mod Verification</b> dialog lists it. The console prints <code>[Loot Advisor] loaded - F6 toggles the item list.</code></li>
         <li>Select an origin character. Frames and map markers appear within about a second; press <kbd>F6</kbd> for the list.</li>
@@ -569,6 +569,7 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
           <tr><td><code>Markers</code></td><td><code>true</code></td><td>Map markers.</td></tr>
           <tr><td><code>Tooltips</code></td><td><code>true</code></td><td>"Why" text in item tooltips.</td></tr>
           <tr><td><code>Arrows</code></td><td><code>5</code></td><td>How many off-screen markers keep a rainbow arrow.</td></tr>
+          <tr><td><code>UnsafeUiOnOldSE</code></td><td><code>false</code></td><td><code>true</code> draws frames, tooltip lines and map painting on Script Extender older than v33 anyway. Older versions change the interface while the game draws it, which can crash the game (seen in combat); use v33 instead.</td></tr>
           <tr><td><code>Page</code></td><td><code>true</code></td><td><code>false</code> stops writing the Sets page and its live state.</td></tr>
           <tr><td><code>ActOverride</code></td><td>none</td><td>Force act 1, 2 or 3 instead of the one detected from your region.</td></tr>
           <tr><td><code>NorthZ</code>, <code>EastX</code></td><td><code>1</code></td><td>Set to <code>-1</code> to flip the list's compass if directions ever look mirrored.</td></tr>
