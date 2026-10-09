@@ -379,9 +379,10 @@ def iter_strings(o):
 # What goes in (user 2026-10-09): only the best and rarest items - Legendary and Very Rare page items, ranked by how
 # often the sets pick them: main picks first (rank-1 set of each character's main build, per act), then picks in all
 # sets, then the item id (deterministic). One cell per icon. The list is longer than the strip: the page skips items
-# whose icon the player's install does not have and takes the next one. The top HDR_LA get our rainbow frame (the
-# in-game mark of a recommended item), the rest the game's own rarity frame.
-HDR_COLS, HDR_ROWS, HDR_PHONE, HDR_LA, HDR_SPARE = 7, 3, 8, 3, 14
+# whose icon the player's install does not have and takes the next one. Every cell gets our rainbow frame (the
+# in-game mark of a recommended item - they are all recommended picks; user 2026-10-09).
+HDR_COLS, HDR_ROWS, HDR_PHONE, HDR_SPARE = 7, 3, 8, 14
+HDR_LA = HDR_COLS * HDR_ROWS + HDR_SPARE   # how many of the ranked items get the rainbow frame: all of them
 HDR_RARITY = {"Legendary": "legendary", "VeryRare": "veryrare"}
 
 

@@ -3,8 +3,8 @@
    the page: DATA.hdr only names art keys of page items.
      DATA.hdr = { cols, rows, phone, la, items: [[artKey, frame, count], ...] }   best first (build_sets_ship.header_rank:
      Legendary / Very Rare items ranked by how often the sets pick them)
-   The strip takes the first items whose icon exists (a missing icon -> the next item); the first `la` get Loot
-   Advisor's rainbow frame, the others the game's rarity frame. Before the icons exist the cells are empty slots. */
+   The strip takes the first items whose icon exists (a missing icon -> the next item); the first `la` (all of
+   them) get Loot Advisor's rainbow frame, any others the game's rarity frame. Before the icons exist the cells are empty slots. */
 (function () {
   "use strict";
   var DATA = JSON.parse(document.getElementById("la-data").textContent), H = DATA.hdr, UI = DATA.ui || {};
