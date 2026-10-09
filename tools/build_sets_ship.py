@@ -374,50 +374,65 @@ def iter_strings(o):
 
 # ------------------------------------------------------------------------------------------------ header
 # Gilded Panel header (branding option 1, HANDOFF decisions 58 / 70): our lockup image + CSS panel; the inventory strip
-# on the right is filled at runtime from the player's own game icons. Cells by game ICON NAME (row major, 7 columns,
-# the third row is cut by the panel like in branding/LootAdvisor/option1_sets.png): [icon, frame, stack count].
-# frame "auto" = the rarity of the page item with that icon; "la" = our rainbow frame; "" = none.
-# Gear icons are page items (already in the art list); the consumables add ~10 controller icons (~21 KB each).
-HDR_COLS = 7
-HDR_CELLS = [
-    ("Item_MAG_OfTheDevout_Amulet", "auto", 0), ("Item_LOOT_SCROLL_Shatter", "rare", 0),
-    ("Item_WPN_HUM_Handaxe_A_1", "", 11), ("Item_CONS_Potion_Healing_A", "", 30),
-    ("Item_MAG_TheBulwark_Shield", "auto", 0), ("Item_ALCH_Solution_Elixir_ArcaneAcuity", "", 9),
-    ("Item_CONS_Potion_Healing_A_Greater", "", 12),
-    ("Item_LOOT_GEN_Goblet_Rich_Large_A", "", 2), ("Item_MAG_Cleric_Devotees_Mace_GLOW", "la", 0),
-    ("Item_MAG_TheChromatic_Staff", "la", 0), ("Item_MAG_SHA_SeluneBlessing_Spear_GLOW", "la", 0),
-    ("Item_GRN_Bomb_A", "", 8), ("Item_CONS_Potion_Healing_A_Superior", "", 8),
-    ("Item_ALCH_Solution_Elixir_Enlarge", "", 5),
-    ("Item_MAG_TheVictory_Longbow", "auto", 0), ("Generated_MAG_WYRM_OfBalduran_Helmet_Magic", "auto", 0),
-    ("Item_LOOT_SCROLL_Longstrider", "uncommon", 0), ("Item_MAG_TheCrimson_Shortsword", "auto", 0),
-    ("Item_LOOT_GEN_Throwable_Grenade_Confusion_A", "", 4), ("Item_MAG_TheDueller_Rapier", "auto", 0),
-    ("Item_MAG_Infernal_Plate_Armor", "auto", 0),
-]
-HDR_PHONE = [8, 3, 9, 4, 10, 11, 0, 6]   # one row on phones (cell indexes)
-RARITY_KEY = {"Uncommon": "uncommon", "Rare": "rare", "VeryRare": "veryrare", "Legendary": "legendary", "Story": "story"}
-LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_lockup.py (our own art)
+# on the right is filled at runtime from the player's own game icons (7 columns x 3 rows, the third row cut by the panel
+# like in branding/LootAdvisor/option1_sets.png; one row on phones).
+# What goes in (user 2026-10-09): only the best and rarest items - Legendary and Very Rare page items, ranked by how
+# often the sets pick them: main picks first (rank-1 set of each character's main build, per act), then picks in all
+# sets, then the item id (deterministic). One cell per icon. The list is longer than the strip: the page skips items
+# whose icon the player's install does not have and takes the next one. The top HDR_LA get our rainbow frame (the
+# in-game mark of a recommended item), the rest the game's own rarity frame.
+HDR_COLS, HDR_ROWS, HDR_PHONE, HDR_LA, HDR_SPARE = 7, 3, 8, 3, 14
+HDR_RARITY = {"Legendary": "legendary", "VeryRare": "veryrare"}
+
+
+def header_rank(payload):
+    """[(sid, main picks, all picks)] of the Legendary / Very Rare items the sets pick, best first."""
+    E, items = payload["E"], payload["items"]
+    main, picks = {}, {}
+    for ch in payload["chars"]:
+        for sets in (ch.get("sets") or {}).values():
+            for st in sets:
+                is_main = st.get("b") == ch.get("main") and str(st.get("rank")) == "1"
+                for idx in (st.get("slots") or {}).values():
+                    sid = E[idx].get("sid") if isinstance(idx, int) and idx < len(E) else None
+                    if not sid:
+                        continue
+                    picks[sid] = picks.get(sid, 0) + 1
+                    if is_main:
+                        main[sid] = main.get(sid, 0) + 1
+    ranked = [(sid, main.get(sid, 0), n) for sid, n in picks.items()
+              if (items.get(sid) or {}).get("r") in HDR_RARITY and (items.get(sid) or {}).get("icon")]
+    ranked.sort(key=lambda x: (-x[1], -x[2], x[0]))
+    return ranked
 
 
 def header_cells(A, payload):
-    by_icon = {}
-    for it in payload["items"].values():
-        if it.get("icon"):
-            by_icon.setdefault(it["icon"], it.get("r"))
-    cells, missing = [], []
-    for name, frame, count in HDR_CELLS:
-        key = A.icon(name, "item", 96)
-        if not key:
-            missing.append(name)
-            key = ""
-        if frame == "auto":
-            frame = RARITY_KEY.get(by_icon.get(key), "")
-        cells.append([key, frame, count])
-    return {"cols": HDR_COLS, "cells": cells, "phone": HDR_PHONE}, missing
+    """DATA.hdr: the ranked item list for the strip (icon art keys already in the page's art list - no extra art)."""
+    out, seen = [], set()
+    for sid, _m, _n in header_rank(payload):
+        it = payload["items"][sid]
+        if it["icon"] in seen:
+            continue
+        seen.add(it["icon"])
+        out.append([it["icon"], HDR_RARITY[it["r"]], 0])
+        if len(out) >= HDR_COLS * HDR_ROWS + HDR_SPARE:
+            break
+    missing = [] if len(out) >= HDR_COLS * HDR_ROWS else ["only %d ranked items" % len(out)]
+    return {"cols": HDR_COLS, "rows": HDR_ROWS, "phone": HDR_PHONE, "la": HDR_LA, "items": out}, missing
 
 
-def header_html(shell):
+LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_lockup.py (our own art)
+
+
+LOCKUP_PRIVATE = os.path.join(SHIP_SRC, "brand_lockup_private.webp")   # the claude.ai artifact (does not follow the game)
+ALT_SHIP = "Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live"
+ALT_PRIVATE = "Loot Advisor: Synergy Sets - full loadouts for every origin, act by act"
+
+
+def header_html(shell, lockup=LOCKUP, alt=ALT_SHIP):
+    """The Gilded Panel header in place of shell.html's text brand (also used by build_sets_artifact.gilded_header)."""
     import base64
-    lock = base64.b64encode(open(LOCKUP, "rb").read()).decode("ascii")
+    lock = base64.b64encode(open(lockup, "rb").read()).decode("ascii")
     old = re.search(r'<div class="brand">.*?</div>', shell, re.S)
     if not old:
         raise SystemExit("shell.html brand block not found - update build_sets_ship.header_html")
@@ -426,9 +441,9 @@ def header_html(shell):
            '<i class="c" style="left:0;top:100%"></i><i class="c" style="left:100%;top:100%"></i>'
            '<i class="m" style="left:50%;top:0"></i><i class="m" style="left:50%;top:100%"></i></span>'
            '<img class="gp-lock" src="data:image/webp;base64,@LOCK@" width="659" height="240" '
-           'alt="Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live">'
+           'alt="@ALT@">'
            '<span class="gp-strip" id="gpStrip" aria-hidden="true"></span><span class="gp-row" id="gpRow" aria-hidden="true"></span>'
-           '</span></span></h1>\n    </div>').replace("@LOCK@", lock)
+           '</span></span></h1>\n    </div>').replace("@LOCK@", lock).replace("@ALT@", alt)
     return shell[:old.start()] + new + shell[old.end():]
 
 
@@ -462,7 +477,7 @@ def build(args):
     # ---- header strip icons (before the manifest, so the mod writes them with the other art)
     payload["hdr"], hdr_missing = header_cells(A, payload)
     if hdr_missing:
-        print("  ! header icons not in this game install (cells stay empty): %s" % ", ".join(hdr_missing))
+        print("  ! header strip: %s (the rest stays empty slots)" % ", ".join(hdr_missing))
 
     # ---- art manifest: keys -> path index + box (the page builds IMG[key] from the decoded textures)
     paths, pidx = [], {}

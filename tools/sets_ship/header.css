@@ -59,7 +59,8 @@
 /* ---- "not live" card: the copy in the install folder, or the live copy before the mod wrote the game files */
 .offline { max-width: 760px; margin: 28px auto; padding: 22px 26px 20px; border: 1px solid var(--rule); border-radius: 4px;
   background: linear-gradient(#211a14, #15100c); box-shadow: inset 0 0 0 4px #1a140f, inset 0 0 0 5px rgba(175,135,104,.3), 0 10px 30px rgba(0,0,0,.5);
-  font-size: var(--fs-m); line-height: 1.55; }
+  font-size: var(--fs-m); line-height: 1.55;
+  font-family: 'Quadraat', 'Palatino Linotype', 'Book Antiqua', Georgia, serif; }   /* the game font if present, else a system serif - no embedded font */
 .offline h2 { margin: 0 0 10px; font-weight: 400; font-size: var(--fs-xl); line-height: 1.15; color: var(--title); text-wrap: balance; }
 .offline p { margin: 0 0 12px; }
 .offline em { color: var(--gold-hi); }

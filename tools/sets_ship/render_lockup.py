@@ -2,7 +2,9 @@
 tagline) as a transparent WebP from the branding sources - OUR OWN art, no game art. The page draws the panel, frame
 and the inventory-icon strip itself (CSS + the player's own game icons, decoded at runtime).
 
-    python tools/sets_ship/render_lockup.py      -> tools/sets_ship/brand_lockup.webp (720x240 CSS px drawn at 2x)
+    python tools/sets_ship/render_lockup.py            -> tools/sets_ship/brand_lockup.webp (720x240 CSS px drawn at 2x)
+    python tools/sets_ship/render_lockup.py private    -> brand_lockup_private.webp for the claude.ai artifact (it does
+                                                          not follow the game: tagline "Full loadouts for every origin...")
 
 Needs BuildAdvisor/branding/src (sibling repo) and Edge/Chrome; fonts come from Google Fonts at render time, like
 branding/src/render.py. The branding sources are copied to a temp folder and patched there (nothing in src changes).
@@ -26,15 +28,17 @@ sys.path.insert(0, os.path.join(os.path.dirname(HERE), "sets_artifact"))
 from screens import WS, js  # noqa: E402
 
 SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(HERE))), "BuildAdvisor", "branding", "src")
-OUT = os.path.join(HERE, "brand_lockup.webp")
-TAG = "Full loadouts for your build · follows your game live"   # true for the shipped page (it syncs with the game)
+PRIVATE = sys.argv[1:2] == ["private"]
+OUT = os.path.join(HERE, "brand_lockup_private.webp" if PRIVATE else "brand_lockup.webp")
+# the shipped page syncs with the game; the private claude.ai artifact does not (branding option1_sets_private.png)
+TAG = "Full loadouts for every origin, act by act" if PRIVATE else "Full loadouts for your build · follows your game live"
 BROWSERS = [r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
             r"C:\Program Files\Google\Chrome\Application\chrome.exe"]
 W, H, SCALE, PORT = 720, 240, 2, 9347
 
 # the "sets" layout of option1.html without the frame, the background and the (game art) screenshot
-LOCK = """
+LOCK_T = """
   setslock() {
     document.body.classList.add("transparent"); S.style.background = "none"; S.classList.remove("grain");
     S.innerHTML = `<div class="abs" style="left:52px;top:0;bottom:0;display:flex;align-items:center;gap:30px">${plate(132)}
@@ -42,7 +46,7 @@ LOCK = """
       <div class="title" style="font-size:72px">Synergy Sets</div>
       <div class="tag" style="font-size:22px;margin-top:8px">%s</div></div></div>`;
   },
-""" % TAG
+"""
 
 
 def main():
@@ -54,7 +58,7 @@ def main():
         shutil.copy(os.path.join(SRC, f), tmp)
     p = os.path.join(tmp, "option1.html")
     s = open(p, encoding="utf-8").read()
-    s2 = s.replace("  mark(small) {", LOCK + "  mark(small) {", 1)
+    s2 = s.replace("  mark(small) {", (LOCK_T % TAG) + "  mark(small) {", 1)
     assert s2 != s, "option1.html layout changed - update render_lockup.py"
     open(p, "w", encoding="utf-8").write(s2)
     prof = tempfile.mkdtemp(prefix="la_lockup_prof_")
