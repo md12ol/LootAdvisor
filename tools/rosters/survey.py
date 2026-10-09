@@ -1,8 +1,8 @@
-import sys, os, json, shutil, glob
-sys.path.insert(0, r'C:\Users\micha\Desktop\BG3Mods\LootAdvisor\tools')
+import sys, os, json, shutil, glob, tempfile
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))   # LootAdvisor/tools
 from pak import Pak
 import lsf
-SC = r'C:\Users\micha\AppData\Local\Temp\claude\C--Users-micha-Desktop-BuildAdvisor\scratch_rosters'
+SC = os.environ.get('LA_ROSTER_DIR') or os.path.join(tempfile.gettempdir(), 'scratch_rosters')   # survey output
 ST = os.path.join(os.environ['LOCALAPPDATA'], r"Larian Studios\Baldur's Gate 3\PlayerProfiles\Public\Savegames\Story")
 out = []
 for d in sorted(os.listdir(ST)):

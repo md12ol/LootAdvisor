@@ -20,9 +20,10 @@ line on recommended items, map markers at their spots, an **F6** list with direc
 
 ## Game data is never in this repository
 Extracted game files (item texts, loca, stats, level data, icons/textures, 3D models) are not committed. They are
-rebuilt on your machine from your own BG3 install (read-only on the game folder; default path
-`D:\SteamLibrary\steamapps\common\Baldurs Gate 3`, see `tools/pak.py` `GAME_DATA`). Needs Python 3.12 with
-`lz4`, `zstandard`, `Pillow` and `lupa` (`pip install lz4 zstandard pillow lupa`).
+rebuilt on your machine from your own BG3 install (read-only on the game folder). The game folder is taken from
+the environment variable `BG3_DIR` if set, otherwise the first of `D:\SteamLibrary\steamapps\common\Baldurs Gate 3`
+and `C:\Program Files (x86)\Steam\steamapps\common\Baldurs Gate 3` that exists (`tools/game_paths.py`). Needs
+Python 3.12 with `lz4`, `zstandard`, `Pillow` and `lupa` (`pip install lz4 zstandard pillow lupa`).
 
 ### Rebuild (in this order, from the repo root)
 ```bash

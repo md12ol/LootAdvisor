@@ -2,7 +2,7 @@
 # hot.sh client|server <mod-relative lua file>...: hot-reload LootAdvisor Lua files in the running game (dev eval hook).
 # e.g. hot.sh server Server/State.lua Shared/ModData.lua
 D="$LOCALAPPDATA/Larian Studios/Baldur's Gate 3/Script Extender"
-M=/c/Users/micha/Desktop/BG3Mods/LootAdvisor/Mods/LootAdvisor/ScriptExtender/Lua
+M="$(cd "$(dirname "$0")/.." && pwd)/Mods/LootAdvisor/ScriptExtender/Lua"
 side=$1; shift
 mkdir -p "$D/LootAdvisor_dev"
 code=""

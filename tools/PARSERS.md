@@ -1,7 +1,8 @@
 # BG3 game-file parsers (read-only)
 
 Pure Python 3.12 + `lz4` + `zstandard`. Nothing here writes into the game folder
-(`D:\SteamLibrary\steamapps\common\Baldurs Gate 3\Data`, `pak.GAME_DATA`). Format reference: Norbyte's LSLib.
+(`<game>\Data`, `pak.GAME_DATA`; the game folder is env `BG3_DIR`, default
+`D:\SteamLibrary\steamapps\common\Baldurs Gate 3`, see `tools/game_paths.py`). Format reference: Norbyte's LSLib.
 
 | tool | what it does | call |
 |---|---|---|

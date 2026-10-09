@@ -20,8 +20,10 @@ for _s in (sys.stdout, sys.stderr):     # save names can hold any character; nev
     except Exception:
         pass
 
-DEFAULT_SRC_ROOT = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Larian Studios", "Baldur's Gate 3")
-DEFAULT_SE_SETTINGS = r"D:\SteamLibrary\steamapps\common\Baldurs Gate 3\bin\ScriptExtenderSettings.json"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from game_paths import GAME_DIR, USER_DIR  # noqa: E402
+DEFAULT_SRC_ROOT = USER_DIR
+DEFAULT_SE_SETTINGS = os.path.join(GAME_DIR, "bin", "ScriptExtenderSettings.json")
 DEFAULT_DEST_ROOT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                                   "..", "backups"))   # Desktop/BG3Mods/LootAdvisor/backups (restructure 2026-10)
 
