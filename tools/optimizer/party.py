@@ -19,6 +19,15 @@ in several characters' sets of the same act. Per act and ownership variant this 
                  - otherwise greedy by marginal value (each item to the character that loses the most without it)
                    followed by local search: move one item to another claimant, or (when no move helps) swap two
                    items between two characters, taking the first that raises the party value, until none does.
+  owner rule   = the character the set builder's owner rule names (data/scores/owners.json when its owner is a
+                 claimant, else the same rule over the claimants' optimized sets: the build the character plays
+                 first, then the game-data fit of the item in its slot, then the finer numeric tie model)
+  10% rule     = the solver may move an item away from that owner only when it is clearly better elsewhere:
+                   gain(c)  = value(c, kept + item) - value(c, kept - item), every other item as assigned
+                   margin   = (gain(solver's pick) - gain(owner)) / gain(owner)
+                 margin < THRESHOLD puts the item back with the owner (kept_by_threshold), fixes it there and solves
+                 the rest again, so the other characters get their next-best arrangement. An owner that gains
+                 nothing from the item loses it to any pick that gains something
   repair rounds = two repaired sets may pick the same unique item that nobody used before; such items join the
                  contested pool and the act is solved again from the last assignment (at most ROUNDS times; items
                  still shared after that are settled by a last pass, listed as settled_last).
@@ -27,10 +36,12 @@ Ownership variants: "party" keeps the owner rulings (an owned item is never cont
 it for everyone else); "free" (the owner gives it up) puts owned items in the pool like any other.
 """
 import itertools
+import math
 
 EXACT_BUDGET = 48
 ROUNDS = 4
 REPAIR_KEEP = 8            # vs the full lists: same party totals in Act 3 party and Act 2 free, -0.6% in Act 3 free
+THRESHOLD = 0.10           # the 10% rule: smallest margin that moves an item away from its owner
 
 
 # ============================================================================================ solver (pure)
@@ -129,6 +140,45 @@ def solve(claims, value, exact_budget=EXACT_BUDGET, start=None):
     return {"assign": assign, "total": total(assign, chars, value), "methods": methods}
 
 
+def margin(assign, chars, value, item, owner):
+    """-> (gain of the solver's pick, gain of the owner, margin) of one item under the 10% rule; the margin is
+    math.inf when the owner gains nothing and the pick gains something."""
+    kept = _kept(assign, chars)
+    pick = assign[item]
+    g_pick = value(pick, kept[pick] | {item}) - value(pick, kept[pick] - {item})
+    g_own = value(owner, kept[owner] | {item}) - value(owner, kept[owner] - {item})
+    if g_own > 1e-9:
+        return g_pick, g_own, (g_pick - g_own) / g_own
+    return g_pick, g_own, (math.inf if g_pick > 1e-9 else 0.0)
+
+
+def solve_rule(claims, value, owner, threshold=None, exact_budget=EXACT_BUDGET, start=None, fixed=None):
+    """solve() under the 10% rule. owner = {item: character the owner rule names} (items without one are not
+    checked); fixed = {item: record} kept by the rule in an earlier repair round.
+    -> solve()'s dict + "kept_by_threshold" and "moved": {item: {"owner", "pick", "gain_owner", "gain_pick",
+    "margin"}} (moved = the solver's pick differs from the owner and the margin reaches the threshold)."""
+    threshold = THRESHOLD if threshold is None else threshold
+    fixed = dict(fixed or {})
+    chars = sorted({c for cs in claims.values() for c in cs})
+    while True:
+        res = solve({i: ([fixed[i]["owner"]] if i in fixed else cs) for i, cs in claims.items()}, value,
+                    exact_budget, start)
+        a = res["assign"]
+        moved, new = {}, {}
+        for i in sorted(a):
+            o = owner.get(i)
+            if i in fixed or o is None or o not in claims[i] or a[i] == o:
+                continue
+            g_pick, g_own, m = margin(a, chars, value, i, o)
+            rec = {"owner": o, "pick": a[i], "gain_owner": g_own, "gain_pick": g_pick, "margin": m}
+            (moved if m >= threshold else new)[i] = rec
+        if not new:
+            res.update(total=total(a, chars, value), kept_by_threshold=fixed, moved=moved)
+            return res
+        fixed.update(new)
+        start = a
+
+
 # ============================================================================================ optimizer side
 def is_unique(W, sid):
     return bool(W.items[sid].get("unique"))
@@ -159,6 +209,45 @@ class Act:
         self.reads = {}
         self.rank = {}
         self.pool = set()
+        self.owners = {}
+
+    def owner_rule(self, sid, places):
+        """places = {char: {(build, slot)}} where the claimants' sets hold the item. -> (owner or None, basis), worked
+        out once per item: the set builder's owner (owners.json) when it is a claimant, else its rule over these
+        sets (the build the character plays first, then the game-data fit in that slot rounded as owners.json
+        rounds it, read from the build's scored list or computed for items the list leaves out, then the numeric
+        tie model, then the set builder's character order)."""
+        if sid in self.owners:
+            return self.owners[sid]
+        import odata
+        SI, BP = odata.SI, odata.BP
+        for g in self.W.owners.values():
+            if g.get("kind") == "unique" and sid in g["items"] and g["owners"] and g["owners"][0] in places:
+                self.owners[sid] = (g["owners"][0], "owners.json")
+                return self.owners[sid]
+        rec = self.W.items[sid]
+        best = {}
+        for c, where in sorted(places.items()):
+            first = SI.primary_build(c, BP.CHARACTERS[c], self.W.ba_origins)
+            for b, slot in sorted(where):
+                key_slot = "Ring1" if slot == "Ring2" else slot
+                stored = (self.W.build_entry(c, b)["items"].get(sid) or {}).get("slots", {}).get(key_slot)
+                fit, comps = ((stored["fit"], stored["components"]) if stored
+                              else self.W.scorer(c, b).score(rec, key_slot))
+                k = (b == first, round(fit, 2))
+                if c not in best or k > best[c][0]:
+                    best[c] = (k, b, key_slot, comps)
+        top_k = max(v[0] for v in best.values())
+        top = {c: v for c, v in best.items() if v[0] == top_k}
+        if len(top) == 1:
+            self.owners[sid] = (next(iter(top)), "fit")
+            return self.owners[sid]
+        order = list(BP.CHARACTERS)
+        nv = sorted(((-SI.numeric_value(b, rec, sl, comps), order.index(c), c) for c, (_k, b, sl, comps) in top.items()))
+        # an exact tie goes to the first character in the set builder's character order, as owners.json does
+        tie = nv[1][0] - nv[0][0] < 1e-6
+        self.owners[sid] = (nv[0][2], "exact tie, character order" if tie else "fit tie, numeric")
+        return self.owners[sid]
 
     def searcher(self, cid, bid):
         """One searcher per build: every repair shares its score cache (repairs revisit the same loadouts)."""
@@ -244,13 +333,25 @@ def resolve(W, objs, finish, exact_budget=EXACT_BUDGET):
     the score before / after and the slots that changed."""
     import search
     A = Act(W, objs, finish)
-    extra, rounds, res = {}, 0, {"assign": None}
+    places = {}
+
+    def note(los):
+        for (c, b), lo in los.items():
+            for slot, s in lo.items():
+                if is_unique(W, s):
+                    places.setdefault(s, {}).setdefault(c, set()).add((b, slot))
+
+    note({k: o["loadout"] for k, o in objs.items()})
+    extra, rounds, res, fixed = {}, 0, {"assign": None}, {}
     while True:
         rounds += 1
         claims = A.claims(extra)
         A.pool = set(claims)
-        res = solve(claims, A.value, exact_budget, start=res["assign"])
+        owner = {s: A.owner_rule(s, {c: places[s][c] for c in claims[s]})[0] for s in claims}
+        res = solve_rule(claims, A.value, owner, exact_budget=exact_budget, start=res["assign"], fixed=fixed)
+        fixed = res["kept_by_threshold"]
         los = A.loadouts(res["assign"])
+        note(los)
         by = {}
         for (c, _b), lo in los.items():
             for s in uniques(W, lo):
@@ -282,7 +383,16 @@ def resolve(W, objs, finish, exact_budget=EXACT_BUDGET):
                                       or (s in new and s not in lo.values())),
                        "changed": changed, "loadout": lo})
     tot = sum(sum(final[(c, b)][1] for b in A.builds[c]) / len(A.builds[c]) for c in A.chars)
+    def rule_rec(r):
+        both = r["gain_owner"] > 1e-9 and r["gain_pick"] > 1e-9
+        return {"owner": r["owner"], "pick": r["pick"], "gain_owner": round(r["gain_owner"], 3),
+                "gain_pick": round(r["gain_pick"], 3), "close": both,
+                "margin": None if math.isinf(r["margin"]) else round(r["margin"], 4)}
+
     return {"claims": claims, "assign": res["assign"], "total": round(tot, 2),
+            "owner_rule": {s: list(A.owners[s]) for s in sorted(claims)}, "threshold": THRESHOLD,
+            "kept_by_threshold": {s: rule_rec(r) for s, r in sorted(res["kept_by_threshold"].items())},
+            "moved": {s: rule_rec(r) for s, r in sorted(res["moved"].items())},
             "total_before": round(sum(sum(A.base[(c, b)] for b in A.builds[c]) / len(A.builds[c])
                                       for c in A.chars), 2),
             "methods": res["methods"], "rounds": rounds, "settled_last": sorted(new), "builds": builds,

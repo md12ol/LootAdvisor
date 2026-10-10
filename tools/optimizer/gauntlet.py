@@ -3,7 +3,11 @@ sets), written by run.py to tools/optimizer/.cache/test_plans.json. Format "loot
 
   {"format", "generated", "assumptions": {rounds_per_fight, fights_per_long_rest, short_rest_windows,
                                           enemy: {act: {ac, save, atk, dmg, dc, hp}}},
-   "plans": [plan, ...]}
+   "plans": [plan, ...],
+   "contested": [{"ownership", "act", "item", "name", "owner", "pick", "gain_owner", "gain_pick", "margin",
+                  "close": both gain from it, "sets": {char: [set id, ...]}}, ...]}
+  contested = unique items the party step's 10% rule kept with their owner although the solver preferred "pick"
+  (margin = pick's gain / owner's gain - 1, null when the owner gains nothing); the in-game test confirms them
 
   plan = {
     "id": set id ("<char>.<build>.a<act>.opt" / research set id), "source": "optimizer" | "research",
@@ -20,7 +24,9 @@ sets), written by run.py to tools/optimizer/.cache/test_plans.json. Format "loot
                                          "id": spell / action id, "slot": weapon slot or null, "repeat": n}]}],
     "expected": {"dpr": model damage per round (long-rest average), "score",
                  "per_use": [{"name", "id", "per_round", "damage_per_use", "damage_per_round"}]},
-    "enemy": {ac, save, atk, dmg, dc, hp} of the act
+    "enemy": {ac, save, atk, dmg, dc, hp} of the act,
+    "kept_by_threshold": optimizer plans only: [{"item", "name", "keeps": this character keeps it, "owner",
+                         "other", "margin", "close"}] of the contested list above that this plan's gear holds
   }
 
 The round plan is the FIRST fight after a long rest (every per-rest resource available); "expected.per_use" is
