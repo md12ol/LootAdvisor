@@ -215,6 +215,24 @@ def party_tests(L):
       Ext.Entity.GetAllEntitiesWithComponent = gae
       Osi.DB_Players, Osi.IsPlayer = nil, nil
     """)
+    L.execute(r"""
+      local G = GAUNTLET
+      local rel = { ["Evil|Gale"] = 50, ["Gale|Evil"] = 50 }
+      Osi.GetFaction = function(u) return u == "d" and "Evil" or "Gale" end
+      Osi.GetRelation = function(a, b) return rel[a .. "|" .. b] end
+      Osi.SetRelation = function(a, b, v) rel[a .. "|" .. b] = v end
+      Osi.IsEnemy = function() return 0 end
+      local st = G.makeHostile("gale", "d")
+      T_h1 = rel["Evil|Gale"] == 0 and rel["Gale|Evil"] == 0
+      T_hr = G.laneFactionsRestore(st)
+      T_h2 = rel["Evil|Gale"] == 50 and rel["Gale|Evil"] == 50
+      Osi.IsEnemy = function() return 1 end
+      T_h3 = G.makeHostile("gale", "d") == nil
+      Osi.GetFaction, Osi.GetRelation, Osi.SetRelation, Osi.IsEnemy = nil, nil, nil, nil
+    """)
+    g = L.globals()
+    check("hostility: a character the enemies are not hostile to gets both factions set hostile, put back after",
+          g.T_h1 is True and g.T_hr == 2 and g.T_h2 is True and g.T_h3 is True)
     p = lst(L.globals().T_party)
     check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
           p == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], str(p))
@@ -1846,6 +1864,7 @@ MUTATIONS = [
     ("enemy: worn items not in the setup check", GL, "      cmp(\"enemy \" .. i .. \" items worn\", 0, gear)", ""),
     ("party: player characters outside DB_Players left out", GL,
      "if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then", "if false then"),
+    ("hostility: only one way", GL, "  for _, p in ipairs({ { a, b }, { b, a } }) do", "  for _, p in ipairs({ { a, b } }) do"),
     ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
     ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
      "    remove = sorted(all_class_passives - set(passives))"),

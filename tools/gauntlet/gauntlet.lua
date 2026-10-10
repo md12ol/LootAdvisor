@@ -922,6 +922,7 @@ function G.setupCheck(F, spec, phase, extra)
       local E = extra.E or {}
       local de = ent(d)
       cmp("enemy " .. i .. " AC", E.ac, de and try(function() return de.Resistances.AC end))
+      cmp("enemy " .. i .. " hostile to the character", 1, try(Osi.IsEnemy, F.char, d))
       -- the model's enemy: every ability 10, unarmed (its attack and damage come from the forced boosts alone)
       local ab = abilities(d)
       for _, n in ipairs(ABIL) do cmp("enemy " .. i .. " " .. n, 10, ab[n]) end
@@ -1866,7 +1867,11 @@ local function finish(F, why)
   F.state = "done"
   if not F.manual then
     G.results.reactions_restored = G.reactionsRestore()
-    if not F.lane then G.unparkOthers() end
+    if not F.lane then
+      G.unparkOthers()
+      G.results.hostility_restored = G.laneFactionsRestore(F.hostility)
+      F.hostility = nil
+    end
   end
   -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
   local gone = {}
@@ -2059,11 +2064,28 @@ function G.start(F)
   wait(G.POLL_MS, waitPrep)
 end
 
+-- A companion made a player by script keeps its own faction, which the enemies' faction may not be hostile to: the
+-- fight never started for one (it left combat each time it was put in). The two factions are set hostile both ways
+-- for the run (the game applies a relation a tick later) and put back when it ends; the setup check reads IsEnemy.
+-- -> the changes, in G.laneFactions' shape, or nil when the enemy is hostile already.
+function G.makeHostile(u, d)
+  if try(Osi.IsEnemy, u, d) == 1 then return nil end
+  local a, b = try(Osi.GetFaction, d), try(Osi.GetFaction, u)
+  if not a or not b then return nil end
+  local out = { relations = {} }
+  for _, p in ipairs({ { a, b }, { b, a } }) do
+    out.relations[p[1] .. "|" .. p[2]] = { a = p[1], b = p[2], was = try(Osi.GetRelation, p[1], p[2]) }
+    pcall(Osi.SetRelation, p[1], p[2], 0)
+  end
+  return out
+end
+
 -- The enemies, the setup check, then the fight.
 function G.spawnAndFight(F, pts, E, buffs, C)
   local u, spec = F.char, F.spec
   F.enemies = G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)
   if #F.enemies == 0 then return stop(F, "no enemies") end
+  if not F.lane then F.hostility = G.makeHostile(u, F.enemies[1]) end
   if F.lane and G.LANES then
     local m = G.LANES.members[F.lane.id] or {}
     m[uuid(u)] = true
