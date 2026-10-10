@@ -167,7 +167,9 @@ def control_gate(pairs, by, tol=CONTROL_TOL):
             diff = abs(ma - mb) / max(ma, mb) if max(ma, mb) > 0 else 0.0
             ci = boot_ratio(xa, xb)
             beyond_dice = ci is None or not (ci[0] <= 1.0 <= ci[1])
+            ea, eb = by[(i, "a", sc, h)], by[(i, "b", sc, h)]
             controls.append({"pair": i, "scenario": sc, "haste": h, "a": round(ma, 1), "b": round(mb, 1),
+                             "survived_a": ea.get("survived"), "survived_b": eb.get("survived"),
                              "diff": round(diff, 3), "rounds": len(xa), "ratio_ci": ci and [round(x, 2) for x in ci]})
             if diff > 2 * tol or (diff > tol and beyond_dice):
                 causes.append(f"{name}: a {ma:.1f} vs b {mb:.1f} damage per round differ by {diff:.0%} (tolerance "
@@ -192,6 +194,26 @@ ROUND_CAUSE = re.compile(r"round\(s\) without a confirmed action")
 ITEM_SPELL = re.compile(r"_MAG_|_Legendary_")
 
 
+def own_aoo(rec, spell):
+    """Every cast of this weapon attack came in a round with the character's own Attack of Opportunity (fair)."""
+    if not spell.endswith("HandAttack"):
+        return False
+    res = rec.get("results") or {}
+    me = (res.get("char") or {}).get("uuid") if isinstance(res.get("char"), dict) else None
+    rounds = {R.get("r"): R for R in rec.get("rounds") or []}
+    hits = [f for f in res.get("foreign_casts") or [] if f.get("spell") == spell]
+    if not hits:
+        return False
+    for f in hits:
+        R = rounds.get(f.get("r")) or {}
+        mine = [x for x in R.get("reactions_seen") or [] if "AttackOfOpportunity" in str(x.get("interrupt"))
+                and (me is None or x.get("who") == me)]
+        casters = {c.get("who") for c in R.get("casts") or [] if c.get("spell") == spell}
+        if not any(x.get("who") in casters for x in mine):
+            return False
+    return True
+
+
 def rescore(rec):
     """Re-judges one run record under the current rules. -> (valid, causes, fair-round mask): round-level faults (down,
     idle) are masked out, casts of item spells are not foreign; any other cause still voids the run."""
@@ -203,7 +225,7 @@ def rescore(rec):
             continue
         if c.startswith("the test character cast outside the plan: "):
             spells = [x.strip() for x in c.split(": ", 1)[1].split(",")]
-            if all(ITEM_SPELL.search(x) for x in spells):
+            if all(ITEM_SPELL.search(x) or own_aoo(rec, x) for x in spells):
                 continue
         left.append(c)
     if not left and sum(clean) < CONTROL_MIN_ROUNDS:
@@ -257,11 +279,14 @@ def report(a):
         k = (r["pair"], r["side"], r.get("scenario"), bool(r.get("haste")))
         s = r["results"]["summary"]
         e = by.setdefault(k, {"dealt": [], "taken": [], "hp": s.get("max_hp"), "notdone": 0, "secs": 0, "clean": [],
-                              "downed": 0})
+                              "downed": 0, "survived": [], "went_down": 0})
         fair = fair_rounds(r)
         # rounds the character spent down stay in the numbers but are left out of the control comparison
         e["clean"] += fair if len(fair) == len(s.get("dealt") or []) else [True] * len(s.get("dealt") or [])
         e["downed"] += s.get("downed") or 0
+        # survival is its own field: a down ends the run, the damage compared is over the rounds actually fought
+        e["survived"].append(s.get("rounds_survived", len(s.get("dealt") or [])))
+        e["went_down"] += 1 if s.get("went_down") else 0
         e["dealt"] += s.get("dealt") or []
         e["taken"] += s.get("taken") or []
         e["notdone"] += s.get("actions_not_done") or 0

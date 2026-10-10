@@ -371,7 +371,7 @@ function G.prep(spec)
     end
   end
   pcall(Osi.RemoveBoosts, u, "", 0, CAUSE, u)
-  G.dropRunBoosts(u, G.HP_BUFFER)
+  G.dropRunBoosts(u, G.OLD_HP_BUFFER)
   G.strip(u)
   wait(600, function()
     G.results.items_deleted = G.dropSpawnedItems(u)
@@ -937,18 +937,139 @@ function G.refusalReason(P, R, blockers, moved)
   return { why = why, reactions = reacts, moved = moved, blockers = blockers }
 end
 
+-- ------------------------------------------------------------------------------------------------ movement
+-- A scripted cast that needs a step moves first, by the rules: the game's pathfinder gives the route,
+-- the character runs it with CharacterMoveToPosition within its Movement, and the
+-- Movement walked is charged. The spot is the first point on a route where the target is in range; a route that leaves
+-- an enemy's reach is avoided when another spot in range has a clean route, else taken (the Attack of Opportunity is
+-- real damage, the same for both sets). In range and in sight already: the cast goes from where the character stands.
+G.REACH = 3.4          -- the game's reach plus slack for curved routes
+G.MOVE_MAX_MS = 8000
+function G.route(u, x, y, z)
+  local e = ent(u)
+  if not e then return nil end
+  for _, dy in ipairs({ 0, 1.5, -1.5, 3, -3 }) do
+    local okp, pts = pcall(function()
+      local p = Ext.Level.BeginPathfindingImmediate(e, { x, y + dy, z })
+      local found = Ext.Level.FindPath(p) and p.GoalFound
+      local out = {}
+      for i, nd in ipairs(p.Nodes or {}) do out[i] = { nd.Position[1], nd.Position[2], nd.Position[3] } end
+      Ext.Level.ReleasePath(p)
+      return found and out or nil
+    end)
+    if okp and pts and #pts > 0 then return pts end
+  end
+  return nil
+end
+-- The first foe (index into foes, {x, y, z}) whose reach the polyline leaves within `limit` metres, or nil; inside the
+-- ring, a point farther from the foe than the start (+0.15 m) counts as leaving (curved routes).
+function G.leavesReach(poly, foes, limit)
+  local inside, d0, walked = {}, {}, 0
+  for i, f in ipairs(foes) do
+    d0[i] = math.sqrt((poly[1][1] - f[1]) ^ 2 + (poly[1][3] - f[3]) ^ 2)
+    inside[i] = d0[i] < G.REACH
+  end
+  for k = 2, #poly do
+    local ax, az, bx, bz = poly[k - 1][1], poly[k - 1][3], poly[k][1], poly[k][3]
+    local seg = math.sqrt((bx - ax) ^ 2 + (bz - az) ^ 2)
+    local n = math.max(1, math.ceil(seg / 0.25))
+    for j = 1, n do
+      local t = j / n
+      if walked + seg * t > limit then return nil end
+      local px, pz = ax + (bx - ax) * t, az + (bz - az) * t
+      for i, f in ipairs(foes) do
+        local dn = math.sqrt((px - f[1]) ^ 2 + (pz - f[3]) ^ 2)
+        if (inside[i] and dn >= G.REACH) or (d0[i] < G.REACH and dn > d0[i] + 0.15) then return i end
+        inside[i] = dn < G.REACH
+      end
+    end
+    walked = walked + seg
+  end
+  return nil
+end
+-- A route cut at its first point within `need` metres of the target -> polyline from the start and its length, or nil
+-- when the target is not reached within `budget` metres.
+function G.cutAt(start, pts, tx, ty, tz, need, budget)
+  local poly, walked = { start }, 0
+  for _, p in ipairs(pts) do
+    local q = poly[#poly]
+    walked = walked + math.sqrt((p[1] - q[1]) ^ 2 + (p[3] - q[3]) ^ 2)
+    if walked > budget then return nil end
+    poly[#poly + 1] = p
+    if math.sqrt((p[1] - tx) ^ 2 + (p[2] - ty) ^ 2 + (p[3] - tz) ^ 2) <= need then return poly, walked end
+  end
+  return nil
+end
+-- -> nil (cast from here), or { x, y, z, len, risk = name of the foe whose reach the route leaves | nil }
+function G.castSpot(F, tgt, range)
+  local x0, y0, z0 = xyz(F.char)
+  local tx, ty, tz = xyz(tgt)
+  if not (x0 and tx) then return nil end
+  local d = math.sqrt((x0 - tx) ^ 2 + (y0 - ty) ^ 2 + (z0 - tz) ^ 2)
+  if d <= range and try(Osi.CanSee, F.char, tgt) ~= 0 then return nil end
+  local need = math.max(1.2, range - (range > 3 and 1.0 or 0.3))
+  local budget = resAmount(F.char, "Movement") + 0.5
+  local foes, names = {}, {}
+  for _, e in ipairs(F.enemies or {}) do
+    local ex, ey, ez = xyz(e)
+    if ex and alive(e) then foes[#foes + 1] = { ex, ey, ez }; names[#foes] = name(e) end
+  end
+  local start = { x0, y0, z0 }
+  local best, any
+  local goals = { { tx, ty, tz } }
+  for k = 0, 11 do
+    local a = 2 * math.pi * k / 12
+    goals[#goals + 1] = { tx + need * 0.8 * math.cos(a), ty, tz + need * 0.8 * math.sin(a) }
+  end
+  for _, g in ipairs(goals) do
+    local pts = G.route(F.char, g[1], g[2], g[3])
+    local poly, len = nil, nil
+    if pts then poly, len = G.cutAt(start, pts, tx, ty, tz, need, budget) end
+    if poly then
+      local bad = G.leavesReach(poly, foes, 1e9)
+      local last = poly[#poly]
+      local c = { x = last[1], y = last[2], z = last[3], len = len, risk = bad and names[bad] or nil }
+      if not bad and (not best or len < best.len) then best = c end
+      if not any or len < any.len then any = c end
+    end
+  end
+  return best or any
+end
+-- Waits for the move to end (there, stalled or timed out) and charges the Movement the engine did not. -> true when done.
+function G.moveSettled(F, t)
+  local M = F.moving
+  local x, y, z = xyz(F.char)
+  if not x then return true end
+  local there = math.sqrt((x - M.spot.x) ^ 2 + (z - M.spot.z) ^ 2) < 0.5
+  if math.sqrt((x - M.last[1]) ^ 2 + (z - M.last[3]) ^ 2) > 0.05 then M.last, M.lastT = { x, y, z }, t end
+  if not there and t - M.lastT < 800 and t - M.t0 < G.MOVE_MAX_MS then return false end
+  local moved = math.sqrt((x - M.p0[1]) ^ 2 + (z - M.p0[3]) ^ 2)
+  local spent = math.max(0, M.mv0 - resAmount(F.char, "Movement"))
+  local owed = math.max(0, math.min(math.max(M.spot.len or 0, moved), M.mv0) - spent)
+  if owed > 0 then
+    for _, entry in ipairs(resList(F.char, "Movement") or {}) do entry.Amount = math.max(0, entry.Amount - owed); break end
+    pcall(function() ent(F.char):Replicate("ActionResources") end)
+  end
+  M.rec.move.moved = moved
+  M.rec.move.result = there and "there" or (t - M.t0 >= G.MOVE_MAX_MS and "timeout" or "stalled")
+  return true
+end
+
 -- one scripted action: {spell, target, group ("action" | "bonus" | "free"), cost (override; "free" = granted, e.g.
 -- an Extra Attack), requires ("action" / "surge": only after that succeeded this round), alt (fallback action),
 -- done_key (what R.done records instead of the group), ms}. A cast that the engine accepts is left PENDING in
 -- F.pending until G.settle confirms or fails it.
-local function doAction(F, a, R)
+local function doAction(F, a, R, rec0)
   if a.requires and not R.done[a.requires] then
     R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round" }
     return
   end
   local tgt = resolveTarget(F, a.target or "@boss")
-  local rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item }
-  R.actions[#R.actions + 1] = rec
+  local rec = rec0
+  if not rec then
+    rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item }
+    R.actions[#R.actions + 1] = rec
+  end
   local function fallback(reason)
     rec.result = reason
     if a.alt then rec.result = reason .. " -> alt"; return doAction(F, a.alt, R) end
@@ -958,8 +1079,22 @@ local function doAction(F, a, R)
   if not okp then return fallback(why) end
   local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
   local range = a.range or spellRange(a.spell)
-  if tgt ~= F.char and range and dist(F.char, tgt) > range + 1.0 then
-    return fallback(string.format("out of range %.1f > %.1f", dist(F.char, tgt), range))
+  local reachable = range and range + resAmount(F.char, "Movement") + 1.0
+  if tgt ~= F.char and range and dist(F.char, tgt) > reachable then
+    return fallback(string.format("out of range %.1f > %.1f", dist(F.char, tgt), reachable))
+  end
+  if tgt ~= F.char and range and not rec0 and not a.at_target_pos then
+    local spot = G.castSpot(F, tgt, range)
+    if spot then
+      local x, y, z = xyz(F.char)
+      rec.move = { x = spot.x, z = spot.z, len = spot.len, aoo_risk = spot.risk }
+      if pcall(Osi.CharacterMoveToPosition, F.char, spot.x, spot.y, spot.z, "Run", "LA_gauntlet_move") then
+        F.moving = { a = a, R = R, rec = rec, spot = spot, t0 = now(), p0 = { x, y, z }, last = { x, y, z },
+          lastT = now(), mv0 = resAmount(F.char, "Movement") }
+        rec.result = "moving"
+        return
+      end
+    end
   end
   local res, before = {}, {}
   for i, c in ipairs(costs) do
@@ -1003,8 +1138,6 @@ function G.settle(F, R, t)
   if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char))) then return false end
   F.pending = nil
   R.cast_misses = (R.cast_misses or 0) + 1
-  -- a per-rest item spell the engine would not cast is not tried again before the next rest
-  if P.a.per then F.cooldown[P.a.spell] = P.a.per end
   -- what the engine saw at the miss (range, line of sight, the caster's statuses, reactions, movement), and why
   local moved
   if P.pos0 and P.pos0[1] then
@@ -1021,6 +1154,19 @@ function G.settle(F, R, t)
       for _, v in pairs(ent(F.char).StatusContainer.Statuses) do out[#out + 1] = tostring(v) end
       return out
     end) }
+  -- an Attack of Opportunity interrupted the engine's step to the cast: once the step has settled the same cast is asked
+  -- for again from where the character stands (once); it is not a miss and the round is not idle
+  if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then
+    R.cast_misses = R.cast_misses - 1
+    P.rec.retried = P.rec.result
+    local again = {}
+    for k, v in pairs(P.a) do again[k] = v end
+    again.retried = true
+    doAction(F, again, R, P.rec)
+    return true
+  end
+  -- a per-rest item spell the engine would not cast is not tried again before the next rest
+  if P.a.per then F.cooldown[P.a.spell] = P.a.per end
   if P.a.alt then
     P.rec.result = P.rec.result .. " -> alt"
     doAction(F, P.a.alt, R)
@@ -1096,8 +1242,16 @@ function G.foreignCasts(rounds, me, plan)
   for k, p in pairs(plan.reactions or {}) do if p == "auto" then allowed[core(k)] = true end end
   local out = {}
   for _, R in ipairs(rounds or {}) do
+    -- the character's own Attack of Opportunity (the engine casts it as a weapon attack): fair, the same for both sets
+    local aoo = false
+    for _, x in ipairs(R.reactions_seen or {}) do
+      if x.who == me and tostring(x.interrupt):find("AttackOfOpportunity", 1, true) then aoo = true end
+    end
     for _, c in ipairs(R.casts or {}) do
-      if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then out[#out + 1] = { r = R.r, spell = c.spell } end
+      local weapon = core(c.spell):find("HandAttack$") ~= nil
+      if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) and not (aoo and weapon) then
+        out[#out + 1] = { r = R.r, spell = c.spell }
+      end
     end
   end
   return out
@@ -1134,7 +1288,7 @@ end
 -- was down is no idle round: it is counted in results.downed and the summary instead.
 function G.judge(rounds, why, results, opts)
   local causes = {}
-  if why and why ~= "rounds done" then causes[#causes + 1] = "ended: " .. why end
+  if why and why ~= "rounds done" and why ~= "downed" then causes[#causes + 1] = "ended: " .. why end
   local unworn = G.unworn(results.prep)
   if #unworn > 0 then causes[#causes + 1] = "set items not worn: " .. table.concat(unworn, ", ") end
   if results.encumbered and #results.encumbered > 0 then
@@ -1281,11 +1435,9 @@ local function roundStart(F)
   local R = { r = G.round, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {},
     char_hp_before = try(Osi.GetHitpoints, F.char) }
   R.char_hp_lost_enemy_turns = math.max(0, (F.hpChar or 0) - (R.char_hp_before or 0))
-  -- downed in the enemies' turn: the engine gives the turn no action (healing does not bring it back), so the round
-  -- is recorded as downed, not as an idle round of the harness. The HP buffer (G.HP_BUFFER) is there so that this
-  -- does not happen in a normal run.
+  -- downed in the enemies' turn: the engine gives the turn no action (healing does not bring it back). G.step ends the
+  -- run before such a round; a round that still starts down is recorded as downed, never as an idle round.
   if R.char_hp_before and R.char_hp_before <= 0 then R.downed = true end
-  pcall(Osi.SetHitpointsPercentage, F.char, 100)
   for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, 100) end
   local S = F.S
   if S.short_rest_every and G.round > 1 and (G.round - 1) % S.short_rest_every == 0 then
@@ -1296,7 +1448,7 @@ local function roundStart(F)
   F.hpChar = try(Osi.GetHitpoints, F.char)
   G.rounds[#G.rounds + 1] = R
   -- the queue is planned on the first act step, once the engine has refilled the turn's resources
-  F.queue, F.qi, F.pending = (F.manual and {} or nil), 0, nil
+  F.queue, F.qi, F.pending, F.moving = (F.manual and {} or nil), 0, nil, nil
 end
 
 -- The round's queue from the character's real resources now: each entry of the round plan becomes the first
@@ -1358,7 +1510,8 @@ local function summarize(F)
     if R.downed then downed = downed + 1 end
   end
   return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
-    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed }
+    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
+    rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil }
 end
 
 function G.difficulty()
@@ -1388,6 +1541,7 @@ local function finish(F, why)
     for _, d in ipairs(gone) do if standing(d) then pcall(Osi.Die, d, 0, NULL_GUID, 0, 0) end end
   end)
   if F.manual and G.barSaved and why ~= "reset" then G.results.hotbar_restore = G.hotbarRestore() end
+  if why == "downed" then F.downAt = G.round + 1 end
   G.results.summary = summarize(F)
   G.results.ended = why or "rounds done"
   local downed = {}
@@ -1418,8 +1572,10 @@ local function finish(F, why)
     summary = G.results.summary, expect = spec.expect })
 end
 
+-- Boosts older runs gave the character (no Attack of Opportunity, an HP buffer): no longer given, still taken off.
 G.AOO_BOOST = "IgnoreLeaveAttackRange()"
-G.HP_BUFFER = 200
+G.OLD_HP_BUFFER = 200
+G.HP_BUFFER = 0
 
 -- G.run(req): req = {mode = "scripted" | "manual", char (uuid; default the host), build, set, act, scenario
 -- ("boss" | "pack" | "defence" | "longday"), haste, tuned, rounds, label, spec (a full spec from run.py)}
@@ -1482,10 +1638,9 @@ function G.start(F)
       if not F.manual then
         G.results.parked = G.parkOthers(u, A and A.park)
         G.results.reactions = G.reactionsApply(F.plan)
-        -- The same setup for both sets of a pair. No Attack of Opportunity on the character: a scripted cast that
-        -- needs a step (the engine walks the character first) was dropped whenever the step drew one. A fixed HP
-        -- buffer, so that a round never starts with the character down (damage taken is measured from the hits).
-        if not F.plan.allow_aoo then boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = true end
+        -- The same setup for both sets of a pair, with the game's rules: Attacks of Opportunity stay on (a cast that
+        -- needs a step moves first, G.castSpot) and the sheet's own hit points (a down ends the run, G.step).
+        G.results.ignore_leave_attack_range = false
         F.hpBuffer = G.HP_BUFFER
         if F.hpBuffer > 0 then boost(u, string.format("IncreaseMaxHP(%d)", F.hpBuffer)) end
         G.results.hp_buffer = F.hpBuffer
@@ -1581,6 +1736,8 @@ function G.step(F, t)
     if activeTurn(F.char) then
       F.recoveries = 0
       if G.round >= F.rounds then return finish(F) end
+      -- real hit points: a down is a result. The run ends there; the rounds fought and their damage are the record.
+      if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end
       roundStart(F)
       F.state, F.next, F.turnStart = F.manual and "player" or "act", t + 400, t
     elseif t > F.deadline then
@@ -1602,7 +1759,16 @@ function G.step(F, t)
     if t - (F.turnStart or t) > G.ACT_MAX_MS then
       note("turn took over %d s: ending it", math.floor(G.ACT_MAX_MS / 1000))
       if F.pending then F.pending.rec.result = "failed: turn time limit"; F.pending = nil end
+      if F.moving then F.moving.rec.result = "failed: turn time limit (moving)"; F.moving = nil end
       F.state, F.next = "ending", t
+      return
+    end
+    if F.moving then
+      if not G.moveSettled(F, t) then F.next = t + 150; return end
+      local M = F.moving
+      F.moving = nil
+      doAction(F, M.a, M.R, M.rec)
+      F.next = t + 150
       return
     end
     if F.pending then
