@@ -146,7 +146,7 @@ def lua_tests():
               len({ar[x["arena"]]["radius"] for x in a["lanes"].values()}) == 1 for a in lane_sets))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests):
+              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -197,6 +197,27 @@ def enemy_tests(L):
     em = lst(g.T_em)
     check("setup: an enemy ability other than 10 and a worn item fail the setup check",
           "enemy 1 Strength" in em and "enemy 1 items worn" in em and "enemy 1 Dexterity" not in em, str(em))
+
+
+def party_tests(L):
+    """The party: DB_Players and every player character the database misses (a companion made a player by script)."""
+    L.execute(r"""
+      local G = GAUNTLET
+      Osi.DB_Players = { Get = function() return { { "Host_11111111-1111-1111-1111-111111111111" } } end }
+      Osi.IsPlayer = function(u) return (u == "22222222-2222-2222-2222-222222222222" or
+        u == "11111111-1111-1111-1111-111111111111") and 1 or 0 end
+      local ents = {}
+      for _, u in ipairs({ "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
+                           "33333333-3333-3333-3333-333333333333" }) do ents[#ents + 1] = { Uuid = { EntityUuid = u } } end
+      local gae = Ext.Entity.GetAllEntitiesWithComponent
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      T_party = G.partyMembers()
+      Ext.Entity.GetAllEntitiesWithComponent = gae
+      Osi.DB_Players, Osi.IsPlayer = nil, nil
+    """)
+    p = lst(L.globals().T_party)
+    check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
+          p == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], str(p))
 
 
 def reaction_tests(L):
@@ -1823,6 +1844,8 @@ MUTATIONS = [
     ("enemy: abilities not in the setup check", GL,
      "      for _, n in ipairs(ABIL) do cmp(\"enemy \" .. i .. \" \" .. n, 10, ab[n]) end", ""),
     ("enemy: worn items not in the setup check", GL, "      cmp(\"enemy \" .. i .. \" items worn\", 0, gear)", ""),
+    ("party: player characters outside DB_Players left out", GL,
+     "if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then", "if false then"),
     ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
     ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
      "    remove = sorted(all_class_passives - set(passives))"),

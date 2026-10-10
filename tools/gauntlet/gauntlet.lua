@@ -561,11 +561,22 @@ local function sameFlags(a, b)
   for _, f in ipairs(b) do if not s[f] then return false end; s[f] = nil end
   return next(s) == nil
 end
+-- The party: DB_Players plus every player character the database misses (a companion made a player by
+-- Osi.MakePlayer, as in test saves, is not in it; left out, it failed the arena check as a stranger and was never
+-- parked)
 local function partyMembers()
-  local out = {}
-  for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do out[#out + 1] = uuid(row[1]) end
+  local out, seen = {}, {}
+  for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do
+    local u = uuid(row[1])
+    if u and not seen[u] then seen[u] = true; out[#out + 1] = u end
+  end
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local u = try(function() return e.Uuid.EntityUuid end)
+    if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then seen[u] = true; out[#out + 1] = u end
+  end
   return out
 end
+G.partyMembers = partyMembers
 -- Scripted runs only. Saves each character's own settings once (a second call keeps the first copy), applies the
 -- plan's policy and reads it back. Returns { [uuid] = { name, reactions = { Interrupt_X = policy }, verified } }.
 function G.reactionsApply(plan, chars)
