@@ -2210,6 +2210,31 @@ def check_gear_sets_api(env):
     return fails
 
 
+
+# ============================================================ worn tied items: Osiris weapon slot names
+def check_wear_slot_names(env):
+    """S.Wear asks Osi.GetEquippedItem for every slot; Osiris names the weapon slots "Melee Main Weapon" etc. and finds
+    nothing for "MeleeMainHand", so a tied weapon someone wears went unseen."""
+    rel = os.path.join(env.mods_lua, "Server", "State.lua")
+    with open(rel, encoding="utf-8") as f:
+        src = f.read()
+    for old, new in env.lua_patches.get("State.lua", []):
+        if old not in src:
+            raise RuntimeError(f"lua patch target not found in State.lua: {old[:60]!r}")
+        src = src.replace(old, new)
+    m = re.search(r"local EQUIP_SLOTS = \{(.*?)\}", src, re.S)
+    if not m:
+        return ["EQUIP_SLOTS not found in Server/State.lua"]
+    slots = re.findall(r'"([^"]+)"', m.group(1))
+    env.counts["slots"] = len(slots)
+    need = ["Melee Main Weapon", "Melee Offhand Weapon", "Ranged Main Weapon", "Ranged Offhand Weapon", "Helmet",
+            "Breast", "Cloak", "Gloves", "Boots", "Amulet", "Ring", "Ring2"]
+    fails = [f"slot missing: {n}" for n in need if n not in slots]
+    fails += [f"slot name Osiris does not know: {n}" for n in slots if n in ("MeleeMainHand", "MeleeOffHand",
+                                                                             "RangedMainHand", "RangedOffHand")]
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -2244,4 +2269,5 @@ CHECKS = [
     ("closest build for characters on no Build Advisor build (similarity, tie-breaks, F6, tooltip)",
      check_closest_build, False),
     ("gear sets for other mods (LA.Api.GearSets: ranked sets, a list per act)", check_gear_sets_api, False),
+    ("worn tied items: weapon slots asked by the names Osiris uses", check_wear_slot_names, False),
 ]

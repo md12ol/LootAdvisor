@@ -309,8 +309,9 @@ function S.People()
 end
 
 -- tied items someone in the party is wearing: [stats id] = that character's key (the wearer keeps a tied item)
-local EQUIP_SLOTS = { "Helmet", "Breast", "Cloak", "MeleeMainHand", "MeleeOffHand", "RangedMainHand", "RangedOffHand",
-                      "Ring", "Ring2", "Boots", "Gloves", "Amulet" }
+-- Osiris names the weapon slots "Melee Main Weapon" etc.; "MeleeMainHand" finds nothing there
+local EQUIP_SLOTS = { "Helmet", "Breast", "Cloak", "Melee Main Weapon", "Melee Offhand Weapon", "Ranged Main Weapon",
+                      "Ranged Offhand Weapon", "Ring", "Ring2", "Boots", "Gloves", "Amulet" }
 local tiedIds
 function S.Wear(people)
   if not tiedIds then
