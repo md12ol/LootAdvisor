@@ -19,6 +19,7 @@ here) and the test-plan export. A test with nothing to check fails.
 """
 import itertools
 import json
+import math
 import os
 import random
 import re
@@ -356,8 +357,56 @@ def test_party_solver():
     assert n and not fails, fails[:6]
 
 
+def test_party_threshold():
+    """The 10% rule on hand-built tables: O is the owner of x, the plain solver prefers X. X's gain over O's gain:
+    +5% keeps x with O, +15% moves it, exactly +10% moves it, +9.9% keeps it; when x stays with O, X takes the
+    item y the plain solver gave to Y (the rest is solved again)."""
+    P = _party()
+    fs = frozenset
+    fails = []
+    for gain_x, want in ((10.5, "O"), (11.5, "X"), (11.0, "X"), (10.99, "O")):
+        table = {"O": {fs(): 10, fs("x"): 20}, "X": {fs(): 10, fs("x"): 10 + gain_x}}
+        claims = {"x": ["O", "X"]}
+        value = lambda c, k, t=table: t[c][k]   # noqa: E731
+        plain = P.solve(claims, value)["assign"]["x"]
+        r = P.solve_rule(claims, value, {"x": "O"})
+        rule = "kept_by_threshold" if want == "O" else "moved"
+        other = "moved" if want == "O" else "kept_by_threshold"
+        if plain != "X":
+            fails.append(f"gain {gain_x}: the plain solver gave x to {plain}, the case needs X")
+        if r["assign"]["x"] != want or "x" not in r[rule] or "x" in r[other]:
+            fails.append(f"gain {gain_x}: x -> {r['assign']['x']} kept {sorted(r['kept_by_threshold'])} moved "
+                         f"{sorted(r['moved'])}, want x -> {want} ({rule})")
+        want_m = (gain_x - 10) / 10
+        got = r[rule].get("x", {}).get("margin")
+        if got is None or abs(got - want_m) > 1e-9:
+            fails.append(f"gain {gain_x}: margin {got}, want {want_m}")
+        if abs(r["total"] - (20 + 10 if want == "O" else 10 + 10 + gain_x)) > 1e-9:
+            fails.append(f"gain {gain_x}: total {r['total']}")
+    # x: O 10, X 10.5 (+5%); X uses only one of x / y (10.5 either way); y: X 10.5, Y 10.2.
+    # plain best: x -> X, y -> Y (10.5 + 10.2 + O's 0 = 20.7). The rule keeps x with O; solved again,
+    # y -> X (10 + 10.5 = 20.5 beats 10 + 10.2). y has no owner, so it is not checked.
+    t3 = {"O": {fs(): 0, fs("x"): 10}, "X": {fs(): 0, fs("x"): 10.5, fs("y"): 10.5, fs("xy"): 10.5},
+          "Y": {fs(): 0, fs("y"): 10.2}}
+    c3 = {"x": ["O", "X"], "y": ["X", "Y"]}
+    v3 = lambda c, k: t3[c][k]   # noqa: E731
+    plain = P.solve(c3, v3)["assign"]
+    r = P.solve_rule(c3, v3, {"x": "O"})
+    if plain != {"x": "X", "y": "Y"}:
+        fails.append(f"re-solve case: plain {plain}, the case needs x -> X, y -> Y")
+    if r["assign"] != {"x": "O", "y": "X"} or set(r["kept_by_threshold"]) != {"x"} or abs(r["total"] - 20.5) > 1e-9:
+        fails.append(f"re-solve case: {r['assign']} kept {sorted(r['kept_by_threshold'])} total {r['total']}, want "
+                     "x -> O (kept), y -> X, 20.5")
+    # an owner that gains nothing loses the item to any pick that gains something
+    t4 = {"O": {fs(): 5, fs("x"): 5}, "X": {fs(): 5, fs("x"): 5.1}}
+    r = P.solve_rule({"x": ["O", "X"]}, lambda c, k: t4[c][k], {"x": "O"})
+    if r["assign"]["x"] != "X" or r["moved"].get("x", {}).get("margin") != math.inf:
+        fails.append(f"owner gains nothing: {r['assign']} moved {r['moved']}")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
-            test_situational_uptimes, test_projectile_totals, test_party_solver]
+            test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold]
 
 
 # ============================================================================================ local-only tests
@@ -1012,6 +1061,17 @@ def check_party(out):
         # losers kept it
         for sid in set(r.get("settled_last") or []) & set(r["assign"]):
             fails.append(f"{own} A{act}: assigned item {sid} still shared after the rounds")
+        th = r.get("threshold")
+        for sid, k in (r.get("kept_by_threshold") or {}).items():
+            if r["assign"].get(sid) != k["owner"] or k["margin"] is None or k["margin"] >= th:
+                fails.append(f"{own} A{act}: {sid} kept by threshold but {r['assign'].get(sid)} / margin "
+                             f"{k['margin']} (owner {k['owner']})")
+        for sid, (o, _basis) in (r.get("owner_rule") or {}).items():
+            if o is not None and r["assign"].get(sid) != o:
+                k = (r.get("moved") or {}).get(sid)
+                if not k or k["pick"] != r["assign"][sid] or (k["margin"] is not None and k["margin"] < th):
+                    fails.append(f"{own} A{act}: {sid} left its owner {o} for {r['assign'][sid]} without a "
+                                 f"margin of {th}: {k}")
         final, pseudo, per_char = {}, [], {}
         for b in r["builds"]:
             n += 1
@@ -1491,6 +1551,15 @@ def mutations():
         finally:
             party._exact = old
     out.append(("party assignment: exact path takes the first claimant", m_party_exact))
+
+    def m_party_threshold():
+        old = party.THRESHOLD
+        party.THRESHOLD = -math.inf                  # the 10% rule removed: every solver move stands
+        try:
+            return _ci_red(test_party_threshold)
+        finally:
+            party.THRESHOLD = old
+    out.append(("party assignment: 10% rule removed", m_party_threshold))
 
     def m_party_keep():
         import run as R

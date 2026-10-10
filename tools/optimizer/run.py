@@ -619,11 +619,38 @@ def merge_jobs(W, jobs, params=None):
     return out
 
 
+def threshold_marks(out):
+    """Items the 10% rule kept with their owner, for the gauntlet to confirm in game: the list goes into the test
+    plans' envelope ("contested") and onto each party-variant optimizer plan whose gear holds such an item."""
+    rows, by_plan = [], {}
+    for r in out.get("party") or []:
+        names = r.get("names") or {}
+        for sid, k in (r.get("kept_by_threshold") or {}).items():
+            sets = {c: sorted(b["build"] for b in r["builds"] if b["char"] == c and (sid in b["loadout"].values()
+                                                                                    or sid in b["lost"]))
+                    for c in (k["owner"], k["pick"])}
+            row = dict(k, ownership=r["ownership"], act=r["act"], item=sid, name=names.get(sid, sid),
+                       sets={c: [set_id(c, b, r["act"], {}, r["ownership"]) for b in bs] for c, bs in sets.items()})
+            rows.append(row)
+            if r["ownership"] == "party":
+                for c, ids in row["sets"].items():
+                    for i in ids:
+                        by_plan.setdefault(i, []).append({"item": sid, "name": row["name"], "keeps": c == k["owner"],
+                                                          "owner": k["owner"], "other": k["pick"],
+                                                          "margin": k["margin"], "close": k["close"]})
+    for p in out.get("plans") or []:
+        if p.get("source") == "optimizer":
+            p["kept_by_threshold"] = by_plan.get(p["id"], [])
+    return rows
+
+
 def write_outputs(out, a):
+    contested = threshold_marks(out)
     with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
     with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
-        json.dump(gauntlet.envelope(out["plans"], out["generated"]), f, indent=1, default=str)
+        json.dump(dict(gauntlet.envelope(out["plans"], out["generated"]), contested=contested), f, indent=1,
+                  default=str)
     write_report(out, os.path.join(CACHE, "report.md"))
     if a.write_scores:
         p = os.path.join(odata.SCORES, "optimized.json")
@@ -692,10 +719,12 @@ def plans_only():
             out["plans"].append(plan)
             out["tuning"].append(trow)
         print(st["id"], "tuned", flush=True)
+    contested = threshold_marks(out)
     with open(os.path.join(CACHE, "optimized.json"), "w", encoding="utf-8") as f:
         json.dump({k: v for k, v in out.items() if k != "plans"}, f, indent=1, default=str)
     with open(os.path.join(CACHE, "test_plans.json"), "w", encoding="utf-8") as f:
-        json.dump(gauntlet.envelope(out["plans"], out["generated"]), f, indent=1, default=str)
+        json.dump(dict(gauntlet.envelope(out["plans"], out["generated"]), contested=contested), f, indent=1,
+                  default=str)
     write_report(out, os.path.join(CACHE, "report.md"))
     return 0
 
@@ -750,6 +779,30 @@ def write_report(out, path):
         for t in out["tuning"]:
             L.append(f"| {t['id']} | {t['source']} | {t['planned']} | {t['tuned']} | {t['untuned_score']} | "
                      f"{t['tuned_score']} | {t['gain'] * 100:+.1f}% |")
+        L.append("")
+    if out.get("party"):
+        L += [f"## Contested unique items: the {party.THRESHOLD * 100:.0f}% rule", "",
+              "An item leaves the character the owner rule names only when the solver's pick gains at least "
+              f"{party.THRESHOLD * 100:.0f}% more from it (margin = gain of the pick / gain of the owner - 1, every "
+              "other item as assigned). Items the rule kept are marked kept_by_threshold for the gauntlet; a close call "
+              "is one both characters gain from.", "",
+              "| Variant | Act | Contested | Owner keeps (solver agrees) | Kept by threshold (close calls) | Moved | "
+              "Party value |", "|---|---|---|---|---|---|---|"]
+        for r in out["party"]:
+            close = sum(1 for k in r["kept_by_threshold"].values() if k["close"])
+            agree = sum(1 for s, o in r["owner_rule"].items() if o[0] is not None and r["assign"].get(s) == o[0]
+                        and s not in r["kept_by_threshold"])
+            L.append(f"| {r['ownership']} | {r['act']} | {len(r['claims'])} | {agree} | {len(r['kept_by_threshold'])} "
+                     f"({close}) | {len(r['moved'])} | {r['total_before']} -> {r['total']} |")
+        L += ["", "| Variant | Act | Item | Rule | Owner | Solver's pick | Gain owner | Gain pick | Margin |",
+              "|---|---|---|---|---|---|---|---|---|"]
+        for r in out["party"]:
+            for rule, recs in (("kept_by_threshold", r["kept_by_threshold"]), ("moved", r["moved"])):
+                for sid, k in recs.items():
+                    m = ("owner gains nothing" if k["margin"] is None else f"{k['margin'] * 100:+.1f}%" if k["close"]
+                         else "neither gains")
+                    L.append(f"| {r['ownership']} | {r['act']} | {(r.get('names') or {}).get(sid, sid)} | {rule} | "
+                             f"{k['owner']} | {k['pick']} | {k['gain_owner']} | {k['gain_pick']} | {m} |")
         L.append("")
     L += ["## Unique items without a party owner that several party sets use", "",
           "| Act | Item | Characters |", "|---|---|---|"]
