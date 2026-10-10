@@ -1,7 +1,7 @@
 """Scripted gauntlet runs for set pairs, and the report.
 
     python tools/gauntlet/run.py specs.json --results results.jsonl [--scenarios boss,pack,defence,longday]
-                                 [--haste] [--only 0,3] [--rounds 16]
+                                 [--haste] [--only 0,3] [--rounds 16] [--arena undercity_cistern] [--sides a]
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
@@ -65,11 +65,12 @@ def do_runs(a):
     for i, p in enumerate(pairs):
         if only is not None and i not in only:
             continue
-        for side in ("a", "b"):
+        for side in a.sides.split(","):
             spec = p["specs"][side]
             for sc in scen:
                 for haste in ([False, True] if a.haste else [False]):
                     req = {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds,
+                           "arena": a.arena,
                            "char": a.char, "label": f"pair{i}:{side}"}
                     t0 = time.time()
                     print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
@@ -153,6 +154,8 @@ def main(argv=None):
     ap.add_argument("--haste", action="store_true", help="also run every scenario with Haste")
     ap.add_argument("--only")
     ap.add_argument("--rounds", type=int, default=16)
+    ap.add_argument("--sides", default="a,b", help="a, b or a,b: one set of each pair only (e.g. a reload between)")
+    ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")
     ap.add_argument("--char", help="uuid of the test character (default: the host)")
     ap.add_argument("--report")
     ap.add_argument("--md")
