@@ -596,7 +596,7 @@
     DATA.chars.forEach(function (c) {
       if (!charVisible(c)) return;
       h += '<button type="button" class="who" data-char="' + c.id + '" aria-pressed="' + (c.id === S.char) + '"><span class="face">' + face(c) +
-        '</span><span class="nm">' + esc(c.n) + "</span></button>";
+        '</span><span class="nm">' + esc(charName(c.id)) + "</span></button>";
     });
     if (!charVisible(charById("darkurge") || { id: "x" })) h += '<p class="railnote">The Dark Urge is hidden: not a Dark Urge playthrough.</p>';
     document.getElementById("rail").innerHTML = h;
@@ -630,8 +630,8 @@
         return '<option value="' + esc(s.id) + '"' + (cur && s.id === cur.id ? " selected" : "") + ">" + esc(s.n) + " - " + esc(rankOf(c, s)) + "</option>";
       }).join("") + "</optgroup>";
     }).join("") + "</select></div>";
-    if (!vs.all.length) h += '<p class="note">No sets for ' + esc(c.n) + " in Act " + ROMAN[S.act] + ".</p>";
-    else if (!sets.length) h += '<p class="note">Every set for ' + esc(c.n) + " in Act " + ROMAN[S.act] + " needs something your playthrough rules out.</p>";
+    if (!vs.all.length) h += '<p class="note">No sets for ' + esc(charName(c.id)) + " in Act " + ROMAN[S.act] + ".</p>";
+    else if (!sets.length) h += '<p class="note">Every set for ' + esc(charName(c.id)) + " in Act " + ROMAN[S.act] + " needs something your playthrough rules out.</p>";
     h += '<div class="sl-groups">';
     order.forEach(function (bid) {
       var b = buildOf(c, bid) || { id: bid, n: bid, classes: {} };

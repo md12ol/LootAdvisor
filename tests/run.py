@@ -587,6 +587,9 @@ def mutations(sc):
     out.append((names[24], "app.js: the Sets page names the origin in a live game", file_mut(
         "app.js", ("tools", "sets_artifact", "app.js"), "function names(ids) { return (ids || []).map(charName)",
         "function names(ids) { return (ids || []).map(function (o) { return CHAR_NAME[o] || o; })"), "red"))
+    out.append((names[24], "app.js: the Sets page's character rail names the origin", file_mut(
+        "app.js", ("tools", "sets_artifact", "app.js"), "<span class=\"nm\">' + esc(charName(c.id))",
+        "<span class=\"nm\">' + esc(c.n)"), "red"))
     out.append((names[24], "Server/Main.lua: the party's names are not sent with the result", file_mut(
         "Server/Main.lua", ("LootAdvisor", "Mods", "LootAdvisor", "ScriptExtender", "Lua", "Server", "Main.lua"),
         "  res.names = names\n", "\n"), "red"))
