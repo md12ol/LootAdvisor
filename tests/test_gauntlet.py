@@ -10,8 +10,10 @@
 - casts count only when the engine shows them (cast event, damage, resource spent); a miss is a failure with fallback;
   the engine's CastSpellFailed fails a cast at once, with the reason (an Attack of Opportunity, the spell's blockers);
 - the run's setup: weapons found under the Osiris slot names, unworn set items, encumbrance (earlier items deleted, the
-  carry limit raised), the spell precheck, no Attack of Opportunity and the HP buffer, leftover enemies and summons
-  removed before the arena check, downed rounds recorded instead of idle, hits from outside the run;
+  carry limit raised), the spell precheck, the game's rules (Attacks of Opportunity on, real hit points: a down ends
+  the run as a result; a cast out of range moves first without leaving an enemy's reach when it can; a cast an Attack
+  of Opportunity interrupted is asked for again once), leftover enemies and summons removed before the arena check,
+  hits from outside the run;
 - each round is planned from the resources the character has (upcast chains, Channel Divinity) and checked again;
 - reactions: policy mapping (default never), every interrupt the character has, save / apply / restore, the guard;
 - the turn watchdog recovers, then ends the run as invalid; a run starts without blocking the eval; run validity;
@@ -127,7 +129,8 @@ def lua_tests():
     check("arenas.json: every arena has level, centre, radius, start, park",
           all(all(k in a for k in ("level", "center", "radius", "start", "park")) for a in ar.values()))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
-              encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests):
+              encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
+              rules_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -504,8 +507,13 @@ def refusal_tests(L):
       G._onReaction("e1", "Interrupt_AttackOfOpportunity", 1)
       G._onCastFailed("c1", "Projectile_MAG_ChainLightning")
       T_fast = G.settle(F, R, 200)
-      T_res = R.actions[1].result
+      T_retried = R.actions[1].retried
       T_miss = R.actions[1].miss
+      T_retry_pending = F.pending ~= nil and #R.actions == 1
+      T_retry_miss = R.cast_misses
+      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused again after the retry
+      T_fast2 = G.settle(F, R, 300)
+      T_res = R.actions[1].result
       T_alt = R.actions[2] and R.actions[2].spell
       T_cd = F.cooldown["Projectile_MAG_ChainLightning"]
       local P = { who = "c1", spell = "X", reacts0 = 0 }
@@ -515,11 +523,14 @@ def refusal_tests(L):
     """)
     g = L.globals()
     check("refusal: another caster's or another spell's failure is no refusal of this cast", g.T_wait is False)
+    check("refusal: after an Attack of Opportunity the same cast is asked for again once, not counted as a miss",
+          g.T_fast is True and "Attack of Opportunity" in str(g.T_retried) and g.T_retry_pending is True and
+          g.T_retry_miss == 0, f"{g.T_retried} {g.T_retry_pending} {g.T_retry_miss}")
     check("refusal: CastSpellFailed fails the cast at once (no timeout wait), the fallback runs",
-          g.T_fast is True and str(g.T_res).startswith("failed: refused by the engine") and
+          g.T_fast2 is True and str(g.T_res).startswith("failed: refused by the engine") and
           g.T_alt == "Zone_LightningBolt", str(g.T_res))
     check("refusal: an Attack of Opportunity during the cast is named as the reason, with the reaction",
-          "Attack of Opportunity" in str(g.T_res) and g.T_miss.refused is True and
+          "Attack of Opportunity" in str(g.T_retried) and g.T_miss.refused is True and
           "Interrupt_AttackOfOpportunity by e1" in lst(g.T_miss.reactions), str(g.T_res))
     check("refusal: a refused per-rest item spell waits for the next rest", g.T_cd == "short")
     check("refusal: otherwise the blockers, else 'no reason shown'",
@@ -693,13 +704,76 @@ def start_tests(L):
     """)
     g = L.globals()
     b = lst(g.T_boosts)
-    check("fight start: no Attack of Opportunity on the character and a fixed HP buffer",
-          "IgnoreLeaveAttackRange()" in b and "IncreaseMaxHP(200)" in b and g.T_res.hp_buffer == 200 and
-          g.T_res.ignore_leave_attack_range is True, f"{b} state {g.T_state}")
+    check("fight start: the game's rules, Attacks of Opportunity on and no HP buffer",
+          "IgnoreLeaveAttackRange()" not in b and not any(x.startswith("IncreaseMaxHP") for x in b) and
+          g.T_res.hp_buffer == 0 and g.T_res.ignore_leave_attack_range is False, f"{b} state {g.T_state}")
     check("fight start: leftovers cleared, encumbrance read, plan prechecked before the first round",
           g.T_res.leftovers is not None and g.T_res.encumbered is not None and g.T_res.precheck is not None and
           len(g.T_res.precheck) == 1 and g.T_res.precheck[1].spell == "Target_MAG_Gaze",
           f"state {g.T_state}")
+
+
+def rules_tests(L):
+    """The game's rules in a scripted fight: the character's own Attack of Opportunity is fair (not foreign); a down
+    ends the run as a result (valid, with the rounds survived); a cast out of range moves first, by a route that does
+    not leave an enemy's reach when one exists."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local plan = { rounds = {}, steady = { { spell = "Projectile_FireBolt" } }, item_actions = {}, reactions = {} }
+      local rounds = {
+        { r = 1, casts = { { who = "c1", spell = "Target_MainHandAttack" } },
+          reactions_seen = { { who = "c1", interrupt = "Interrupt_AttackOfOpportunity" } } },
+        { r = 2, casts = { { who = "c1", spell = "Target_MainHandAttack" } }, reactions_seen = {} } }
+      T_fa = G.foreignCasts(rounds, "c1", plan)
+      T_jdown = G.judge({ { r = 1, done = { action = true } } }, "downed", {}, { me = "c1" })
+      -- a down before the character's turn ends the run
+      local fin
+      local P = {
+        c1 = { 0, 0, 0 }, t = { 25, 0, 0 }, e1 = { 4, 0, 2 } }
+      Osi.GetPosition = function(u) local p = P[u]; if p then return p[1], p[2], p[3] end end
+      Osi.GetHitpoints = function() return 0 end
+      Ext.Entity.Get = function() return { TurnBased = { IsActiveCombatTurn = true } } end
+      G.round = 3
+      local F = { state = "wait", rounds = 16, char = "c1", enemies = {}, deadline = 1e12, cooldown = {}, plan = plan }
+      G.results = G.results or {}
+      pcall(G.step, F, 0)
+      T_dstate, T_dended = F.state, G.results.ended
+      T_dsum = G.results.summary
+      Osi.GetHitpoints = nil
+      -- moving to cast: the direct route leaves e1's reach, a detour south does not
+      Osi.IsDead = function() return 0 end
+      Osi.CanSee = function() return 1 end
+      Osi.GetActionResourceValuePersonal = function() return 30 end
+      Ext.Level.BeginPathfindingImmediate = function(_, goal)
+        local nodes, n = {}, 40
+        for i = 1, n do nodes[i] = { Position = { goal[1] * i / n, goal[2], goal[3] * i / n } } end
+        return { Nodes = nodes, GoalFound = true }
+      end
+      Ext.Level.FindPath = function() return true end
+      Ext.Level.ReleasePath = function() end
+      local MF = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = plan, afford = function() return true end }
+      T_spot = G.castSpot(MF, "t", 18)
+      Ext.Stats.Get = function() return { TargetRadius = "18", UseCosts = "ActionPoint:1" } end
+      local R = { r = 1, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G._doAction(MF, { spell = "Projectile_FireBolt", group = "action", target = "t" }, R)
+      T_moving = MF.moving ~= nil and R.actions[1].result == "moving"
+      Ext.Stats.Get = function() return nil end
+      Ext.Level.BeginPathfindingImmediate, Ext.Level.FindPath, Ext.Level.ReleasePath = nil, nil, nil
+      Osi.GetPosition, Osi.IsDead, Osi.CanSee, Osi.GetActionResourceValuePersonal = nil, nil, nil, nil
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    fa = [g.T_fa[i + 1].r for i in range(len(g.T_fa))]
+    check("rules: the character's own Attack of Opportunity is no cast outside the plan; a weapon attack without one is",
+          fa == [2], str(fa))
+    check("rules: a down is a result, the run stays valid", g.T_jdown.valid is True, str(lst(g.T_jdown.causes)))
+    check("rules: a down before the character's turn ends the run with the rounds survived",
+          g.T_dstate == "done" and g.T_dended == "downed" and g.T_dsum and g.T_dsum.rounds_survived == 3,
+          f"{g.T_dstate} {g.T_dended}")
+    check("rules: the route to a casting spot keeps out of leaving an enemy's reach when it can",
+          g.T_spot and g.T_spot.risk is None and g.T_spot.z < 0, str(g.T_spot and (g.T_spot.risk, g.T_spot.z)))
+    check("rules: a cast out of range moves first", g.T_moving is True)
 
 
 def py_tests():
@@ -988,9 +1062,10 @@ MUTATIONS = [
     ("prep: no deadline", GL, "elseif now() > F.prepDeadline then", "elseif false then"),
     ("verdict: idle rounds ignored", GL, "if idle > 0 then", "if false then"),
     ("verdict: foreign casts not detected", GL,
-     "if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then", "if false then"),
-    ("verdict: item spells count as foreign", GL, "if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then",
-     "if c.who == me and not allowed[core(c.spell)] then"),
+     "if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) and not (aoo and weapon) then",
+     "if false then"),
+    ("verdict: item spells count as foreign", GL,
+     "and not G.itemSpell(c.spell) and not (aoo and weapon) then", "and not (aoo and weapon) then"),
     ("plan: only the top upcast", PL, "return list(dict.fromkeys(out + [spell]))",
      "return list(dict.fromkeys(out[:1] or [spell]))"),
     ("forecast: no affordability", PL, "ok = all((turn[k] if k in turn else pool.get((k, lv), 0)) >= n for k, n, lv in "
@@ -1017,9 +1092,20 @@ MUTATIONS = [
      "if baseSpell(f.spell) == baseSpell(P.spell) then"),
     ("refusal: Attack of Opportunity not named", GL,
      'if tostring(x.interrupt):find("AttackOfOpportunity", 1, true) then aoo = true end', ""),
-    ("start: Attack of Opportunity left on", GL, "if not F.plan.allow_aoo then boost(u, G.AOO_BOOST)",
-     "if false then boost(u, G.AOO_BOOST)"),
-    ("start: no HP buffer", GL, "F.hpBuffer = G.HP_BUFFER", "F.hpBuffer = 0"),
+    ("start: Attacks of Opportunity banned", GL, "        G.results.ignore_leave_attack_range = false",
+     "        boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = false"),
+    ("start: HP buffer given", GL, "G.HP_BUFFER = 0", "G.HP_BUFFER = 200"),
+    ("refusal: no retry after an Attack of Opportunity", GL,
+     'if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then',
+     "if false then"),
+    ("foreign: own Attack of Opportunity voids the run", GL, "and not (aoo and weapon) then", "then"),
+    ("down: a down does not end the run", GL,
+     'if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end',
+     ""),
+    ("down: a down voids the run", GL, 'and why ~= "rounds done" and why ~= "downed" then', 'and why ~= "rounds done" then'),
+    ("movement: casts never move first", GL, "    local spot = G.castSpot(F, tgt, range)", "    local spot = nil"),
+    ("movement: a route leaving reach is preferred", GL, "if not bad and (not best or len < best.len) then best = c end",
+     "best = best or c"),
     ("start: no precheck", GL, "G.results.precheck = G.precheck(F)", "G.results.precheck = {}"),
     ("precheck: nothing marked unusable", GL, "    if #hard > 0 then\n      F.unusable[spell]",
      "    if false then\n      F.unusable[spell]"),
