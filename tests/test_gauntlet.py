@@ -6,7 +6,8 @@
   loads and its pure helpers behave: cost parsing, the shared adaptive item rule (same input -> same choice, logs
   every candidate), the arena layout;
 - run.py statistics: the bootstrap interval contains the mean and narrows with more rounds;
-- plan.py helpers: upcast variant choice, one bonus action per round, hotbar rows by role.
+- plan.py helpers: upcast variant choice, one bonus action per round, hotbar rows by role;
+- reactions: policy mapping, save / apply / restore of the player's settings, the in-turn guard (scripted turns only).
 """
 import os
 import sys
@@ -89,6 +90,72 @@ def lua_tests():
     import math
     d = [math.hypot(g.T_p[i + 1][1], g.T_p[i + 1][3]) for i in range(4)]
     check("arena: self-centred aura -> enemies around the character", all(1.5 < x < 3.0 for x in d), str(d))
+    reaction_tests(L)
+
+
+def reaction_tests(L):
+    """Reaction policy: flag mapping, save / apply / read back / restore with a stub character, and the in-turn guard
+    that only acts on scripted turns."""
+    L.execute(r"""
+      local P1 = { Interrupt_DestructiveWrath = "InterruptInteractionTypes(Ask,Enabled)",
+                   Interrupt_AttackOfOpportunity = "InterruptInteractionTypes(Enabled)",
+                   Interrupt_Shield = "InterruptInteractionTypes()" }
+      T_orig = {}
+      for k, v in pairs(P1) do T_orig[k] = v end
+      -- stub: assignments store flag lists, reads give the game's string form back
+      local store = {}
+      for k, v in pairs(P1) do store[k] = GAUNTLET.flagsFromString(v) end
+      local prefs
+      prefs = setmetatable({}, {
+        __index = function(_, k) local f = store[k]; return f and ("InterruptInteractionTypes(" .. table.concat(f, ",") .. ")") end,
+        __newindex = function(_, k, v) store[k] = v end,
+        __pairs = function() local k; return function() k = next(store, k); if k then return k, prefs[k] end end end })
+      T_store = store
+      local ent = { InterruptPreferences = { Preferences = prefs }, Replicate = function() end }
+      Ext.Entity.Get = function(u) if u == "c1" then return ent end end
+      Osi.DB_Players = { Get = function() return { { "c1" } } end }
+      Osi.GetDisplayName = function() return nil end
+      local G = GAUNTLET
+      T_map = { G.reactionFlags("auto"), G.reactionFlags("never"), G.reactionFlags("ask"), G.reactionFlags("bogus") }
+      T_pol = { G.reactionPolicy("Interrupt_Shield", { reactions = { Interrupt_Shield = "never" } }),
+                G.reactionPolicy("Interrupt_Shield", {}), G.reactionPolicy("Interrupt_X", { reactions_default = "never" }) }
+      T_rep = G.reactionsApply({ reactions = { Interrupt_Shield = "never" } })
+      T_after = {}
+      for k, v in pairs(store) do T_after[k] = table.concat(v, ",") end
+      T_n = G.reactionsRestore()
+      T_back = {}
+      for k, v in pairs(store) do T_back[k] = table.concat(v, ",") end
+      -- guard: an open prompt for c1
+      Ext.Entity.GetAllEntitiesWithComponent = function()
+        return { { InterruptActionState = { SpellCastGuid = "g", Actions = { { Observer = { Uuid = { EntityUuid = "c1" } },
+          Interrupt = { InterruptData = { Interrupt = "Interrupt_DestructiveWrath" } } } } } } }
+      end
+      G.results = {}
+      T_guard_manual = G.reactionGuard({ char = "c1", manual = true })
+      T_guard_script = G.reactionGuard({ char = "c1", manual = false })
+      T_misses = G.results.reaction_misses and #G.results.reaction_misses or 0
+    """)
+    g = L.globals()
+
+    def lst(t):
+        return [t[i + 1] for i in range(len(t))]
+    m = [lst(g.T_map[i + 1]) for i in range(4)]
+    check("reactions: auto = fires without asking, never = off, ask = game asks, unknown = auto",
+          m == [["Enabled"], [], ["Ask", "Enabled"], ["Enabled"]], str(m))
+    p = [g.T_pol[i + 1] for i in range(3)]
+    check("reactions: the plan names a reaction / default auto / plan default", p == ["never", "auto", "never"], str(p))
+    after = dict(g.T_after.items())
+    check("reactions: applied (no Ask left, the named one off)", after == {
+        "Interrupt_DestructiveWrath": "Enabled", "Interrupt_AttackOfOpportunity": "Enabled", "Interrupt_Shield": ""},
+        str(after))
+    check("reactions: read back and verified", g.T_rep["c1"].verified is True)
+    back = dict(g.T_back.items())
+    check("reactions: the player's own settings restored after the run", g.T_n == 1 and back == {
+        "Interrupt_DestructiveWrath": "Ask,Enabled", "Interrupt_AttackOfOpportunity": "Enabled",
+        "Interrupt_Shield": ""}, str(back))
+    check("reactions guard: does nothing while a person has control", g.T_guard_manual is None)
+    check("reactions guard: a prompt in a scripted turn is logged as a miss",
+          g.T_guard_script == "Interrupt_DestructiveWrath" and g.T_misses == 1)
 
 
 def py_tests():
@@ -116,6 +183,9 @@ def py_tests():
     check("hotbar: out-of-combat utility left out", all("Thaumaturgy" not in s for r in rows.values()
                                                          for s in r["spells"]))
     check("hotbar: common combat actions added", "Target_Shove" in rows["bonus action"]["spells"])
+    check("items: the story copy of Gortash's gloves is never spawned",
+          P.item_template("MAG_Gortash_Gloves", {"MAG_Gortash_Gloves": ["story-copy"]}) == P.SAFE_TEMPLATE["MAG_Gortash_Gloves"])
+    check("items: other items keep their first template", P.item_template("X", {"X": ["t1", "t2"]}) == "t1")
 
 
 if __name__ == "__main__":
