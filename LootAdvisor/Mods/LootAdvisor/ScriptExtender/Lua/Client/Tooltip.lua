@@ -117,6 +117,8 @@ function T.Apply(res)
     LA.SetLiveNames(res)
     local own = type(res.name) == "string" and res.name ~= "" and res.name or nil
     local who = LA.CharName(res.char, own or "?")
+    -- picked for the closest build: say so, the character is on none of the builds the sets are made for
+    if res.build and res.build.closest then who = who .. " (closest build)" end
     local per = {}
     for _, r in ipairs(res.rows) do
       -- list-only items (generic +1/+2, random loot) get no tooltip text and no frame

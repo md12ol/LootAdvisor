@@ -6,6 +6,13 @@ Shows, for every origin character and build, the best items per slot and act: a 
 line on recommended items, map markers at their spots, an **F6** list with direction and distance, and a local
 **Sets page** (full loadouts for every origin, act by act) that follows the running game.
 
+**Made for Build Advisor's builds.** The sets are made for the builds of
+[Build Advisor](https://github.com/md12ol/BuildAdvisor). Any other character (Halsin, Jaheira, Minsc, Minthara, a
+custom Tav, a hireling, or an origin respecced into a class mix no build has) gets the recommendations of the closest
+Build Advisor build: most alike in class levels, then subclass, main ability, caster type and weapon style. The F6
+list names that build and how alike it is, and the item tooltips say the pick is for the closest build. Build
+Advisor's window shows the sets of the build picked there when both mods are installed.
+
 **Players:** download `LootAdvisor-X.Y.Z.zip` from the [Releases](https://github.com/md12ol/LootAdvisor/releases)
 page (or the mod's Nexus Mods page). It holds the built `LootAdvisor.pak`, [`INSTALL.md`](package/INSTALL.md),
 `Handbook.html` (the player handbook, works offline), `Page/Sets.html` and `Media/` (banner, thumbnail, logo marks,

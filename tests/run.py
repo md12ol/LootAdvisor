@@ -445,9 +445,6 @@ def mutations(sc):
             sc.reset()
             return sc.env(lua_patches={fname: [(old, new)]})
         return make
-    out.append((names[13], "Logic.lua MatchAnyBuild: class levels ignored (main ability only)", lua_mut(
-        "Logic.lua", 'if any then return best, bestChar, "closest to the class levels" end',
-        'if false then return best, bestChar, "closest to the class levels" end'), "red"))
     out.append((names[13], "Logic.lua BuildFor: no Build Advisor build for a companion without class levels", lua_mut(
         "Logic.lua", "if not ctx.classes or #ctx.classes == 0 then", "if false then"), "red"))
     out.append((names[14], "Logic.lua Roster: companions gone for good stay on the roster", lua_mut(
@@ -593,6 +590,42 @@ def mutations(sc):
     out.append((names[24], "Server/Main.lua: the party's names are not sent with the result", file_mut(
         "Server/Main.lua", ("LootAdvisor", "Mods", "LootAdvisor", "ScriptExtender", "Lua", "Server", "Main.lua"),
         "  res.names = names\n", "\n"), "red"))
+    # 26a-26i. closest build: each part of the similarity, the tie-breaks, the respecced origin, the result, F6 and
+    # the tooltip
+    n26 = names.index("closest build for characters on no Build Advisor build (similarity, tie-breaks, F6, tooltip)")
+    for desc, fname, old, new in (
+            ("Logic.lua Similarity: the subclass ignored", "Logic.lua",
+             "if subLv > 0 then p.sub = subHit / subLv end", "if false then p.sub = subHit / subLv end"),
+            ("Logic.lua Similarity: the weapon style ignored", "Logic.lua",
+             "if next(styles) ~= nil and live ~= 2 then", "if false then"),
+            ("Logic.lua Similarity: the main ability ignored", "Logic.lua",
+             "if next(mains) ~= nil then p.main =", "if false then p.main ="),
+            ("Logic.lua ClosestBuild: Build Advisor's pick does not break a tie", "Logic.lua",
+             "local xp, yp = x.b.id == baPick, y.b.id == baPick", "local xp, yp = false, false"),
+            ("Logic.lua OwnBuildFits: a respecced origin stays on its own builds", "Logic.lua",
+             "if (p.class or 0) >= 0.5 then return true end", "if true then return true end"),
+            ("Logic.lua Candidates: community builds compete with Build Advisor's", "Logic.lua",
+             'if b.o == "BuildAdvisor" then add(ck, b, false) end', "add(ck, b, false)"),
+            ("Logic.lua Recommend: the result does not say it is the closest build", "Logic.lua",
+             "if cl then res.build.closest", "if false then res.build.closest"),
+            ("Tooltip.lua: the tooltip does not say the pick is for the closest build", "Tooltip.lua",
+             'if res.build and res.build.closest then who = who .. " (closest build)" end', ""),
+            ("Window.lua: F6 shows a closest-build line for an own build", "Window.lua",
+             "if not (b and b.closest) then return nil end", "if not b then return nil end")):
+        out.append((names[n26], desc, lua_mut(fname, old, new), "red"))
+    out.append((names[13], "Logic.lua Similarity: class levels ignored (no class part)", lua_mut(
+        "Logic.lua", "if total > 0 then p.class = shared / total end", "if false then p.class = shared / total end"),
+        "red"))
+    # 27a-27d. gear sets for Build Advisor: only-if-owned slots, owned items, a Tav's build, at most three sets
+    n27 = names.index("gear sets for other mods (LA.Api.GearSets: ranked sets, a list per act)")
+    for desc, old, new in (
+            ("Api.lua: 'only if you already have it' slots not marked", "onlyOwned = ow[slot] or nil",
+             "onlyOwned = nil"),
+            ("Api.lua: owned items not marked", 'if r.s == "owned" and r.id then', "if false then"),
+            ("Api.lua: a Tav's build not looked up under the origins",
+             "for _, o in ipairs((LA.Logic or {}).ORIGINS or {}) do", "for _, o in ipairs({}) do"),
+            ("Api.lua: more than three sets per act", "if rank > (maxSets or 3) then break end", "")):
+        out.append((names[n27], desc, lua_mut("Api.lua", old, new), "red"))
     return out, by
 
 

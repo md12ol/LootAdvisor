@@ -175,13 +175,14 @@ local function everyone(res, state, people)
           local d = LA.State.Describe(p.uuid)
           p.ctx = d and d.ctx or nil
         end
-        local b, _, why = LA.Logic.BuildFor(p)
+        local b, _, why, closest = LA.Logic.BuildFor(p)
         if b then
           local key = p.key or ("p_" .. tostring(guidOf(p.uuid) or #list))
-          local r = LA.Logic.Recommend(key, p.ctx or {}, state, nil, p.ba, { build = b, why = why })
+          local r = LA.Logic.Recommend(key, p.ctx or {}, state, nil, p.ba, { build = b, why = why, closest = closest })
           LA.UseEntrances(r, state.region)
           list[#list + 1] = { key = key, name = p.name, party = p.party, res = r }
-          roster[#roster + 1] = { n = p.name, party = p.party, camp = p.camp, future = p.future, b = b.n }
+          roster[#roster + 1] = { n = p.name, party = p.party, camp = p.camp, future = p.future, b = b.n,
+                                  sim = closest and LA.Logic.Percent(closest.sim) or nil }
         end
       end
     end
@@ -219,15 +220,13 @@ function LA.ServerRefresh(force)
   state.tiePicks = LA.TiePicks()
   state.wear = LA.State.Wear(people)
   state.ties = LA.Logic.Ties(state)
-  local res
-  if (LA.Data.chars or {})[sel.key] then
-    res = LA.Logic.Recommend(sel.key, sel.ctx, state, sel.ctx.baPick, sel.ctx.baOrder)
-  else
-    -- a companion without builds of its own, a Tav or a hireling: the closest build of any origin
-    local key = (LA.Mod.companions or {})[sel.key or ""] and sel.key or ("p_" .. tostring(guidOf(sel.uuid)))
-    local b, _, why = LA.Logic.BuildFor({ key = key, ctx = sel.ctx, ba = (LA.Mod.baOrigins or {})[sel.key or ""] })
-    res = LA.Logic.Recommend(key, sel.ctx, state, nil, nil, { build = b, why = why })
-  end
+  -- an origin among its own builds while one fits; a respecced origin, companion, Tav or hireling: the closest build
+  sel.ctx.atk = sel.ctx.atk or LA.State.WeaponStyles(sel.uuid)
+  local own = (LA.Data.chars or {})[sel.key or ""] ~= nil
+  local key = (own or (LA.Mod.companions or {})[sel.key or ""]) and sel.key or ("p_" .. tostring(guidOf(sel.uuid)))
+  local order = own and sel.ctx.baOrder or (LA.Mod.baOrigins or {})[sel.key or ""]
+  local b, _, why, closest = LA.Logic.BuildFor({ key = key, ctx = sel.ctx, ba = order, baPick = sel.ctx.baPick })
+  local res = LA.Logic.Recommend(key, sel.ctx, state, nil, nil, { build = b, why = why, closest = closest })
   res.uuid = sel.uuid
   if res.char and type(res.name) == "string" and res.name ~= "" then names[res.char] = res.name end
   res.names = names

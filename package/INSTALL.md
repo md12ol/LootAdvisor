@@ -41,6 +41,9 @@
 ## Where to find it in the game
 - Items the advisor recommends get a rainbow frame and an extra tooltip line; their spots are marked on the map.
 - **F6** opens the list of recommended items with direction and distance, including items that have no fixed spot.
+- The sets are made for Build Advisor's builds. A character on none of them (a custom Tav, a hireling, a companion
+  without builds of its own, an origin respecced into another class mix) gets the closest build's items; the F6 list
+  names that build and how alike it is.
 - **The Sets page:** load a save once. The mod writes the live page to
   `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor\Sets.html` (the Script Extender console
   prints the path). Open it in Chrome, Edge or Firefox and bookmark it: it follows the running game by itself.

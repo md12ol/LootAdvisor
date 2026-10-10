@@ -228,6 +228,36 @@ local function resource(guid, kind)
 end
 local ABIL = { "STR", "DEX", "CON", "INT", "WIS", "CHA" }
 
+-- Weapon styles of what a character holds, in the generated builds table's terms (melee2h, finesse, melee1h, ranged,
+-- handxbow): what the closest-build match compares with a build's main attack style. Osiris names the weapon slots
+-- as the item data does ("Melee Main Weapon").
+local WEAPON_SLOTS = { "Melee Main Weapon", "Melee Offhand Weapon", "Ranged Main Weapon" }
+function S.WeaponStyles(uuid)
+  local out = {}
+  for _, slot in ipairs(WEAPON_SLOTS) do
+    local item = uuid and try(Osi.GetEquippedItem, uuid, slot)
+    local sid = item and try(Osi.GetStatString, item)
+    local st = sid and try(Ext.Stats.Get, sid)
+    local props = st and try(function() return st["Weapon Properties"] end)
+    if props then
+      local has = {}
+      if type(props) == "string" then
+        for w in props:gmatch("[^;%s]+") do has[w] = true end
+      else
+        for _, w in pairs(props) do has[tostring(w)] = true end
+      end
+      local group = tostring(try(function() return st["Proficiency Group"] end) or "")
+      local style
+      if slot:find("^Ranged") then style = group:find("HandCrossbow", 1, true) and "handxbow" or "ranged"
+      elseif has.Twohanded then style = "melee2h"
+      elseif has.Finesse then style = "finesse"
+      else style = "melee1h" end
+      out[#out + 1] = style
+    end
+  end
+  return out
+end
+
 -- key (origin / companion: "astarion", "halsin"; nil for a Tav or hireling), name, class levels and abilities of a
 -- loaded character; nil when the entity is not loaded (a companion in another level)
 function S.Describe(uuid)
@@ -252,7 +282,8 @@ function S.Describe(uuid)
   if not ((LA.Data.chars or {})[key] or (LA.Mod.companions or {})[key]) then key = nil end
   local name = try(function() return e.DisplayName.Name:Get() end)
   return { key = key, name = (name and name ~= "") and name or (key and LA.CHAR_NAME[key]) or "?",
-           ctx = { classes = classes, abilities = abilities, name = name }, playable = o ~= nil }
+           ctx = { classes = classes, abilities = abilities, name = name, atk = S.WeaponStyles(uuid) },
+           playable = o ~= nil }
 end
 
 -- party (every player's characters) + camp, as L.Roster wants them. The team also lists camp followers who never
