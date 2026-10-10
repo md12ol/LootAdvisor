@@ -462,6 +462,8 @@ def mutations(sc):
         "Logic.lua", '(filter == "party" and p.party)', '(filter == "party")'), "red"))
     out.append((names[15], "Logic.lua MergeMarkers: a marker keeps only the first name it is for", lua_mut(
         "Logic.lua", "        add(e.who, p.name)\n", "        if #e.who == 0 then add(e.who, p.name) end\n"), "red"))
+    out.append((names[15], "Common.lua MarkerLabel: long name lists are not wrapped", lua_mut(
+        "Common.lua", "if #cur + #piece > LA.LABEL_WIDTH and", "if false and"), "red"))
     out.append((names[15], "Paint.lua ArrowPicks: other characters' markers get off-screen arrows", lua_mut(
         "Paint.lua", "if o.rk < LA.OTHERS * 100 and n < maxArrows then", "if n < maxArrows then"), "red"))
     out.append((names[15], "Main.lua OnResult: everyone's markers ranked like the selected character's", lua_mut(

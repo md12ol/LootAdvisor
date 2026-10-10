@@ -1379,6 +1379,17 @@ def check_markers_everyone(env):
             for w in lua_list(e.who):
                 if str(w) not in label:
                     fails.append(f"{m.m}: label lacks {w} ('{label[:80]}')")
+        # the game's map tooltip cuts a line off past about 48 characters: long name lists wrap
+        width = int(G.LA.LABEL_WIDTH)
+        for line in label.split("\n"):
+            # (one long item or character name alone on a line cannot be split)
+            if len(line) > width and ", " in line.rstrip(","):
+                fails.append(f"{m.m}: label line longer than {width} characters: '{line}'")
+    long = str(G.LA.MarkerLabel(L.table_from({1: L.table_from({"n": "Helldusk Gloves", "who": L.table_from(
+        {1: "The White Urge", 2: "Astarion", 3: "Shadowheart", 4: "Minsc", 5: "Jaheira"})})}), None,
+        L.table_from({"a": L.table_from({1: "x", 2: "y"})})))
+    if max(len(x) for x in long.split("\n")) > int(G.LA.LABEL_WIDTH) or "Jaheira" not in long:
+        fails.append(f"a five-name label is not wrapped: {long!r}")
     # client: ranks of the merged markers and the off-screen arrow pick
     CL = client_lua(env, defer=True)
     C = CL.globals()
