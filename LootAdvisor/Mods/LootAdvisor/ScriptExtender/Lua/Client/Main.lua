@@ -39,15 +39,35 @@ Ext.Events.NetMessage:Subscribe(function(e)
   end
 end)
 
+-- Build Advisor's F7 window belongs on the game's creation, respec and level-up screens, so with that mod loaded the
+-- F6 window steps aside there; without it, F6 stays usable on them. Each of these components exists only while such
+-- a screen is open (Build Advisor reads the screen from the same ones).
+LA.BUILD_ADVISOR_UUID = "0335a54d-4c25-48ad-9b15-8dd79a1bcc95"
+LA.BUILD_SCREEN_COMPONENTS = { "CCLevelUpDefinition", "CCRespecDefinition", "CCFullRespecDefinition",
+                               "CCCharacterDefinition" }
+function LA.BuildScreenOpen()
+  if not try(function() return Ext.Mod.IsModLoaded(LA.BUILD_ADVISOR_UUID) end) then return false end
+  for _, comp in ipairs(LA.BUILD_SCREEN_COMPONENTS) do
+    local list = try(Ext.Entity.GetAllEntitiesWithComponent, comp)
+    if list and #list > 0 then return true end
+  end
+  return false
+end
+
 local lastSlow, lastDir, lastDev, lastSettings, lastMenu = 0, 0, 0, 0, 0
 local wasEnabled = true
+local buildScreen = false
 local function onTick()
   local now = Ext.Utils.MonotonicTime()
   if now - lastSettings > 3000 then lastSettings = now; LA.LoadSettings() end
   if LA.Settings.Dev and now - lastDev > 300 then lastDev = now; pcall(LA.Eval, "LootAdvisor_client") end
-  -- the F6 window steps aside while the game's pause menu is open (read in the deferred UI update)
-  if now - lastMenu >= 100 then lastMenu = now; LA.UI.Run(LA.UI.CheckMenu) end
-  pcall(LA.Win.SetMenuHidden, LA.UI.menuOpen == true)
+  -- the F6 window steps aside while the game's pause menu is open (read in the deferred UI update) or a build screen
+  if now - lastMenu >= 100 then
+    lastMenu = now
+    LA.UI.Run(LA.UI.CheckMenu)
+    buildScreen = LA.BuildScreenOpen()
+  end
+  pcall(LA.Win.SetMenuHidden, LA.UI.menuOpen == true or buildScreen)
   if not LA.Settings.Enabled then
     if wasEnabled then wasEnabled = false; LA.Result = nil; pcall(LA.Tip.RestoreAll); LA.UI.Run(LA.Paint.Pass) end
     LA.UI.Run(LA.Tip.Watch) -- puts the game's templates back on tooltips that still carry ours

@@ -1892,6 +1892,41 @@ def check_f6_hides_under_pause_menu(env):
     return fails
 
 
+BUILD_SCREENS = [("CCLevelUpDefinition", "level-up"), ("CCRespecDefinition", "respec"),
+                 ("CCFullRespecDefinition", "full respec"), ("CCCharacterDefinition", "character creation")]
+
+
+def check_f6_hides_on_build_screens(env):
+    """With Build Advisor loaded, the F6 window steps aside while a creation, respec or level-up screen is open (its
+    component exists) and comes back after; also on Script Extender without Ext.UI.Defer, as no UI tree is read.
+    Without Build Advisor the window is never hidden there."""
+    fails = []
+    for defer in (True, False):
+        for comp, what in BUILD_SCREENS:
+            for ba in (True, False):
+                L = client_lua(env, defer=defer)
+                L.execute("""
+                  STUB.hidden = {}
+                  STUB.comps = {}
+                  LA.Win.SetMenuHidden = function(on) STUB.hidden[#STUB.hidden + 1] = on end
+                  Ext.Mod = { IsModLoaded = function(uuid) return BA and uuid == LA.BUILD_ADVISOR_UUID end }
+                  Ext.Entity.GetAllEntitiesWithComponent = function(c) return STUB.comps[c] and { {} } or {} end
+                  STUB.comps[COMP] = true
+                """.replace("BA and", "true and" if ba else "false and").replace("COMP", json.dumps(comp)))
+                S = run_ticks(L, 4)
+                last = S.hidden[len(S.hidden)] if S.hidden else None
+                tag = f"{what} screen, Build Advisor {'loaded' if ba else 'not loaded'}" + ("" if defer else ", no Defer")
+                if last is not ba:
+                    fails.append(f"{tag}: SetMenuHidden ended with {last}")
+                if ba:
+                    L.execute("STUB.comps = {}")
+                    S = run_ticks(L, 4, session=False)
+                    if S.hidden[len(S.hidden)] is not False:
+                        fails.append(f"{tag}: the window stays hidden after the screen closes")
+    env.counts["scenarios"] = 2 * 2 * len(BUILD_SCREENS)
+    return fails
+
+
 def check_live_names(env):
     """One name per character everywhere: the name the game shows (the player's own name for the Dark Urge, sent by
     the server as res.names) in the item tooltip, the F6 window and the Sets page; the origin's name only when the
@@ -2270,4 +2305,5 @@ CHECKS = [
      check_closest_build, False),
     ("gear sets for other mods (LA.Api.GearSets: ranked sets, a list per act)", check_gear_sets_api, False),
     ("worn tied items: weapon slots asked by the names Osiris uses", check_wear_slot_names, False),
+    ("F6 window hidden on the build screens when Build Advisor is loaded", check_f6_hides_on_build_screens, False),
 ]

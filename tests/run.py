@@ -630,6 +630,15 @@ def mutations(sc):
     n28 = names.index("worn tied items: weapon slots asked by the names Osiris uses")
     out.append((names[n28], "State.lua: main-hand weapon asked as MeleeMainHand again",
                 lua_mut("State.lua", '"Melee Main Weapon"', '"MeleeMainHand"'), "red"))
+    # 29a-29c. build screens: hidden without Build Advisor; a screen not recognised; never checked from the tick
+    n29 = names.index("F6 window hidden on the build screens when Build Advisor is loaded")
+    for desc, old, new in (
+            ("Main.lua: the window hides on build screens without Build Advisor",
+             "if not try(function() return Ext.Mod.IsModLoaded(LA.BUILD_ADVISOR_UUID) end) then return false end", ""),
+            ("Main.lua: the level-up screen is not recognised",
+             '{ "CCLevelUpDefinition", "CCRespecDefinition",', '{ "CCRespecDefinition",'),
+            ("Main.lua: build screens never checked from the tick", "buildScreen = LA.BuildScreenOpen()", "")):
+        out.append((names[n29], desc, lua_mut("Main.lua", old, new), "red"))
     return out, by
 
 
