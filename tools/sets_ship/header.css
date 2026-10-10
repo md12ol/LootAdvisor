@@ -85,3 +85,7 @@
 }
 .body:has(#offline) { display: block; }
 .body:has(#offline) .setlist { display: none; }
+/* spoiler warning under the panel, in the page's warning colour */
+.spoil { flex: 1 1 100%; max-width: 1440px; margin: -4px auto 0; padding: 6px 12px; border-left: 3px solid var(--warn);
+  border-radius: 0 3px 3px 0; background: rgba(242, 162, 36, .08); color: var(--warn-hi); font-size: var(--fs-s); line-height: 1.4; }
+.spoil b { color: var(--warn); font-weight: 600; }

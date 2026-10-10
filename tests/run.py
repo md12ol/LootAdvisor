@@ -374,6 +374,70 @@ def mutations(sc):
         return sc.env(lua_patches={"Logic.lua": [('tw = it.tw or ""', 'tw = ""')],
                                    "LootData.lua": [(",tw=", ",xtw=")]})
     out.append((names[11], "no tooltip warnings in the data or the rows (nothing to check)", m12d, "red"))
+
+    # 13a-13g. spoiler warning: dropped from the README, from the Sets page header, from the handbook generator; the
+    # F6 notice never shown, shown but its hiding not saved, hidden by a missing setting; no place listed at all
+    def without_spoiler(text):
+        out_ = "\n".join(line for line in text.splitlines() if "Spoiler warning" not in line)
+        if out_ == text:
+            raise RuntimeError("mutation target not found: no 'Spoiler warning' line")
+        return out_
+
+    def m13a():
+        sc.reset()
+        env = sc.env()
+        env.file_overrides = {"README.md (top)": without_spoiler(open(os.path.join(LA, "README.md"),
+                                                                      encoding="utf-8").read())}
+        return env
+    out.append((names[12], "README: the spoiler warning line removed", m13a, "red"))
+
+    def m13b():
+        sc.reset()
+        page = open(os.path.join(LA, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html"), encoding="utf-8").read()
+        head = re.search(r'<header class="topbar">.*?</header>', page, re.S).group(0)
+        env = sc.env()
+        env.file_overrides = {"Page/Sets.html header": without_spoiler(head)}
+        return env
+    out.append((names[12], "Sets page: the header built without the spoiler line", m13b, "red"))
+
+    def m13c():
+        sc.reset()
+        docs = os.path.join(ROOT, "BuildAdvisor", "docs_site")
+        tmp = os.path.join(sc.dir, "docs_site")
+        shutil.copytree(docs, tmp, dirs_exist_ok=True)
+        gen = os.path.join(tmp, "build_player_handbook.py")
+        src = open(gen, encoding="utf-8", newline="").read()
+        if "</div>%(spoiler)s" not in src:
+            raise RuntimeError("mutation target not found in build_player_handbook.py: </div>%(spoiler)s")
+        open(gen, "w", encoding="utf-8", newline="").write(src.replace("</div>%(spoiler)s", "</div>"))
+        env = sc.env()
+        env.spoiler_places = [p for p in C.spoiler_doc_places(tmp) if p[0].startswith("built handbook")]
+        return env
+    out.append((names[12], "handbook generator: the warning left out of the handbook's opening", m13c, "red"))
+
+    def m13d():
+        sc.reset()
+        return sc.env(lua_patches={"Window.lua": [("if LA.Settings.SpoilerNoticeSeen == true then return end",
+                                                   "do return end")]})
+    out.append((names[12], "Window.lua: the F6 spoiler notice never shown", m13d, "red"))
+
+    def m13e():
+        sc.reset()
+        return sc.env(lua_patches={"Window.lua": [("    LA.SaveSettings()\n    W.Render(LA.Result)",
+                                                   "    W.Render(LA.Result)")]})
+    out.append((names[12], "Window.lua: hiding the notice is not saved (back in the next game)", m13e, "red"))
+
+    def m13f():
+        sc.reset()
+        return sc.env(lua_patches={"Common.lua": [("SpoilerNoticeSeen = false }", "SpoilerNoticeSeen = true }")]})
+    out.append((names[12], "Common.lua: the setting defaults to hidden (never shown to a new player)", m13f, "red"))
+
+    def m13g():
+        sc.reset()
+        env = sc.env()
+        env.spoiler_places = []
+        return env
+    out.append((names[12], "no place listed for the spoiler warning (nothing to check)", m13g, "red"))
     return out, by
 
 

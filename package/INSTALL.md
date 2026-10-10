@@ -1,5 +1,7 @@
 # Installing Loot Advisor
 
+> **Spoiler warning:** Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes (who can die, which side you take, endings).
+
 ## What is in this folder
 | File | What it is |
 |---|---|

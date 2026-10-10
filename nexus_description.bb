@@ -1,6 +1,8 @@
 [size=5][b]Loot Advisor[/b][/size]
 [i]The rare items that best fit your character, and how to get them.[/i]
 
+[color=#e8a33d][b]Spoiler warning:[/b] Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes (who can die, which side you take, endings).[/color]
+
 Loot Advisor shows, for the origin character you have selected, the best items per slot and act for that character's build. Advice follows the character's actual build, the current act, your story choices and what the party already owns. It covers the seven origin characters: Astarion, Gale, Karlach, Lae'zel, Shadowheart, Wyll and the Dark Urge.
 
 [size=4][b]In the game[/b][/size]

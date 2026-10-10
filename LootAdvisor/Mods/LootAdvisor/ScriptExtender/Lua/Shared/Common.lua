@@ -1,6 +1,7 @@
 -- LootAdvisor: shared helpers (client + server).
 -- Settings file (optional): %LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor_settings.json
 --   {"Enabled": true, "Hotkey": "F6", "Frames": true, "Markers": true, "Tooltips": true, "Arrows": 5, "Dev": false}
+-- "SpoilerNoticeSeen": true once the spoiler warning in the F6 window was dismissed (the window writes it).
 -- "Dev": true enables the eval hook (LootAdvisor_client_eval.lua / LootAdvisor_server_eval.lua -> *_eval_out.txt,
 -- for testing) and the test command file (LootAdvisor_cmd.txt, Server/Cheats.lua).
 
@@ -52,7 +53,7 @@ function LA.Norm(s)
 end
 
 LA.DEFAULTS = { Enabled = true, Hotkey = "F6", Frames = true, Markers = true, Tooltips = true, Arrows = 5, Dev = false,
-                UnsafeUiOnOldSE = false }
+                UnsafeUiOnOldSE = false, SpoilerNoticeSeen = false }
 LA.Settings = {}
 for k, v in pairs(LA.DEFAULTS) do LA.Settings[k] = v end
 function LA.SaveSettings()

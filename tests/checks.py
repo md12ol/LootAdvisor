@@ -980,6 +980,202 @@ def check_tooltip_warnings(env):
     return sorted(set(fails))
 
 
+
+# ================================================= 13. spoiler warning in every place a player meets Loot Advisor
+# The wording is the spec, written here once and not imported from the mod or the page builders, so a changed or
+# dropped copy anywhere fails. meta.lsx (the game's one-line mod description) carries the short form.
+SPOILER = ("Spoiler warning: Loot Advisor names items, where they are and who carries them, and its notes reveal story "
+           "outcomes (who can die, which side you take, endings).")
+SPOILER_SHORT = "Contains spoilers"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+SETTINGS_FILE = "LootAdvisor_settings.json"
+
+
+def _flat(text):
+    """Visible words only: no HTML / BBCode tags, no Markdown emphasis or quote marks, one space between words."""
+    import html as h
+    t = re.sub(r"<style>.*?</style>|<script.*?</script>", " ", text, flags=re.S)
+    t = re.sub(r"<[^>]+>|\[/?[a-z*]+(?:=[^\]]*)?\]", " ", t)
+    t = re.sub(r"(?m)^\s*>\s?", "", t).replace("**", "")
+    return re.sub(r"\s+", " ", h.unescape(t)).strip()
+
+
+def _read(*parts):
+    with open(os.path.join(*parts), encoding="utf-8") as f:
+        return f.read()
+
+
+def spoiler_doc_places(docs=None):
+    """[(place, function -> text that must hold the warning, wanted text)]. Every loader returns the part of the file
+    where a reader meets the warning (the README's top, the Sets page header, the handbook's opening).
+    docs: Build Advisor's docs_site folder (the handbook source and generator); default the sibling checkout."""
+    docs = docs or os.path.join(os.path.dirname(REPO), "BuildAdvisor", "docs_site")
+
+    def readme_top():
+        return "\n".join(_read(REPO, "README.md").splitlines()[:12])
+
+    def meta_description():
+        m = re.search(r'id="Description" type="LSString" value="([^"]*)"',
+                      _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "meta.lsx"))
+        return m.group(1) if m else ""
+
+    def sets_page_header():
+        m = re.search(r'<header class="topbar">.*?</header>',
+                      _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html"), re.S)
+        return m.group(0) if m else ""
+
+    def handbook_source():
+        m = re.search(r'<section class="chapter" id="lootadvisor".*?</section>', _read(docs, "mods_docs.html"), re.S)
+        return m.group(0) if m else ""
+
+    def handbook_built():
+        import importlib.util
+        import sys
+        spec = importlib.util.spec_from_file_location("bph_under_test", os.path.join(docs, "build_player_handbook.py"))
+        mod = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, docs)
+        try:
+            spec.loader.exec_module(mod)
+        finally:
+            sys.path.remove(docs)
+        html, _misses = mod.build("LootAdvisor", _read(docs, "mods_docs.html"))
+        m = re.search(r'<header class="hero" id="start">.*?</header>', html, re.S)
+        return m.group(0) if m else ""
+
+    return [("README.md (top)", readme_top, SPOILER),
+            ("package/INSTALL.md", lambda: _read(REPO, "package", "INSTALL.md"), SPOILER),
+            ("nexus_description.bb", lambda: _read(REPO, "nexus_description.bb"), SPOILER),
+            ("meta.lsx Description", meta_description, SPOILER_SHORT),
+            ("Page/Sets.html header", sets_page_header, SPOILER),
+            ("handbook source (Loot Advisor chapter)", handbook_source, SPOILER),
+            ("built handbook (opening)", handbook_built, SPOILER)]
+
+
+WINDOW_STUB = r"""
+STUB = { files = {} }
+local function el(kind, label)
+  local e = { kind = kind, Label = label, children = {} }
+  return setmetatable(e, { __index = function(_, k)
+    if type(k) == "string" and k:sub(1, 3) == "Add" then
+      return function(self, lbl)
+        local c = el(k:sub(4), lbl)
+        self.children[#self.children + 1] = c
+        return c
+      end
+    end
+    return ELEMENT[k]
+  end })
+end
+ELEMENT = { SetColor = function() end, SetPos = function() end, SetSize = function() end,
+            Destroy = function(self) self.destroyed = true end, Tooltip = function() return el("Tooltip") end }
+Ext = { Utils = { MonotonicTime = function() return 0 end, Print = function() end, PrintError = function() end },
+        IO = { SaveFile = function(n, s) STUB.files[n] = s; return true end, LoadFile = function(n) return STUB.files[n] end },
+        Json = {},
+        IMGUI = { NewWindow = function(t) return el("Window", t) end, GetViewportSize = function() return { 1920, 1080 } end } }
+"""
+
+
+def window_lua(env, settings_json=None):
+    """A fresh Lua state with the mod's Common.lua + Window.lua on a stub IMGUI that records every element; the
+    settings file is a JSON string (None = no file yet). env.lua_patches apply by file name."""
+    from lupa import LuaRuntime
+    L = LuaRuntime(unpack_returned_tuples=True)
+    L.execute(WINDOW_STUB)
+    G = L.globals()
+
+    def to_py(t):
+        return {k: t[k] for k in t}
+    G.Ext.Json.Stringify = lambda t: json.dumps(to_py(t))
+    G.Ext.Json.Parse = lambda s: L.table_from(json.loads(s))
+    if settings_json is not None:
+        G.STUB.files[SETTINGS_FILE] = settings_json
+    for rel in ("Shared/Common.lua", "Client/Window.lua"):
+        src = _read(env.mods_lua, *rel.split("/"))
+        for old, new in env.lua_patches.get(os.path.basename(rel), []):
+            if old not in src:
+                raise RuntimeError(f"lua patch target not found in {rel}: {old[:60]!r}")
+            src = src.replace(old, new)
+        L.execute(src)
+    L.execute("LA.Mod = { regionName = {} }")
+    G.LA.LoadSettings()
+    return L
+
+
+def _header(G):
+    """(visible header text, the hide button or None) of the F6 window as last rendered."""
+    texts, button = [], None
+    for c in lua_list(G.LA.Win.header.children):
+        if c.kind == "Text" and c.Label:
+            texts.append(str(c.Label))
+        if c.kind == "Button" and "hide" in str(c.Label or "").lower():
+            button = c
+    return " ".join(texts), button
+
+
+def check_spoiler_warning(env):
+    """The spoiler warning is in the README (top), INSTALL.md, the Nexus text, meta.lsx (short form), the Sets page
+    header and the Loot Advisor handbook (source chapter and the built handbook's opening). In the game the F6 window
+    shows it at the top until the player hides it; hiding is saved in the settings file and holds in the next game,
+    and a settings file from before the warning existed still shows it."""
+    fails, n = [], 0
+    overrides = getattr(env, "file_overrides", {})
+    places = getattr(env, "spoiler_places", None)
+    if places is None:
+        places = spoiler_doc_places()
+    for name, load, want in places:
+        n += 1
+        text = overrides[name] if name in overrides else load()
+        if want not in _flat(text):
+            fails.append(f"{name}: no spoiler warning ('{want[:40]}...')")
+
+    n_game = 0
+    if places:
+        # first open with no settings file: waiting for a character, a character Loot Advisor does not cover, a result
+        L = window_lua(env)
+        G = L.globals()
+        res_cases = [("waiting for a character", None),
+                     ("not-covered character", L.table_from({"notCovered": True, "name": "Hireling"})),
+                     ("normal result", L.table_from({"char": "gale", "act": 1, "rows": L.table_from({}),
+                                                     "markers": L.table_from({}), "build": L.table_from({"n": "x"})}))]
+        G.LA.Win.Toggle()
+        for label, res in res_cases:
+            n_game += 1
+            G.LA.Result = res
+            G.LA.Win.Render(res)
+            text, button = _header(G)
+            if SPOILER not in text:
+                fails.append(f"F6 window, first open ({label}): no spoiler warning at the top")
+            if button is None or button.OnClick is None:
+                fails.append(f"F6 window, first open ({label}): no button to hide the warning")
+        _text, button = _header(G)
+        if button is not None and button.OnClick is not None:
+            button.OnClick()
+            n_game += 1
+            if SPOILER in _header(G)[0]:
+                fails.append("F6 window: the warning is still shown after the player hid it")
+            saved = G.STUB.files[SETTINGS_FILE]
+            if not saved or json.loads(saved).get("SpoilerNoticeSeen") is not True:
+                fails.append(f"F6 window: hiding the warning did not save it in {SETTINGS_FILE} ({saved!r})")
+            else:
+                # next game: the saved file is read at start and the window opens without the warning
+                G2 = window_lua(env, saved).globals()
+                G2.LA.Win.Toggle()
+                n_game += 1
+                if SPOILER in _header(G2)[0]:
+                    fails.append("F6 window, next game: the warning is back although the player hid it")
+        # a settings file written before the warning existed (other keys only) still shows it
+        G3 = window_lua(env, json.dumps({"Enabled": True, "Hotkey": "F6"})).globals()
+        G3.LA.Win.Toggle()
+        n_game += 1
+        if SPOILER not in _header(G3)[0]:
+            fails.append("F6 window: a settings file from before the warning hides it")
+    env.counts["places"] = n
+    env.counts["F6 window cases"] = n_game
+    if n == 0:
+        fails.append("nothing checked: no place listed for the spoiler warning")
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -995,4 +1191,5 @@ CHECKS = [
     ("UI tree touched only through Ext.UI.Defer (old Script Extender: not at all)", check_noesis_only_through_defer,
      False),
     ("tooltip warnings: at most 3 lines, nothing lost, full text in F6 / page", check_tooltip_warnings, False),
+    ("spoiler warning: docs, Nexus text, Sets page, handbook and once in the F6 window", check_spoiler_warning, False),
 ]
