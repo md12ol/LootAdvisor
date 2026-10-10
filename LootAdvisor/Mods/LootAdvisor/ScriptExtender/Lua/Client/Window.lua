@@ -98,8 +98,8 @@ local function place(w)
   try(function() w:SetSize({ vp[1] * 0.66, vp[2] * 0.70 }, "Always") end)
 end
 
--- While the game's pause menu is open the window is closed and remembered (W.reopen), then opened again; the hotkey
--- only flips what happens after the menu.
+-- While the game's pause menu (or, with Build Advisor, a build screen) is open the window is closed and remembered
+-- (W.reopen), then opened again; the hotkey only flips what happens after it.
 function W.SetMenuHidden(on)
   if not W.window or W.menuHidden == on then return end
   W.menuHidden = on
