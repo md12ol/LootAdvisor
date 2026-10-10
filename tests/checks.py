@@ -1980,7 +1980,8 @@ def check_live_names(env):
     if "function charName(c) { var ch = LIVE && (LIVE.chars || {})[c]; return (ch && ch.name) || CHAR_NAME[c]" not in app:
         fails.append("app.js: no charName() preferring the live game's name")
     for what, frag in (("names()", "function names(ids) { return (ids || []).map(charName)"),
-                       ("tie wording", "T.say(it, lc || null, charName)")):
+                       ("tie wording", "T.say(it, lc || null, charName)"),
+                       ("character rail", "<span class=\"nm\">' + esc(charName(c.id))")):
         if frag not in app:
             fails.append(f"app.js: {what} does not use the live name")
     rest = app.replace("CHAR_NAME[c.id] = c.n", "").replace("|| CHAR_NAME[c] ||", "")
