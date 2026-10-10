@@ -658,7 +658,20 @@ end
 -- ------------------------------------------------------------------------------------------------ enemies
 -- E = {template, ac, save, atk, dmg, dc, hp}. Stats are forced, then VERIFIED in G.results.enemies (a difficulty
 -- setting or the template could change them).
-local function forceEnemy(d, E)
+-- A creature made by CreateAt has no stats and no equipment yet in the frame it was made: its abilities read 0, so
+-- "set every ability to 10" added +10 to each (the pilot's enemy had STR 26) and its weapon stayed on (+8 to hit and
+-- damage beyond the model's enemy). Abilities and gear are forced once the stats are there (G.enemyReady).
+G.ENEMY_READY_TRIES = 20
+function G.enemyReady(d)
+  local cur = abilities(d)
+  return (cur.Strength or 0) > 0 and (cur.Dexterity or 0) > 0
+end
+local function forceEnemy(d, E, tries)
+  tries = tries or 0
+  if not G.enemyReady(d) then
+    if tries < G.ENEMY_READY_TRIES then wait(100, function() forceEnemy(d, E, tries + 1) end) end
+    return
+  end
   for _, it in pairs(G.equipped(d)) do pcall(Osi.Unequip, d, it) end
   local cur = abilities(d)
   for _, n in ipairs(ABIL) do
@@ -898,6 +911,12 @@ function G.setupCheck(F, spec, phase, extra)
       local E = extra.E or {}
       local de = ent(d)
       cmp("enemy " .. i .. " AC", E.ac, de and try(function() return de.Resistances.AC end))
+      -- the model's enemy: every ability 10, unarmed (its attack and damage come from the forced boosts alone)
+      local ab = abilities(d)
+      for _, n in ipairs(ABIL) do cmp("enemy " .. i .. " " .. n, 10, ab[n]) end
+      local gear = 0
+      for _ in pairs(G.equipped(d)) do gear = gear + 1 end
+      cmp("enemy " .. i .. " items worn", 0, gear)
       cmp("enemy " .. i .. " damage scale", extra.scale, E.damage_scale)
     end
     for m in pairs(extra.parked or {}) do

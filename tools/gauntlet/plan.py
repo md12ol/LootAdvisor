@@ -38,7 +38,7 @@ STYLE_PASSIVE = {"Archery": "FightingStyle_Archery", "Defence": "FightingStyle_D
                  "Defense": "FightingStyle_Defense", "Dueling": "FightingStyle_Dueling",
                  "Great Weapon Fighting": "FightingStyle_GreatWeaponFighting",
                  "Protection": "FightingStyle_Protection", "Two-Weapon Fighting": "FightingStyle_TwoWeaponFighting"}
-MANEUVERS = ["TripAttack", "PrecisionAttack", "Riposte"]   # Battle Master picks used by the round plans
+MANEUVERS = ["TripAttack", "PrecisionAttack", "Riposte"]   # Battle Master picks when the build names none
 
 
 # ------------------------------------------------------------------------------------------------ game lists
@@ -78,9 +78,23 @@ def _norm(s):
     return re.sub(r"[^a-z]", "", (s or "").lower())
 
 
-def grants(G, seq, subs, feats_taken, styles):
+def maneuver_picks(per_level):
+    """The Battle Master manoeuvres a respec picked ("Manoeuvres: Precision Attack, Trip Attack" in a test plan's
+    per-level picks) as passive names, or None when it names none."""
+    out = []
+    for lv in per_level or []:
+        for pick in lv.get("picks") or []:
+            m = re.match(r"Man(?:oeu|eu)vres?:\s*(.+)$", pick)
+            if m:
+                names = re.sub(r"\([^)]*\)", "", m.group(1)).split(",")
+                out += [re.sub(r"[^A-Za-z]", "", x) for x in names if x.strip()]
+    return out or None
+
+
+def grants(G, seq, subs, feats_taken, styles, maneuvers=None):
     """What the build's class levels give: passives, spells, resources; plus the passives of every class table (to
-    remove the ones the test character has from its own class)."""
+    remove the ones the test character has from its own class). maneuvers: the Battle Master picks as passive names
+    (default MANEUVERS). A passive any race grants is never in the remove list: the character keeps its race."""
     progs, descs, feats, lists = G
     table = {d["Name"]: d.get("ProgressionTableUUID") for d in descs.values()}
     sub_of = {}
@@ -88,9 +102,18 @@ def grants(G, seq, subs, feats_taken, styles):
         par = next((x for x in descs.values() if x["UUID"] == d.get("ParentGuid")), None)
         if par:
             sub_of.setdefault(par["Name"], {})[_norm(d["Name"])] = d["Name"]
-    rows = {}
+    rows, seen = {}, set()
+    race_passives = set()
     for p in progs.values():
+        if p.get("ProgressionType") == "2":
+            race_passives |= set(_split(p.get("PassivesAdded")))
         if p.get("ProgressionType") in ("0", "1"):
+            # the game data holds some rows twice under two UUIDs (Battle Master level 3: two rows of 4 superiority
+            # dice; the game grants 4): a row equal to another in everything but its UUID counts once
+            key = tuple(sorted((k, v) for k, v in p.items() if k != "UUID"))
+            if key in seen:
+                continue
+            seen.add(key)
             rows.setdefault(p.get("TableUUID"), []).append(p)
     all_class_passives = set()
     for t, rs in rows.items():
@@ -154,9 +177,9 @@ def grants(G, seq, subs, feats_taken, styles):
         if STYLE_PASSIVE.get(s):
             passives.append(STYLE_PASSIVE[s])
     if "Fighter" in counts and "Battle Master" in (subs.get("Fighter") or "") and counts["Fighter"] >= 3:
-        passives.extend(MANEUVERS)
+        passives.extend(maneuvers or MANEUVERS)
     passives = [p for p in dict.fromkeys(passives) if p not in removed]
-    remove = sorted(all_class_passives - set(passives))
+    remove = sorted(all_class_passives - set(passives) - race_passives)
     resources = [{"kind": k, "level": lv, "n": n} for (k, lv), n in sorted(res.items())]
     return dict(passives=passives, passives_remove=remove, spells=list(dict.fromkeys(spells)), resources=resources,
                 class_levels=counts, boosts=list(dict.fromkeys(profs)), interrupts=list(dict.fromkeys(interrupts)),
@@ -538,13 +561,14 @@ def granted_proficiencies(stats, sids):
 
 
 # ------------------------------------------------------------------------------------------------ specs
-def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None):
+def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None, maneuvers=None):
     """respec: the test plan's tuned respec (pairs.tuned_respec) the test character was given, or None for the
-    build's own picks; the sheet, feats, styles, plan and the model's numbers follow it."""
+    build's own picks; the sheet, feats, styles, plan and the model's numbers follow it. maneuvers: the plan's Battle
+    Master picks (maneuver_picks)."""
     lo = {k: v["sid"] for k, v in (setrec.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
     bare = model.State(W, cid, bid, act, {}, {}, respec=respec)
     st = model.State(W, cid, bid, act, lo, {}, respec=respec)
-    g = grants(G, bare.BI["seq"][: bare.level], bare.subs, bare.feats, bare.styles)
+    g = grants(G, bare.BI["seq"][: bare.level], bare.subs, bare.feats, bare.styles, maneuvers=maneuvers)
     pred = model.score(W, cid, bid, act, lo, None, detail=True, respec=respec)
     core = core_plan(model, bare, stats)
     acts, skipped = item_actions(st, stats, mech)
@@ -645,8 +669,9 @@ def main(argv=None):
         for side in ("a", "b"):
             pid = p[side].get("respec")
             r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
+            mv = maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
             row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates,
-                                          respec=r)
+                                          respec=r, maneuvers=mv)
         row.pop("a"), row.pop("b")
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", row["specs"]["a"]["set"], "/", row["specs"]["b"]["set"])

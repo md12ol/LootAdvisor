@@ -146,11 +146,57 @@ def lua_tests():
               len({ar[x["arena"]]["radius"] for x in a["lanes"].values()}) == 1 for a in lane_sets))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests, setup_tests, lane_tests, respec_tests):
+              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
             check(f"{t.__name__} ran", False, repr(e)[:300])
+
+
+def enemy_tests(L):
+    """The model's enemy: a creature made by CreateAt has no stats in its first frames, so its abilities are set to 10
+    and its gear taken off only once its stats are there; the setup check reads every ability and the worn items."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local queue, boosts, unequipped = {}, {}, {}
+      local reads, ready = 0, false
+      Ext.Timer.WaitFor = function(_, f) queue[#queue + 1] = f end
+      Osi.AddBoosts = function(_, b) boosts[#boosts + 1] = b end
+      Osi.Unequip = function(_, it) unequipped[#unequipped + 1] = it end
+      Osi.CreateAt = function() return "e1" end
+      Osi.GetEquippedItem = function(_, slot) if ready and slot == "Melee Main Weapon" and #unequipped == 0 then return "w" end end
+      Ext.Entity.Get = function(u)
+        reads = reads + 1
+        if reads > 3 then ready = true end
+        local a = ready and { 0, 16, 14, 12, 8, 10, 10 } or { 0, 0, 0, 0, 0, 0, 0 }
+        return { Stats = { Abilities = a, ProficiencyBonus = 2 }, Resistances = { AC = 12, Resistances = {} },
+                 Replicate = function() end }
+      end
+      G.spawnEnemies({ { 0, 0, 0 } }, { template = "t", ac = 19, save = 4, atk = 9, dmg = 9, dc = 17, hp = 5000 })
+      for _ = 1, 200 do if #queue == 0 then break end; table.remove(queue, 1)() end
+      T_eb, T_un = boosts, unequipped
+      ready = true
+      Ext.Entity.Get = function(u)
+        if u == "e1" then return { Stats = { Abilities = { 0, 16, 10, 10, 10, 10, 10 } }, Resistances = { AC = 19 } } end
+      end
+      Osi.GetEquippedItem = function(u, slot) if u == "e1" and slot == "Melee Main Weapon" then return "w" end end
+      local sc = G.setupCheck({ char = "c1" }, { items = {} }, "start",
+        { enemies = { "e1" }, E = { ac = 19, damage_scale = 0.5 }, scale = 0.5, encumbered = {} })
+      T_em = {}
+      for _, m in ipairs(sc.mismatches) do T_em[#T_em + 1] = m.field end
+      Ext.Timer.WaitFor = function(_, f) f() end
+      Osi.AddBoosts, Osi.Unequip, Osi.CreateAt, Osi.GetEquippedItem = nil, nil, nil, nil
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    b = lst(g.T_eb)
+    check("enemy: abilities set to 10 from the stats the creature has once they are there (not +10 from a zero read)",
+          "Ability(Strength,-6)" in b and "Ability(Dexterity,-4)" in b and not any(x.startswith("Ability(") and
+                                                                               x.endswith(",10)") for x in b), str(b))
+    check("enemy: its weapon is taken off once its gear is there", lst(g.T_un) == ["w"], str(lst(g.T_un)))
+    em = lst(g.T_em)
+    check("setup: an enemy ability other than 10 and a worn item fail the setup check",
+          "enemy 1 Strength" in em and "enemy 1 items worn" in em and "enemy 1 Dexterity" not in em, str(em))
 
 
 def reaction_tests(L):
@@ -1239,12 +1285,38 @@ def py_tests():
     check("items: other items keep their first template", P.item_template("X", {"X": ["t1", "t2"]}) == "t1")
     import pairs as PA
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
-              lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: reach_tests(P),
+              lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
               lambda: lanes_py_tests(R), engine_lane_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+def grants_tests(P):
+    """What a real respec gives, as the setup check expects it: a game row held twice under two UUIDs counts once, the
+    Battle Master manoeuvres are the respec's picks, and a passive the race grants is never on the remove list."""
+    descs = {"f": {"UUID": "f", "Name": "Fighter", "ProgressionTableUUID": "tf"},
+             "bm": {"UUID": "bm", "Name": "BattleMaster", "ParentGuid": "f", "ProgressionTableUUID": "tbm"},
+             "gs": {"UUID": "gs", "Name": "GloomStalker", "ProgressionTableUUID": "tgs"}}
+    row = {"TableUUID": "tbm", "Level": "3", "ProgressionType": "1", "Boosts": "ActionResource(SuperiorityDie,4,0)"}
+    progs = {"1": dict(row, UUID="1"), "2": dict(row, UUID="2"),
+             "3": {"UUID": "3", "TableUUID": "tf", "Level": "1", "ProgressionType": "0", "PassivesAdded": "SecondWind"},
+             "4": {"UUID": "4", "TableUUID": "tgs", "Level": "3", "ProgressionType": "1",
+                   "PassivesAdded": "Darkvision;UmbralSight"},
+             "5": {"UUID": "5", "TableUUID": "tr", "Level": "1", "ProgressionType": "2", "PassivesAdded": "Darkvision"}}
+    g = P.grants((progs, descs, {}, {}), ["Fighter"] * 3, {"Fighter": "Battle Master"}, [], [],
+                 maneuvers=["MenacingAttack"])
+    check("grants: a game row held twice under two UUIDs counts once (4 superiority dice, not 8)",
+          g["resources"] == [{"kind": "SuperiorityDie", "level": 0, "n": 4}], str(g["resources"]))
+    check("grants: the Battle Master manoeuvres are the respec's picks",
+          "MenacingAttack" in g["passives"] and "Riposte" not in g["passives"], str(g["passives"]))
+    check("grants: a passive the race grants is never removed", "Darkvision" not in g["passives_remove"] and
+          "UmbralSight" in g["passives_remove"], str(g["passives_remove"]))
+    mv = P.maneuver_picks([{"picks": ["Manoeuvres: Trip Attack, Riposte"]}, {"picks": ["Feat: Alert"]},
+                           {"picks": ["Manoeuvres: Goading Attack (5th superiority die)"]}])
+    check("grants: manoeuvre picks read from a test plan, notes in brackets dropped",
+          mv == ["TripAttack", "Riposte", "GoadingAttack"], str(mv))
 
 
 def tuned_respec_tests(PA):
@@ -1734,6 +1806,14 @@ MUTATIONS = [
     ("control: damage taken not compared", PA, "    if _rel(na[\"taken\"], nb[\"taken\"]) > tol:", "    if False:"),
     ("control: saves not compared", PA, "    if na[\"saves\"] != nb[\"saves\"]:", "    if False:"),
     ("control: resistances not compared", PA, "    if na[\"resist\"] != nb[\"resist\"]:", "    if False:"),
+    ("enemy: abilities forced before the stats are there", GL, "  if not G.enemyReady(d) then", "  if false then"),
+    ("enemy: abilities not in the setup check", GL,
+     "      for _, n in ipairs(ABIL) do cmp(\"enemy \" .. i .. \" \" .. n, 10, ab[n]) end", ""),
+    ("enemy: worn items not in the setup check", GL, "      cmp(\"enemy \" .. i .. \" items worn\", 0, gear)", ""),
+    ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
+    ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
+     "    remove = sorted(all_class_passives - set(passives))"),
+    ("grants: fixed manoeuvres", PL, "        passives.extend(maneuvers or MANEUVERS)", "        passives.extend(MANEUVERS)"),
     ("respec: the plan's ability scores not compared", PA, "    if want and got != want:", "    if False:"),
     ("respec: tuned plans keep the build's picks", PA, "    if rs.get(\"tuned\"):", "    if False:"),
     ("control: damage not compared", PA, "    if _rel(na[\"dpr\"], nb[\"dpr\"]) > tol:", "    if False:"),
