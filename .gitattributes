@@ -1,0 +1,2 @@
+# Check files out exactly as committed (LF), whatever core.autocrlf says, so generated files compare clean.
+* -text
