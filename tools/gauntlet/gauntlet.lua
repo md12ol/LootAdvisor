@@ -344,6 +344,138 @@ function G.prep(spec)
   return G.status
 end
 
+-- ------------------------------------------------------------------------------------------------ reactions
+-- A reaction the game asks about ("Use reaction?" for Destructive Wrath, Hellish Rebuke, Shield, smites...) stops a
+-- scripted turn until someone answers. Scripted runs therefore set every party character's reactions so the game
+-- never asks: each reaction either fires on its own ("auto") or not at all ("never"). The default is "auto"; a plan
+-- names any reaction it compares in plan.reactions = { Interrupt_X = "auto" | "never" }, so both sets of a pair run
+-- with the same answers. The player's own settings are saved first and put back when the run ends, aborts or fails:
+-- reactions are the player's choice whenever a person has control, so manual runs never touch them.
+-- Interrupt preference flags: "Enabled" = may fire, "Ask" = the game asks first.
+local POLICY_FLAGS = { auto = { "Enabled" }, never = {}, ask = { "Ask", "Enabled" } }
+function G.reactionFlags(policy) return POLICY_FLAGS[policy] or POLICY_FLAGS.auto end
+function G.reactionPolicy(name, plan)
+  local p = plan and plan.reactions and plan.reactions[name]
+  if p and POLICY_FLAGS[p] then return p end
+  return (plan and POLICY_FLAGS[plan.reactions_default or ""] and plan.reactions_default) or "auto"
+end
+-- "InterruptInteractionTypes(Ask,Enabled)" -> { "Ask", "Enabled" }
+function G.flagsFromString(s)
+  local inner = tostring(s):match("%((.*)%)") or ""
+  local out = {}
+  for f in inner:gmatch("[%a_]+") do out[#out + 1] = f end
+  return out
+end
+local function prefsOf(u)
+  local e = ent(u)
+  return e, e and try(function() return e.InterruptPreferences.Preferences end)
+end
+-- { Interrupt_X = { "Ask", "Enabled" }, ... } of one character
+function G.reactionsOf(u)
+  local _, P = prefsOf(u)
+  local out = {}
+  for k, v in pairs(P or {}) do out[k] = G.flagsFromString(v) end
+  return out
+end
+local function setPrefs(u, want)
+  local e, P = prefsOf(u)
+  if not P then return false end
+  for k, flags in pairs(want) do pcall(function() P[k] = flags end) end
+  pcall(function() e:Replicate("InterruptPreferences") end)
+  return true
+end
+local function sameFlags(a, b)
+  local s = {}
+  for _, f in ipairs(a) do s[f] = true end
+  for _, f in ipairs(b) do if not s[f] then return false end; s[f] = nil end
+  return next(s) == nil
+end
+local function partyMembers()
+  local out = {}
+  for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do out[#out + 1] = uuid(row[1]) end
+  return out
+end
+-- Scripted runs only. Saves each character's own settings once (a second call keeps the first copy), applies the
+-- plan's policy and reads it back. Returns { [uuid] = { name, reactions = { Interrupt_X = policy }, verified } }.
+function G.reactionsApply(plan, chars)
+  G.savedReactions = G.savedReactions or {}
+  local report = {}
+  for _, u in ipairs(chars or partyMembers()) do
+    local own = G.reactionsOf(u)
+    if G.savedReactions[u] == nil then G.savedReactions[u] = own end
+    local want, pol = {}, {}
+    for k in pairs(own) do
+      pol[k] = G.reactionPolicy(k, plan)
+      want[k] = G.reactionFlags(pol[k])
+    end
+    setPrefs(u, want)
+    local back, ok = G.reactionsOf(u), true
+    for k, flags in pairs(want) do if not sameFlags(back[k] or {}, flags) then ok = false end end
+    report[u] = { name = name(u), reactions = pol, verified = ok }
+  end
+  return report
+end
+function G.reactionsRestore()
+  local n = 0
+  for u, own in pairs(G.savedReactions or {}) do
+    if setPrefs(u, own) then n = n + 1 end
+  end
+  G.savedReactions = nil
+  return n
+end
+-- Reaction prompts open for the character right now: { { interrupt = "Interrupt_X", cast = guid }, ... }
+function G.pendingReactions(u)
+  local me, out = uuid(u), {}
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "InterruptActionState") or {}) do
+    local st = try(function() return e.InterruptActionState end)
+    for _, a in ipairs(st and st.Actions or {}) do
+      local obs = try(function() return a.Observer.Uuid.EntityUuid end)
+      if obs == me then
+        out[#out + 1] = { interrupt = try(function() return a.Interrupt.InterruptData.Interrupt end),
+          cast = tostring(st.SpellCastGuid) }
+      end
+    end
+  end
+  return out
+end
+-- The in-turn guard. Scripted turns only: a prompt the policy did not cover is logged as a miss (so the reaction list
+-- can be completed) and ends the run, because the engine offers no safe way to answer it (writing the server's
+-- interrupt decision crashed the game). When a person has control it does nothing.
+function G.reactionGuard(F)
+  if not F or F.manual then return nil end
+  local open = G.pendingReactions(F.char)
+  if #open == 0 then return nil end
+  G.results.reaction_misses = G.results.reaction_misses or {}
+  for _, p in ipairs(open) do
+    G.results.reaction_misses[#G.results.reaction_misses + 1] = p
+    note("reaction prompt not covered by the policy: %s", tostring(p.interrupt))
+  end
+  return open[1].interrupt
+end
+
+-- ------------------------------------------------------------------------------------------------ the rest of the party
+-- Solo runs: the other party members are moved 40 m away and kept out of the fight; put back when the run ends.
+function G.parkOthers(u)
+  G.parked = G.parked or {}
+  local ox, oy, oz = Osi.GetPosition(u)
+  if not ox then return 0 end
+  local n = 0
+  for _, m in ipairs(partyMembers()) do
+    if m ~= uuid(u) then
+      local x, y, z = Osi.FindValidPosition(ox + 40, oy, oz, 20, m, 0)
+      if x then pcall(Osi.TeleportToPosition, m, x, y, z, "", 0, 0, 0, 0, 1) end
+      pcall(Osi.SetCanJoinCombat, m, 0)
+      G.parked[m] = true
+      n = n + 1
+    end
+  end
+  return n
+end
+function G.unparkOthers()
+  for m in pairs(G.parked or {}) do pcall(Osi.SetCanJoinCombat, m, 1) end
+  G.parked = nil
+end
+
 -- ------------------------------------------------------------------------------------------------ enemies
 -- E = {template, ac, save, atk, dmg, dc, hp}. Stats are forced, then VERIFIED in G.results.enemies (a difficulty
 -- setting or the template could change them).
@@ -701,6 +833,10 @@ end
 local function finish(F, why)
   G.fightOn = false
   F.state = "done"
+  if not F.manual then
+    G.results.reactions_restored = G.reactionsRestore()
+    G.unparkOthers()
+  end
   for _, d in ipairs(F.enemies or {}) do
     if not pcall(Osi.RequestDelete, d) then pcall(Osi.Die, d, 0, "NULL_00000000-0000-0000-0000-000000000000", 0, 0) end
   end
@@ -751,6 +887,10 @@ function G.run(req)
       G.status = "fighting"
       local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin)
       pcall(Osi.TeleportToPosition, u, cpos[1], cpos[2], cpos[3], "", 0, 0, 0, 0, 1)
+      if not F.manual then
+        G.results.parked = G.parkOthers(u)
+        G.results.reactions = G.reactionsApply(F.plan)
+      end
       local buffs = {}
       for _, s in ipairs((C.buffs or {})[act] or {}) do buffs[#buffs + 1] = s end
       if req.haste then buffs[#buffs + 1] = C.haste or "HASTE" end
@@ -800,6 +940,10 @@ local function tick()
   local t = now()
   if t - lastTick < 100 then return end
   lastTick = t
+  if F.state ~= "player" then
+    local miss = G.reactionGuard(F)
+    if miss then return finish(F, "reaction prompt " .. tostring(miss) .. " not covered by the policy") end
+  end
   if F.state == "wait" then
     if activeTurn(F.char) then
       if G.round >= F.rounds then return finish(F) end

@@ -96,6 +96,10 @@ python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md repo
 ```
 The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
 through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
+Scripted runs park the rest of the party 40 m away and set every party character's reactions so the game never asks
+("Use reaction?" would stop a scripted turn): each fires on its own, or not at all when the plan names it under
+`plan.reactions`. The player's own reaction settings are put back when the run ends; manual runs never change them. A
+prompt that still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

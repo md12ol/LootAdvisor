@@ -20,6 +20,9 @@ import engine  # noqa: E402
 import plan as P  # noqa: E402
 
 TEMPLATE = "b7f6f34b-07e6-4bcc-a4bc-023b25fb6e84"   # a plain humanoid (Absolute Cultist); stats are forced anyway
+# The template's own faction is neutral to the party in Act 3, so the spawned enemies never fought: the game's generic
+# hostile faction ("Evil NPC") instead. SetFaction needs the full "<name>_<guid>" string.
+ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
 ENEMY_HP = 5000
 BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}
 HASTE = "HASTE"
@@ -88,7 +91,7 @@ def set_entry(W, mech, stats, cid, s, templates):
         sid = lo.get(slot)
         if not sid:
             continue
-        items.append({"slot": P.SLOT_GAME[slot] or "Elixir", "stats": sid, "template": (templates.get(sid) or [None])[0],
+        items.append({"slot": P.SLOT_GAME[slot] or "Elixir", "stats": sid, "template": P.item_template(sid, templates),
                       "use": slot == "Elixir" or None, "name": W.items[sid].get("name")})
         im = mech.ItemMech(W, sid)
         for spid, hand in im.spells:
@@ -151,7 +154,7 @@ def main(argv=None):
         for c in opt.get("compare") or []:
             pass
     out = {"version": 1, "enemies": {str(k): dict(v, template=TEMPLATE, hp=ENEMY_HP) for k, v in model.ENEMY.items()},
-           "buffs": BUFFS, "haste": HASTE, "enemy_faction": None, "builds": builds, "sets": sets, "tuned": {}}
+           "buffs": BUFFS, "haste": HASTE, "enemy_faction": ENEMY_FACTION, "builds": builds, "sets": sets, "tuned": {}}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, default=str)
     print(f"{len(builds)} builds, {len(sets)} sets -> {a.out}")

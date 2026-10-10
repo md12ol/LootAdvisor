@@ -12,6 +12,7 @@ Per set the spec holds
              Feats); passives_remove = every other class passive (the test character's own class)
   spells     spells the progressions grant + the spells the round plan casts
   slots      spell slots (multiclass caster level), resources (Rage, Channel Divinity, ...)
+  boosts     the armour / weapon proficiencies the class levels and feats grant (Proficiency(...))
   items      root template per slot
   plan       the scripted round plan + the item actions the shared adaptive rule may use
   expect     the model's numbers for the set (sheet AC / HP, DPR, rounds survived) to compare with
@@ -58,6 +59,15 @@ def game_lists():
     return progs, descs, feats, lists
 
 
+# Items whose first root template is a story copy: spawning it fires the story (MAG_Gortash_Gloves: the copy that still
+# holds Gortash's Netherstone ends his quest line and the game autosaves). The plain copy is used instead.
+SAFE_TEMPLATE = {"MAG_Gortash_Gloves": "6ea2650e-c12b-43d9-873e-f3d426d30d18"}
+
+
+def item_template(sid, templates):
+    return SAFE_TEMPLATE.get(sid) or (templates.get(sid) or [None])[0]
+
+
 def _split(s):
     return [x.strip() for x in (s or "").split(";") if x.strip()]
 
@@ -85,7 +95,7 @@ def grants(G, seq, subs, feats_taken, styles):
     for t, rs in rows.items():
         for r in rs:
             all_class_passives |= set(_split(r.get("PassivesAdded")))
-    passives, removed, spells, res = [], set(), [], {}
+    passives, removed, spells, res, profs = [], set(), [], {}, []
     counts = {}
     first = seq[0] if seq else None
 
@@ -100,6 +110,8 @@ def grants(G, seq, subs, feats_taken, styles):
             m = re.match(r"UnlockSpell\((\w+)", b)
             if m:
                 spells.append(m.group(1))
+            if re.match(r"Proficiency\(\w+\)$", b):
+                profs.append(b)
         for sel in _split(r.get("Selectors")):
             m = re.match(r"AddSpells\(([0-9a-f-]{36})", sel)
             if m and m.group(1) in lists:
@@ -131,6 +143,7 @@ def grants(G, seq, subs, feats_taken, styles):
         rec = by_feat.get(_norm(f))
         if rec:
             passives.extend(_split(rec.get("PassivesAdded")))
+            profs.extend(b for b in _split(rec.get("Boosts")) if re.match(r"Proficiency\(\w+\)$", b))
     for s in styles:
         if STYLE_PASSIVE.get(s):
             passives.append(STYLE_PASSIVE[s])
@@ -140,7 +153,7 @@ def grants(G, seq, subs, feats_taken, styles):
     remove = sorted(all_class_passives - set(passives))
     resources = [{"kind": k, "level": lv, "n": n} for (k, lv), n in sorted(res.items())]
     return dict(passives=passives, passives_remove=remove, spells=list(dict.fromkeys(spells)), resources=resources,
-                class_levels=counts)
+                class_levels=counts, boosts=list(dict.fromkeys(profs)))
 
 
 # ------------------------------------------------------------------------------------------------ round plans
@@ -360,7 +373,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         sid = lo.get(slot)
         if not sid:
             continue
-        tpl = (templates.get(sid) or [None])[0]
+        tpl = item_template(sid, templates)
         items.append({"slot": SLOT_GAME[slot] or "Elixir", "stats": sid, "template": tpl, "use": slot == "Elixir" or None,
                       "name": W.items[sid].get("name")})
     return {
@@ -371,7 +384,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         "passives_add": g["passives"], "passives_remove": g["passives_remove"],
         "spells_add": sorted(set(g["spells"]) | used),
         "slots": {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))},
-        "resources": g["resources"], "items": items, "statuses": sorted(set(choice.values())),
+        "resources": g["resources"], "boosts": g["boosts"], "items": items, "statuses": sorted(set(choice.values())),
         "plan": dict(core, item_actions=acts, item_skipped=skipped,
                      hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats)),
         "expect": {"ac": st.sheet["ac"], "hp": st.sheet["hp"], "attacks": st.sheet.get("attacks"),
