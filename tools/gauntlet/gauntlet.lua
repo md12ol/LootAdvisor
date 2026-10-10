@@ -759,6 +759,15 @@ function G.settle(F, R, t)
   F.pending = nil
   R.cast_misses = (R.cast_misses or 0) + 1
   P.rec.result = string.format("failed: no cast seen within %.1f s", waited / 1000)
+  -- a per-rest item spell the engine would not cast is not tried again before the next rest
+  if P.a.per then F.cooldown[P.a.spell] = P.a.per end
+  -- what the engine saw at the miss (range, line of sight, the caster's statuses), to find why it refused
+  P.rec.miss = { dist = try(dist, F.char, P.target), sees = try(Osi.CanSee, F.char, P.target),
+    statuses = try(function()
+      local out = {}
+      for _, v in pairs(ent(F.char).StatusContainer.Statuses) do out[#out + 1] = tostring(v) end
+      return out
+    end) }
   if P.a.alt then
     P.rec.result = P.rec.result .. " -> alt"
     doAction(F, P.a.alt, R)
@@ -817,8 +826,11 @@ end
 
 -- Casts of the test character that no part of its plan asked for (its own racial / tadpole / class reactions,
 -- leftovers of the test character's sheet): they would count as the set's damage. Reactions the plan sets to "auto"
--- are allowed, matched on the name after its prefix (Interrupt_HellishRebuke ~ Target_HellishRebuke).
+-- are allowed, matched on the name after its prefix (Interrupt_HellishRebuke ~ Target_HellishRebuke). Spells only
+-- items grant (MAG_ / Legendary in the name, e.g. a shield's riposte) come from the set: the test character's own
+-- gear is taken off in prep.
 local function core(s) return (baseSpell(s):gsub("^[^_]+_", "")) end
+function G.itemSpell(s) return s:find("_MAG_", 1, true) ~= nil or s:find("_Legendary_", 1, true) ~= nil end
 function G.foreignCasts(rounds, me, plan)
   local allowed = {}
   local function allow(a)
@@ -832,7 +844,7 @@ function G.foreignCasts(rounds, me, plan)
   local out = {}
   for _, R in ipairs(rounds or {}) do
     for _, c in ipairs(R.casts or {}) do
-      if c.who == me and not allowed[core(c.spell)] then out[#out + 1] = { r = R.r, spell = c.spell } end
+      if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then out[#out + 1] = { r = R.r, spell = c.spell } end
     end
   end
   return out
@@ -983,6 +995,8 @@ local function roundStart(F)
   G.round = G.round + 1
   local R = { r = G.round, actions = {}, casts = {}, done = {}, char_hp_before = try(Osi.GetHitpoints, F.char) }
   R.char_hp_lost_enemy_turns = math.max(0, (F.hpChar or 0) - (R.char_hp_before or 0))
+  -- downed in the enemies' turn: the turn has no action, so the round is idle (marked for the report)
+  if R.char_hp_before and R.char_hp_before <= 0 then R.downed = true end
   pcall(Osi.SetHitpointsPercentage, F.char, 100)
   for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, 100) end
   local S = F.S
