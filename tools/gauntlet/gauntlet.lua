@@ -724,6 +724,76 @@ function G.enemyReport(list)
   return out
 end
 
+-- ------------------------------------------------------------------------------------------------ setup check
+-- The character's setup must be the spec's, exactly: one mismatch fails the run with the field named. Checked by
+-- engine at the fight's start (and the gear, passives and buffs again at its end). The sheet's numbers (abilities,
+-- max HP, proficiency, spell slots, class resources) are read from the bare sheet prep recorded before the items
+-- went on, so an item's own boosts are not a mismatch. -> { checked = n, mismatches = { {field, want, got} } }
+G.ABIL_FULL = { STR = "Strength", DEX = "Dexterity", CON = "Constitution", INT = "Intelligence", WIS = "Wisdom",
+  CHA = "Charisma" }
+function G.setupCheck(F, spec, phase, extra)
+  local u = F.char
+  local out = { checked = 0, mismatches = {} }
+  local function cmp(field, want, got)
+    out.checked = out.checked + 1
+    if want ~= got then out.mismatches[#out.mismatches + 1] = { field = field, want = want, got = got } end
+  end
+  local worn = {}
+  for slot, it in pairs(G.equipped(u)) do worn[slot] = try(Osi.GetStatString, it) end
+  for _, it in ipairs(spec.items or {}) do
+    if it.use then
+      if phase == "start" then
+        local got
+        for _, r in ipairs(((G.results.prep or {}).items) or {}) do if r.stats == it.stats then got = r.got end end
+        cmp("elixir " .. tostring(it.stats), "used", got)
+      end
+    else
+      cmp("item " .. tostring(it.slot), it.stats, worn[it.slot])
+    end
+  end
+  for _, p in ipairs(spec.passives_add or {}) do cmp("passive " .. p, true, try(Osi.HasPassive, u, p) == 1) end
+  for _, p in ipairs(spec.passives_remove or {}) do cmp("passive removed " .. p, false, try(Osi.HasPassive, u, p) == 1) end
+  for _, st in ipairs(spec.statuses or {}) do cmp("status " .. st, true, try(Osi.HasActiveStatus, u, st) == 1) end
+  for _, st in ipairs((extra and extra.buffs) or {}) do cmp("buff " .. st, true, try(Osi.HasActiveStatus, u, st) == 1) end
+  if phase ~= "start" then return out end
+  local book = {}
+  local e = ent(u)
+  for _, sp in ipairs(e and try(function() return e.SpellBook.Spells end) or {}) do
+    local id = try(function() return sp.Id.Prototype end)
+    if id then book[id] = true end
+  end
+  for _, sp in ipairs(spec.spells_add or {}) do cmp("spell " .. sp, true, book[sp] == true) end
+  local bare = (G.results.prep or {}).bare or {}
+  local sh = spec.sheet or {}
+  for short, want in pairs(sh.abilities or {}) do
+    cmp("ability " .. short, want, (bare.abilities or {})[G.ABIL_FULL[short] or short])
+  end
+  if sh.hp then cmp("max HP", sh.hp, bare.hp) end
+  if sh.prof then cmp("proficiency bonus", sh.prof, bare.prof) end
+  for lv = 1, 9 do
+    local want = spec.slots and spec.slots[tostring(lv)] or 0
+    local got = (bare.slots or {})[tostring(lv)] or 0
+    if want ~= 0 or got ~= 0 then cmp("spell slots L" .. lv, want, got) end
+  end
+  for _, r in ipairs(spec.resources or {}) do
+    cmp("resource " .. r.kind, r.n, (bare.resources or {})[r.kind .. ":" .. tostring(r.level or 0)])
+  end
+  if extra then
+    cmp("not encumbered", 0, #(extra.encumbered or {}))
+    if extra.reactions ~= nil then cmp("reaction policy applied", true, extra.reactions) end
+    for i, d in ipairs(extra.enemies or {}) do
+      local E = extra.E or {}
+      local de = ent(d)
+      cmp("enemy " .. i .. " AC", E.ac, de and try(function() return de.Resistances.AC end))
+      cmp("enemy " .. i .. " damage scale", extra.scale, E.damage_scale)
+    end
+    for m in pairs(extra.parked or {}) do
+      cmp("party member parked out of combat " .. tostring(m):sub(-12), 0, try(Osi.IsInCombat, m) or 0)
+    end
+  end
+  return out
+end
+
 -- ------------------------------------------------------------------------------------------------ events
 -- Damage log from Osiris AttackedBy (one row per damage type per hit) and the spell log from CastedSpell, registered
 -- once per game session (re-loading this file keeps them).
@@ -1302,6 +1372,18 @@ end
 function G.judge(rounds, why, results, opts)
   local causes = {}
   if why and why ~= "rounds done" and why ~= "downed" then causes[#causes + 1] = "ended: " .. why end
+  for _, phase in ipairs({ "start", "end" }) do
+    local sc = results.setup and results.setup[phase]
+    if sc and #sc.mismatches > 0 then
+      local parts = {}
+      for _, m in ipairs(sc.mismatches) do
+        parts[#parts + 1] = string.format("%s (want %s, got %s)", m.field, tostring(m.want), tostring(m.got))
+      end
+      causes[#causes + 1] = "setup mismatch at the " .. phase .. ": " .. table.concat(parts, "; ")
+    end
+  end
+  local refused = (results.summary or {}).cast_misses or 0
+  if refused > 0 then causes[#causes + 1] = refused .. " planned cast(s) refused or never seen" end
   local unworn = G.unworn(results.prep)
   if #unworn > 0 then causes[#causes + 1] = "set items not worn: " .. table.concat(unworn, ", ") end
   if results.encumbered and #results.encumbered > 0 then
@@ -1574,6 +1656,9 @@ local function finish(F, why)
   if F.manual and G.barSaved and why ~= "reset" then G.results.hotbar_restore = G.hotbarRestore() end
   if why == "downed" then F.downAt = G.round + 1 end
   if G.results.timing and F.tFight then G.results.timing.fight_ms = now() - F.tFight end
+  if F.spec and not F.manual and G.results.setup then
+    G.results.setup["end"] = G.setupCheck(F, F.spec, "end", { buffs = F.setupExtra and F.setupExtra.buffs })
+  end
   G.results.summary = summarize(F)
   G.results.ended = why or "rounds done"
   local downed = {}
@@ -1710,6 +1795,11 @@ function G.start(F)
             G.unencumber(u, false)
             G.results.encumbered = G.encumbrance(u)
             G.results.precheck = G.precheck(F)
+            local me = uuid(u)
+            local rep = G.results.reactions and G.results.reactions[me]
+            F.setupExtra = { buffs = buffs, encumbered = G.results.encumbered, enemies = F.enemies, E = E,
+              scale = F.enemyDamageScale, parked = G.parked, reactions = rep and rep.verified or nil }
+            G.results.setup = { start = G.setupCheck(F, spec, "start", F.setupExtra) }
           end
           G.round, G.fightOn = 0, true
           G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }

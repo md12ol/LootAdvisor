@@ -16,6 +16,8 @@
   hits from outside the run;
 - each round is planned from the resources the character has (upcast chains, Channel Divinity) and checked again;
 - reactions: policy mapping (default never), every interrupt the character has, save / apply / restore, the guard;
+- the setup check: every field of the spec read back by engine at the fight's start and end; one mismatch, an idle round
+  or a refused cast fails the run (never masked);
 - the turn watchdog recovers, then ends the run as invalid; a run starts without blocking the eval; run validity;
 - run.py statistics, run validity, the control-pair gate (fair rounds, the dice) and re-judging older records;
   engine.py retries and invalid runs;
@@ -130,7 +132,7 @@ def lua_tests():
           all(all(k in a for k in ("level", "center", "radius", "start", "park")) for a in ar.values()))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests):
+              rules_tests, setup_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -818,6 +820,41 @@ def rules_tests(L):
     check("rules: a cast out of range moves first", g.T_moving is True)
 
 
+def setup_tests(L):
+    """The setup check: every field of the spec is read back by engine; one mismatch fails the run, field named."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      Osi.GetEquippedItem = function(_, slot) if slot == "Boots" then return "it" end end
+      Osi.GetStatString = function() return "MAG_Boots" end
+      Osi.HasPassive = function() return 1 end
+      Osi.HasActiveStatus = function() return 1 end
+      G.results = { prep = { bare = { abilities = { Strength = 10 }, hp = 50, prof = 4, slots = { ["1"] = 2 },
+        resources = { ["ChannelDivinity:0"] = 1 } }, items = { { stats = "OBJ_Elixir", got = "used" } } } }
+      local spec = { items = { { slot = "Boots", stats = "MAG_Boots" }, { slot = "Elixir", stats = "OBJ_Elixir", use = true } },
+        passives_add = { "P1" }, statuses = { "S1" }, sheet = { abilities = { STR = 10 }, hp = 50, prof = 4 },
+        slots = { ["1"] = 2 }, resources = { { kind = "ChannelDivinity", level = 0, n = 1 } } }
+      local F = { char = "c1" }
+      T_ok = G.setupCheck(F, spec, "start", { buffs = { "BLESS" }, encumbered = {}, reactions = true })
+      G.results.prep.bare.hp = 49
+      Osi.HasActiveStatus = function(_, st) return st == "BLESS" and 0 or 1 end
+      T_bad = G.setupCheck(F, spec, "start", { buffs = { "BLESS" }, encumbered = {} })
+      G.results.setup = { start = T_bad }
+      G.results.summary = { cast_misses = 1 }
+      T_j = G.judge({ { r = 1, done = { action = true } } }, "rounds done", G.results, { me = "c1" })
+      Osi.GetEquippedItem, Osi.GetStatString, Osi.HasPassive, Osi.HasActiveStatus = nil, nil, nil, nil
+    """)
+    g = L.globals()
+    check("setup: a setup that matches the spec has no mismatch", len(g.T_ok.mismatches) == 0 and g.T_ok.checked >= 10,
+          f"{[(m.field, m.want, m.got) for m in g.T_ok.mismatches.values()]} {g.T_ok.checked}")
+    fields = sorted(m.field for m in g.T_bad.mismatches.values())
+    check("setup: max HP and a missing buff are named", fields == ["buff BLESS", "max HP"], str(fields))
+    causes = lst(g.T_j.causes)
+    check("setup: a mismatch fails the run with the field named, and a refused cast fails it too",
+          g.T_j.valid is False and any("max HP (want 50, got 49)" in c for c in causes) and
+          any("refused" in c for c in causes), str(causes))
+
+
 def py_tests():
     import plan as P
     import run as R
@@ -1002,7 +1039,8 @@ def rescore_tests(R):
     ok, causes, _ = R.rescore(_r7_rec("b", R7_B, R7_B_FAIR, ["the test character cast outside the plan: "
                                                              "Target_Legendary_ShieldBlow_Riposte",
                                                              "4 round(s) without a confirmed action"]))
-    check("rescore: idle rounds are masked and an item spell's cast is not foreign", ok and not causes, str(causes))
+    check("rescore: an item spell's cast is not foreign; idle rounds are never masked (the run fails)",
+          not ok and causes == ["4 round(s) without a confirmed action"], str(causes))
     ok2, causes2, _ = R.rescore(_r7_rec("a", R7_A[:2], [True, True], ["ended: the character's turn could not be ended"]))
     check("rescore: a run that ended early stays void", not ok2 and "ended" in causes2[0], str(causes2))
     ok3, causes3, _ = R.rescore(_r7_rec("a", R7_A[:5], [True] * 5))
@@ -1137,6 +1175,11 @@ MUTATIONS = [
     ("enemies: damage not scaled", GL, "  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)",
      "  local E = E0"),
     ("enemies: default scale 1", GL, "G.ENEMY_DAMAGE_SCALE = 0.5", "G.ENEMY_DAMAGE_SCALE = 1"),
+    ("setup: mismatches ignored", GL, "    if sc and #sc.mismatches > 0 then", "    if false then"),
+    ("setup: refused casts ignored", GL, "  if refused > 0 then causes", "  if false then causes"),
+    ("setup: sheet numbers not compared", GL, '  if sh.hp then cmp("max HP", sh.hp, bare.hp) end', ""),
+    ("setup: buffs not compared", GL,
+     '  for _, st in ipairs((extra and extra.buffs) or {}) do cmp("buff " .. st, true, try(Osi.HasActiveStatus, u, st) == 1) end', ""),
     ("revive: the dead stay dead", GL, "  if try(Osi.IsDead, u) == 1 then pcall(Osi.Resurrect, u) end", ""),
     ("stopping: never decisive on equality", RN, "    if ci[0] >= 1 - tol and ci[1] <= 1 + tol:", "    if False:"),
     ("stopping: decisive on any interval", RN, '    return False, f"ratio 95% interval', '    return True, f"ratio 95% interval'),
@@ -1196,8 +1239,9 @@ MUTATIONS = [
     ("gate: gross gap passes within the dice", RN, "if diff > 2 * tol or (diff > tol and beyond_dice):",
      "if diff > tol and beyond_dice:"),
     ("gate: too few fair rounds pass", RN, "if min(len(xa), len(xb)) < CONTROL_MIN_ROUNDS:", "if False:"),
-    ("rescore: idle rounds void the run", RN, "if ROUND_CAUSE.search(c):\n            continue",
-     "if False:\n            continue"),
+    ("rescore: idle rounds masked", RN, "    for c in causes:\n        if c.startswith(",
+     "    for c in causes:\n        if 'without a confirmed action' in c:\n            continue\n"
+     "        if c.startswith("),
     ("rescore: down rounds fair", RN, "down = bool(R.get(\"downed\")) or (hp is not None and hp <= 0)",
      "down = False"),
 ]

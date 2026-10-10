@@ -227,7 +227,6 @@ def fair_rounds(rec):
     return out
 
 
-ROUND_CAUSE = re.compile(r"round\(s\) without a confirmed action")
 ITEM_SPELL = re.compile(r"_MAG_|_Legendary_")
 
 
@@ -258,8 +257,6 @@ def rescore(rec):
     clean = fair_rounds(rec)
     left = []
     for c in causes:
-        if ROUND_CAUSE.search(c):
-            continue
         if c.startswith("the test character cast outside the plan: "):
             spells = [x.strip() for x in c.split(": ", 1)[1].split(",")]
             if all(ITEM_SPELL.search(x) or own_aoo(rec, x) for x in spells):
