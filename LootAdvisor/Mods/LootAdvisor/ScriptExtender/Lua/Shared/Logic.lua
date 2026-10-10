@@ -49,8 +49,8 @@ function L.EvalCond(c, state, charKey, act)
     elseif kind == "origin" or kind == "party" then
       local cs = state.comp and state.comp[arg]
       if arg ~= charKey and cs then
-        if cs.dead then close((LA.CHAR_NAME[arg] or arg) .. " is dead")
-        elseif not cs.team and (act or 1) >= 2 then close("needs " .. (LA.CHAR_NAME[arg] or arg) .. " in your team") end
+        if cs.dead then close(LA.CharName(arg) .. " is dead")
+        elseif not cs.team and (act or 1) >= 2 then close("needs " .. LA.CharName(arg) .. " in your team") end
       end
     elseif kind == "path" then
       local st = state.paths and state.paths[arg]
@@ -260,7 +260,7 @@ function L.Roster(people, state)
     local c = LA.Mod.companions[k]
     local cs = state.comp and state.comp[k] or {}
     if not seen[k] and k ~= "darkurge" and not lost(k) then
-      out[#out + 1] = { uuid = c.npc ~= "" and (LA.Mod.npcs or {})[c.npc] or nil, key = k, name = LA.CHAR_NAME[k] or k,
+      out[#out + 1] = { uuid = c.npc ~= "" and (LA.Mod.npcs or {})[c.npc] or nil, key = k, name = LA.CharName(k),
                         party = false, camp = cs.team == true, future = cs.team ~= true,
                         ba = (LA.Mod.baOrigins or {})[k] }
     end

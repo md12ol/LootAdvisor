@@ -71,11 +71,14 @@ function LA.UI.FindNamed(root, name, maxDepth)
 end
 
 -- The game's pause menu (Esc) and the pages it opens (options, save, load) are widgets on the UI's Pause layer,
--- named by the x:Name of their XAML page (GameMenu.xaml: "GameMenu"). Script Extender windows draw over every game
--- widget, so the F6 window hides while one of them is shown. Run through LA.UI.Run only: sets LA.UI.menuOpen.
+-- named by the x:Name of their XAML page (GameMenu.xaml: "GameMenu"). The game's message boxes (a confirmation such
+-- as the respec warning, the new game's tutorial question) are the widget of MessageBox.xaml, "Dialog_box", and
+-- MessageBox_c.xaml on a controller. Script Extender windows draw over every game widget, so the F6 window hides
+-- while one of them is shown. Run through LA.UI.Run only: sets LA.UI.menuOpen.
 -- The widgets sit a few levels below ContentRoot; their insides are not walked.
 LA.UI.PAUSE_WIDGETS = { GameMenu = true, GameOptions = true, InterfaceOptions = true, AccessibilityOptions = true,
-                        ConnectivityMenu = true, LoadGame = true, SaveGame = true }
+                        ConnectivityMenu = true, LoadGame = true, SaveGame = true,
+                        Dialog_box = true, MessageBox_c = true }
 local function getVis(e) return e:GetProperty("Visibility") end
 function LA.UI.CheckMenu()
   local root = LA.UI.Root()

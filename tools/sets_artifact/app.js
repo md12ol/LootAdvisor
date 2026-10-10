@@ -32,7 +32,10 @@
   function rk(r) { return String(r || "Common").toLowerCase(); }
   function itemOf(sid) { return ITEMS[sid] || { n: sid, r: "Common" }; }
   function capf(t) { return t.charAt(0).toUpperCase() + t.slice(1); }
-  function names(ids) { return (ids || []).map(function (o) { return CHAR_NAME[o] || o; }).join(" and ") || "another companion"; }
+  // a character's name: in the live game the name the game shows (the player's own name for the Dark Urge), the
+  // same as the mod's tooltips, F6 window and map labels; else the origin's name
+  function charName(c) { var ch = LIVE && (LIVE.chars || {})[c]; return (ch && ch.name) || CHAR_NAME[c] || c; }
+  function names(ids) { return (ids || []).map(charName).join(" and ") || "another companion"; }
 
   // ---- per-viewer memory (works without storage: private windows, previews)
   var store = {
@@ -77,7 +80,7 @@
   // an exact tie in words ("Equal for X and Y; X keeps it"), or "" for any other item (the online page has no tie data)
   function tieSay(e, lc) {
     var T = window.LA_TIES, it = ITEMS[e.sid] || {};
-    return T && T.say ? T.say(it, lc || null, function (c) { return CHAR_NAME[c] || c; }) : "";
+    return T && T.say ? T.say(it, lc || null, charName) : "";
   }
   function hasOwner(e) { return !!(e.owner && e.owner.length); }
   function tieBy(by) { return by === "wear" ? "wears it" : by === "game" ? "picked in the game" : "your pick on this page"; }
@@ -119,7 +122,7 @@
         if (!neg && st === "no") return "that story path is closed in your game";
       } else if ((kind === "origin" || kind === "party") && !neg) {
         var cs = (LIVE.comp || {})[arg];
-        if (cs && cs.dead) return (CHAR_NAME[arg] || arg) + " is dead in your game";
+        if (cs && cs.dead) return charName(arg) + " is dead in your game";
       }
     }
     return null;
@@ -736,7 +739,7 @@
     };
   }
   function lvlNote(set, sh) {
-    if (S.lvl !== "12" && liveLevel(set)) return "Level " + sh.level + ": " + (CHAR_NAME[setChar(set)] || "this character") + "'s level in your game. The numbers follow this build's plan at that level (classes and ability scores of the plan, not your character's).";
+    if (S.lvl !== "12" && liveLevel(set)) return "Level " + sh.level + ": " + (charName(setChar(set)) || "this character") + "'s level in your game. The numbers follow this build's plan at that level (classes and ability scores of the plan, not your character's).";
     if (sh.level === DATA.level) return "End-game numbers (level " + sh.level + ")" + (set.act < 3 ? ". Your Act " + ROMAN[set.act] + " character will be lower; use them to compare sets." : ".");
     var bi = (buildOf(curChar(), set.b) || {}).bi || { feats: [] }, planned = bi.feats.some(function (f) { return f.lv; });
     return "Level " + sh.level + ", typical at the end of Act " + ROMAN[set.act] + ". " + (planned ? "Ability scores follow the build's level-12 plan minus later ability improvements" + (bi.planInferred ? " (a typical level plan for this community build)." : ".")

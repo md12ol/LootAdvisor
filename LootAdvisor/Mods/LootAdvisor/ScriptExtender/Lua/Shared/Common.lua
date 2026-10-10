@@ -26,6 +26,21 @@ LA.SLOT_NAME = { MainHand = "Main hand", OffHand = "Off hand", Ranged = "Ranged"
 LA.CHAR_NAME = { astarion = "Astarion", gale = "Gale", karlach = "Karlach", laezel = "Lae'zel",
                  shadowheart = "Shadowheart", wyll = "Wyll", darkurge = "The Dark Urge", halsin = "Halsin",
                  jaheira = "Jaheira", minsc = "Minsc", minthara = "Minthara" }
+-- The name a character goes by in this game, as the game shows it (the player's own name for the Dark Urge), else the
+-- origin's name: the one source for names in tooltips, the F6 window and map labels. The server fills LA.LiveNames
+-- from the party on every refresh and sends it with the result (res.names); the client takes it in LA.SetLiveNames.
+LA.LiveNames = LA.LiveNames or {}
+function LA.CharName(key, fallback)
+  local n = key ~= nil and LA.LiveNames[key] or nil
+  if type(n) == "string" and n ~= "" and n ~= "?" then return n end
+  return (key ~= nil and LA.CHAR_NAME[key]) or fallback or tostring(key)
+end
+function LA.SetLiveNames(res)
+  local names = {}
+  for k, n in pairs(type(res) == "table" and type(res.names) == "table" and res.names or {}) do names[k] = n end
+  if type(res) == "table" and res.char and type(res.name) == "string" and res.name ~= "" then names[res.char] = res.name end
+  LA.LiveNames = names
+end
 
 -- Map marker label: the item names reachable at the marker, one per line, no other words.
 -- names: list of item names, or of { n = name, who = {character names} } entries;

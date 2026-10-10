@@ -49,7 +49,7 @@ local function applyMarkers(res, who)
   for id, w in pairs(shown) do
     if not want[id] or w ~= who then pcall(Osi.ShowMapMarker, w, id, 0); shown[id] = nil end
   end
-  local cname = res.name or LA.CHAR_NAME[res.char] or res.char
+  local cname = LA.CharName(res.char, res.name)
   -- label = the items reachable at this marker, one per line, each with everyone it is for; the client draws our
   -- diamond in front of it. Names are added only when markers are shown for more than one character (LA.MarkerLabel).
   local whoOf = {}
@@ -164,7 +164,7 @@ local function guidOf(s) return type(s) == "string" and (s:match("(%x+%-%x+%-%x+
 -- the map markers of everyone on the roster, merged with the selected character's (res); the F6 filter picks who
 local function everyone(res, state, people)
   local filter = sel.ctx.filter or LA.Settings.MarkerFilter or "all"
-  local list = { { key = res.char, name = res.name or LA.CHAR_NAME[res.char] or "?", party = true, selected = true,
+  local list = { { key = res.char, name = LA.CharName(res.char, res.name or "?"), party = true, selected = true,
                    res = res } }
   local roster = {}
   if filter ~= "selected" then
@@ -210,6 +210,12 @@ function LA.ServerRefresh(force)
   local state = LA.State.Snapshot()
   if tonumber(LA.Settings.ActOverride) then state.act = tonumber(LA.Settings.ActOverride) end
   local people = LA.State.People()
+  -- the party's names as the game shows them (LA.CharName), sent with the result for the client
+  local names = {}
+  for _, p in ipairs(people) do
+    if p.key and type(p.name) == "string" and p.name ~= "" and p.name ~= "?" then names[p.key] = p.name end
+  end
+  LA.LiveNames = names
   state.tiePicks = LA.TiePicks()
   state.wear = LA.State.Wear(people)
   state.ties = LA.Logic.Ties(state)
@@ -223,6 +229,8 @@ function LA.ServerRefresh(force)
     res = LA.Logic.Recommend(key, sel.ctx, state, nil, nil, { build = b, why = why })
   end
   res.uuid = sel.uuid
+  if res.char and type(res.name) == "string" and res.name ~= "" then names[res.char] = res.name end
+  res.names = names
   res.paths, res.comp, res.durge = state.paths, state.comp, state.durge
   LA.UseEntrances(res, state.region)
   everyone(res, state, people)
