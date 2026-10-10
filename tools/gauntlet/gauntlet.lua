@@ -1358,6 +1358,7 @@ local function doAction(F, a, R, rec0)
   F.pending = P
 end
 
+G.CAST_RETRIES = 2
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
 -- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
 function G.settle(F, R, t)
@@ -1397,13 +1398,17 @@ function G.settle(F, R, t)
       return out
     end) }
   -- an Attack of Opportunity interrupted the engine's step to the cast: once the step has settled the same cast is asked
-  -- for again from where the character stands (once); it is not a miss and the round is not idle
-  if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then
+  -- for again from where the character stands; it is not a miss and the round is not idle. The engine can refuse the
+  -- first ask after the reaction too (no reason shown; seen when the enemy had just stepped into melee), so a cast
+  -- an Attack of Opportunity interrupted gets up to G.CAST_RETRIES asks, and only such a cast
+  local tries = P.a.retried or 0
+  if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then
     R.cast_misses = R.cast_misses - 1
-    P.rec.retried = P.rec.result
+    P.rec.retried = P.rec.retried or P.rec.result
+    P.rec.retries = tries + 1
     local again = {}
     for k, v in pairs(P.a) do again[k] = v end
-    again.retried = true
+    again.retried = tries + 1
     doAction(F, again, R, P.rec)
     return true
   end

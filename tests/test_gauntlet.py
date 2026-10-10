@@ -600,8 +600,18 @@ def refusal_tests(L):
       T_miss = R.actions[1].miss
       T_retry_pending = F.pending ~= nil and #R.actions == 1
       T_retry_miss = R.cast_misses
-      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused again after the retry
+      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused again after the retry: asked once more
+      T_fast15 = G.settle(F, R, 250)
+      T_retry2 = F.pending ~= nil and #R.actions == 1 and R.actions[1].retries == 2
+      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused a third time
       T_fast2 = G.settle(F, R, 300)
+      local F2 = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end }
+      local R2 = { r = 2, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G.rounds = { R2 }
+      G._doAction(F2, { spell = "Projectile_FireBolt", group = "action", target = "@boss" }, R2)
+      G._onCastFailed("c1", "Projectile_FireBolt")                    -- refused with no reaction: no retry
+      G.settle(F2, R2, 100)
+      T_noretry = F2.pending == nil and R2.actions[1].retried == nil and R2.cast_misses == 1
       T_res = R.actions[1].result
       T_alt = R.actions[2] and R.actions[2].spell
       T_cd = F.cooldown["Projectile_MAG_ChainLightning"]
@@ -615,6 +625,9 @@ def refusal_tests(L):
     check("refusal: after an Attack of Opportunity the same cast is asked for again once, not counted as a miss",
           g.T_fast is True and "Attack of Opportunity" in str(g.T_retried) and g.T_retry_pending is True and
           g.T_retry_miss == 0, f"{g.T_retried} {g.T_retry_pending} {g.T_retry_miss}")
+    check("refusal: refused again after the Attack of Opportunity's retry: asked once more (at most twice)",
+          g.T_fast15 is True and g.T_retry2 is True)
+    check("refusal: a refusal with no Attack of Opportunity before it is not retried", g.T_noretry is True)
     check("refusal: CastSpellFailed fails the cast at once (no timeout wait), the fallback runs",
           g.T_fast2 is True and str(g.T_res).startswith("failed: refused by the engine") and
           g.T_alt == "Zone_LightningBolt", str(g.T_res))
@@ -1895,8 +1908,12 @@ MUTATIONS = [
      "        boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = false"),
     ("start: HP buffer given", GL, "G.HP_BUFFER = 0", "G.HP_BUFFER = 200"),
     ("refusal: no retry after an Attack of Opportunity", GL,
-     'if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then',
+     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
      "if false then"),
+    ("refusal: any refusal retried", GL,
+     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
+     "if refused and tries < G.CAST_RETRIES then"),
+    ("refusal: retries without a limit", GL, "G.CAST_RETRIES = 2", "G.CAST_RETRIES = 99"),
     ("foreign: own Attack of Opportunity voids the run", GL, "and not (aoo and weapon) then", "then"),
     ("down: a down does not end the run", GL,
      'if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end',
