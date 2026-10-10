@@ -396,6 +396,7 @@ def verdict_tests(L):
           { who = "c1", spell = "Zone_LightningBolt" }, { who = "c1", spell = "Projectile_FireBolt" },
           { who = "c1", spell = "Target_MAG_Gaze" }, { who = "c1", spell = "Target_DestructiveWrath" },
           { who = "c1", spell = "Target_HellishRebuke_5" }, { who = "c1", spell = "Target_Charm" },
+          { who = "c1", spell = "Target_Legendary_ShieldBlow_Riposte" },
           { who = "e1", spell = "Target_Bite" } } },
         { r = 2, done = { item = true }, casts = {} }, { r = 3, done = {}, casts = {} } }
       T_fc = G.foreignCasts(rounds, "c1", plan)
@@ -407,7 +408,7 @@ def verdict_tests(L):
     """)
     g = L.globals()
     fc = sorted(g.T_fc[i + 1].spell for i in range(len(g.T_fc)))
-    check("verdict: the test character's own reactions are casts outside the plan; the plan's are not",
+    check("verdict: the test character's own reactions are casts outside the plan; the plan's and the items' are not",
           fc == ["Target_Charm", "Target_HellishRebuke_5"], str(fc))
     check("verdict: a clean run is valid", g.T_j1.valid is True)
     j2 = lst(g.T_j2.causes)
@@ -633,7 +634,10 @@ MUTATIONS = [
     ("run start: prep inside the eval", GL, "wait(50, function() G.start(F) end)", "G.start(F)"),
     ("prep: no deadline", GL, "elseif now() > F.prepDeadline then", "elseif false then"),
     ("verdict: idle rounds ignored", GL, "if idle > 0 then", "if false then"),
-    ("verdict: foreign casts not detected", GL, "if c.who == me and not allowed[core(c.spell)] then", "if false then"),
+    ("verdict: foreign casts not detected", GL,
+     "if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then", "if false then"),
+    ("verdict: item spells count as foreign", GL, "if c.who == me and not allowed[core(c.spell)] and not G.itemSpell(c.spell) then",
+     "if c.who == me and not allowed[core(c.spell)] then"),
     ("plan: only the top upcast", PL, "return list(dict.fromkeys(out + [spell]))",
      "return list(dict.fromkeys(out[:1] or [spell]))"),
     ("forecast: no affordability", PL, "ok = all((turn[k] if k in turn else pool.get((k, lv), 0)) >= n for k, n, lv in "
