@@ -1,5 +1,5 @@
 -- Gauntlet window (client side, Script Extender IMGUI) for MANUAL runs. Dev/test only: it is not part of the mod
--- pak; tools/gauntlet/engine.py ui loads it into a running game through the dev eval hook. Hotkey F9 toggles it.
+-- pak; tools/gauntlet/engine.py load loads it into a running game through the dev eval hook. Hotkey F9 toggles it.
 -- Pick build, set, act, scenario and variant; Start sets up the arena on the host character and hands its turns to
 -- you. The server side (gauntlet.lua) records the same numbers as a scripted run and sends the result back here.
 

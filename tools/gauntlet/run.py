@@ -5,8 +5,9 @@
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
-the same script, enemies and buffs; every run appends one record to results.jsonl (manual runs from the in-game
-window land in the same folder and can be appended with --collect).
+the same script, enemies and buffs; every run appends one record to results.jsonl. Manual runs from the in-game
+window are written as one JSON file each to the Script Extender folder's LootAdvisor_gauntlet/; append those records
+to a results file by hand to include them in a report.
 """
 import argparse
 import json

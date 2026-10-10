@@ -94,6 +94,10 @@ jobs:
         run: python LootAdvisor/tests/run.py --ci --mutate
       - name: Gauntlet harness (Lua loads with a stubbed engine, item rule, arena, statistics)
         run: python LootAdvisor/tests/test_gauntlet.py
+      - name: Optimizer maths (CI tests and their mutations; output checks need game data)
+        run: |
+          python LootAdvisor/tests/test_optimizer.py --ci
+          python LootAdvisor/tests/test_optimizer.py --ci --mutate
       - name: Leak scan of shipped files
         run: python LootAdvisor/tools/leak_scan.py
       - name: Pak build + player package zip (into dist/, no install, no game), zip checked against INSTALL.md

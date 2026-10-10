@@ -26,8 +26,8 @@ then start the game once. Delete that file to go back to normal releases.
 | `.luarc.json` | Lua language server settings (Script Extender API, see [Lua tooling](#lua-tooling)) |
 | `nexus_description.bb` | the Nexus Mods page text (BBCode) |
 | `LICENSE` | MIT |
-| `tools/` | game-file parsers ([`tools/PARSERS.md`](tools/PARSERS.md)), the item/set pipeline, page builders, save backup ([`tools/BACKUP_RESTORE.md`](tools/BACKUP_RESTORE.md)) |
-| `tests/` | regression suite: `python tests/run.py` (and `--mutate` to prove every check can fail) |
+| `tools/` | game-file parsers ([`tools/PARSERS.md`](tools/PARSERS.md)), the item/set pipeline, page builders, save backup ([`tools/BACKUP_RESTORE.md`](tools/BACKUP_RESTORE.md)), the [optimizer and gauntlet](#gauntlet-and-optimizer) |
+| `tests/` | regression suite and optimizer / gauntlet tests (see [Tests](#tests)) |
 | `data/research/` | build research notes the pipeline reads |
 | `design/` | design generators |
 
@@ -57,6 +57,45 @@ python tests/run.py                    # regression suite
 ```
 `python tools/build_sets_artifact.py` builds the private preview page `artifact/sets.html` (it embeds game icons, so
 it is gitignored too).
+
+Two of the files the Rebuild writes are tracked and carry the build time (`Page/Sets.html` and `ShipManifest.lua`'s
+`version`), so a Rebuild always shows them as changed; commit them only with a change that needs them.
+
+## Tests
+```bash
+python tests/run.py [--mutate] [--ci]     # regression suite; --mutate proves every check can fail, --ci = no game data
+python tests/test_optimizer.py [--ci] [--mutate]   # optimizer maths (CI) + checks of its output (run the optimizer first)
+python tests/test_gauntlet.py             # gauntlet harness without the game: Lua compiles, item rule, statistics
+python tools/leak_scan.py                 # no game text in shipped files
+```
+CI runs the `--ci` parts; the pre-push hook from BG3Tools runs the full suite. How to add a check: CONTRIBUTING in
+BG3Tools, "Extending the mods".
+
+## Gauntlet and optimizer
+The **optimizer** (`tools/optimizer/`) searches an "Optimized" set per origin, build and act under the same scoring
+model as the research sets. It needs the Rebuild outputs and writes only to `tools/optimizer/.cache/` (gitignored):
+```bash
+python tools/optimizer/run.py --jobs 8      # all origins, builds, acts (--only gale[:build[:act]] for one)
+python tests/test_optimizer.py              # checks its output against the game data
+```
+The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it rebuilds a character's sheet with
+boosts, spawns the items and enemies, fights scripted rounds and records damage and survival. It changes the loaded
+save, so use a test save and never save afterwards. It talks to the game through Loot Advisor's dev eval hook
+(`"Dev": true` in `LootAdvisor_settings.json`; setup in BG3Tools `tools/testing/README.md`, whose `cheat.py` gives the
+same engine shortcuts for other tests).
+```bash
+python tools/gauntlet/engine.py load        # load gauntlet.lua (server) and the F9 window gauntlet_ui.lua (client)
+python tools/gauntlet/engine.py probe       # API check, party, position, difficulty
+# manual runs: build the catalogue, then press F9 in the game and pick build, set, act and scenario
+python tools/gauntlet/catalog.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json
+# scripted runs: pick pairs (optimizer set vs research set), write specs, run, report
+python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --select shadowheart:lightcleric:3 --out pairs.json
+python tools/gauntlet/plan.py --optimizer tools/optimizer --pairs pairs.json --out specs.json
+python tools/gauntlet/run.py specs.json --results results.jsonl
+python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md report.md
+```
+The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
+through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository
