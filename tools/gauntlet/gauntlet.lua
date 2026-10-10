@@ -2067,10 +2067,11 @@ end
 -- A companion made a player by script keeps its own faction, which the enemies' faction may not be hostile to: the
 -- fight never started for one (it left combat each time it was put in). The two factions are set hostile both ways
 -- for the run (the game applies a relation a tick later) and put back when it ends; the setup check reads IsEnemy.
--- -> the changes, in G.laneFactions' shape, or nil when the enemy is hostile already.
-function G.makeHostile(u, d)
+-- enemy_faction: the faction the enemies were given (read back from a creature made this frame it is still the
+-- template's). -> the changes, in G.laneFactions' shape, or nil when the enemy is hostile already.
+function G.makeHostile(u, d, enemy_faction)
   if try(Osi.IsEnemy, u, d) == 1 then return nil end
-  local a, b = try(Osi.GetFaction, d), try(Osi.GetFaction, u)
+  local a, b = enemy_faction or try(Osi.GetFaction, d), try(Osi.GetFaction, u)
   if not a or not b then return nil end
   local out = { relations = {} }
   for _, p in ipairs({ { a, b }, { b, a } }) do
@@ -2085,7 +2086,7 @@ function G.spawnAndFight(F, pts, E, buffs, C)
   local u, spec = F.char, F.spec
   F.enemies = G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)
   if #F.enemies == 0 then return stop(F, "no enemies") end
-  if not F.lane then F.hostility = G.makeHostile(u, F.enemies[1]) end
+  if not F.lane then F.hostility = G.makeHostile(u, F.enemies[1], C.enemy_faction) end
   if F.lane and G.LANES then
     local m = G.LANES.members[F.lane.id] or {}
     m[uuid(u)] = true

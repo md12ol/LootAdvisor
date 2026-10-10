@@ -218,20 +218,21 @@ def party_tests(L):
     L.execute(r"""
       local G = GAUNTLET
       local rel = { ["Evil|Gale"] = 50, ["Gale|Evil"] = 50 }
-      Osi.GetFaction = function(u) return u == "d" and "Evil" or "Gale" end
+      Osi.GetFaction = function(u) return u == "d" and "Template" or "Gale" end
       Osi.GetRelation = function(a, b) return rel[a .. "|" .. b] end
       Osi.SetRelation = function(a, b, v) rel[a .. "|" .. b] = v end
       Osi.IsEnemy = function() return 0 end
-      local st = G.makeHostile("gale", "d")
+      local st = G.makeHostile("gale", "d", "Evil")
       T_h1 = rel["Evil|Gale"] == 0 and rel["Gale|Evil"] == 0
       T_hr = G.laneFactionsRestore(st)
       T_h2 = rel["Evil|Gale"] == 50 and rel["Gale|Evil"] == 50
       Osi.IsEnemy = function() return 1 end
-      T_h3 = G.makeHostile("gale", "d") == nil
+      T_h3 = G.makeHostile("gale", "d", "Evil") == nil
       Osi.GetFaction, Osi.GetRelation, Osi.SetRelation, Osi.IsEnemy = nil, nil, nil, nil
     """)
     g = L.globals()
-    check("hostility: a character the enemies are not hostile to gets both factions set hostile, put back after",
+    check("hostility: a character the enemies are not hostile to gets both factions (the enemies' given one) set "
+          "hostile, put back after",
           g.T_h1 is True and g.T_hr == 2 and g.T_h2 is True and g.T_h3 is True)
     p = lst(L.globals().T_party)
     check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
