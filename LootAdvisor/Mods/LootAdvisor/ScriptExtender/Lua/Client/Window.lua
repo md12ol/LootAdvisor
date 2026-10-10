@@ -229,7 +229,8 @@ local function filterRow(h, res)
   local names = {}
   for _, p in ipairs(res.roster or {}) do
     local where = p.party and "party" or p.camp and "camp" or "may still join"
-    names[#names + 1] = ("%s (%s): %s"):format(tostring(p.n), where, tostring(p.b))
+    local closest = p.sim and (" (closest build, %d%% alike)"):format(p.sim) or ""
+    names[#names + 1] = ("%s (%s): %s%s"):format(tostring(p.n), where, tostring(p.b), closest)
   end
   tip(combo, #names > 0 and ("Markers also for:\n" .. table.concat(names, "\n")) or "Markers for the selected character only.")
 end
@@ -276,6 +277,14 @@ local function tieRows(c, res)
   end
 end
 
+-- Loot Advisor's sets are made for Build Advisor's builds: a character on none of them is shown which one stands in
+function W.ClosestLine(res)
+  local b = res and res.build
+  if not (b and b.closest) then return nil end
+  local whose = b.from and ("; " .. LA.CharName(b.from) .. "'s sets") or ""
+  return ("Closest build: %s (%d%% alike%s)"):format(tostring(b.n), tonumber(b.sim) or 0, whose)
+end
+
 W.dirCells = {}
 function W.Render(res)
   if not W.window then return end
@@ -302,6 +311,8 @@ function W.Render(res)
   local sub = colored(h:AddText(("%s  -  %d items, %d marked on your map (%d for %s)  -  %s shows / hides this list"):format(
     regName, #res.rows, #(res.markers or {}), mine, who, tostring(LA.Settings.Hotkey))), GREY)
   tip(sub, "Build picked: " .. tostring(res.build and res.build.why))
+  local cl = W.ClosestLine(res)
+  if cl then tip(colored(h:AddText(cl), AMBER), "Build picked: " .. tostring(res.build.why)) end
   filterRow(h, res)
 
   local leg = c:AddCollapsingHeader("Legend")

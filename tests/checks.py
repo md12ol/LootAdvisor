@@ -85,6 +85,7 @@ class Env:
                      os.path.join(self.root, "data", "scores", "lua", "LootData.lua"),
                      os.path.join(self.mods_lua, "Shared", "ModData.lua"),
                      os.path.join(self.mods_lua, "Shared", "Logic.lua"),
+                     os.path.join(self.mods_lua, "Shared", "Api.lua"),
                      os.path.join(self.mods_lua, "Client", "Tooltip.lua")]
             for fp in files:
                 with open(fp, encoding="utf-8") as f:
@@ -1249,7 +1250,7 @@ def check_build_for_everyone(env):
         ab[x["main"]] = 17
         ctx = L.table_from({"classes": [{"name": c, "level": n} for c, n in sorted(x["cl"].items())],
                             "abilities": ab}, recursive=True)
-        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": "p_" + bid, "ctx": ctx}))
+        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": "p_" + bid, "ctx": ctx}))[:3]
         if b is None:
             fails.append(f"a Tav with {bid}'s class levels: no build")
             continue
@@ -1267,7 +1268,7 @@ def check_build_for_everyone(env):
         if key == "generic" or not ids or ids[0] not in ba:
             continue
         x = ba[ids[0]]
-        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": key}))
+        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": key}))[:3]
         n_lazy += 1
         if b is None:
             fails.append(f"{key} (not loaded): no build")
@@ -1348,7 +1349,7 @@ def _markers_scene(L, G):
     for key, name, party, sel in (("gale", "Gale", True, True), ("karlach", "Karlach", True, False),
                                   ("wyll", "Wyll", False, False), ("astarion", "Astarion", False, False),
                                   ("halsin", "Halsin", False, False)):
-        b, _ck, why = G.LA.Logic.BuildFor(L.table_from({"key": key}))
+        b, _ck, why = G.LA.Logic.BuildFor(L.table_from({"key": key}))[:3]
         opts = None if G.LA.Data.chars[key] is not None else L.table_from({"build": b, "why": why})
         res = G.LA.Logic.Recommend(key, L.table_from({"name": name}), state, None, None, opts)
         people.append({"key": key, "name": name, "party": party, "selected": sel, "res": res})
@@ -2040,6 +2041,175 @@ def check_f6_filter_and_ties(env):
     return fails
 
 
+def check_closest_build(env):
+    """Characters on none of the builds the sets are made for get the most similar Build Advisor build, said so with
+    its similarity: pure classes, odd multiclasses, an unknown subclass, no class levels, a respecced origin, weapon
+    style and Build Advisor's pick as tie-breaks; the class order never changes the pick. F6 shows the closest build
+    and its similarity; the item tooltip says the pick is for the closest build."""
+    L = env.lua()
+    G = L.globals()
+    fails = []
+
+    def ab(main):
+        return {k: (17 if k == main else 10) for k in ("STR", "DEX", "CON", "INT", "WIS", "CHA")}
+
+    def pick(key, classes, main=None, atk=None, ba_pick=None):
+        ctx = {"classes": [{"name": c, "sub": s, "level": n} for c, s, n in classes]}
+        if main:
+            ctx["abilities"] = ab(main)
+        if atk:
+            ctx["atk"] = atk
+        p = {"ctx": ctx}
+        if key:
+            p["key"] = key
+        if ba_pick:
+            p["baPick"] = ba_pick
+        b, ck, why, c = G.LA.Logic.BuildFor(L.table_from(p, recursive=True))
+        return (b.id if b is not None else None), ck, why, c
+
+    # (case, origin key or None, classes, main ability, weapon styles, Build Advisor pick, want (origin, build id))
+    rgf = [("Ranger", None, 5), ("Rogue", None, 4), ("Fighter", None, 3)]
+    cases = [
+        ("pure Wizard 12 (Evocation)", None, [("Wizard", "Evocation School", 12)], "INT", None, None,
+         ("gale", "evoker")),
+        ("pure Fighter 12 (Battle Master)", None, [("Fighter", "Battle Master", 12)], "STR", None, None,
+         ("laezel", "bmgiant")),
+        ("pure Barbarian 6 (Giant)", None, [("Barbarian", "Path of Giants", 6)], "STR", None, None,
+         ("karlach", "giants")),
+        ("Druid 12, no Druid build (Jaheira)", None, [("Druid", "Circle of the Land", 12)], "WIS", None, None,
+         ("shadowheart", "lightcleric")),
+        ("Monk 6 / Druid 6, no class in common", None, [("Monk", None, 6), ("Druid", None, 6)], "WIS", None, None,
+         ("shadowheart", "lightcleric")),
+        ("Bard 10 / Paladin 2 (CHA)", None, [("Bard", None, 10), ("Paladin", None, 2)], "CHA", None, None,
+         ("laezel", "sorcadin")),
+        ("Ranger 5 / Rogue 4 / Fighter 3, no subclasses: candidate order", None, rgf, "DEX", None, None,
+         ("astarion", "thx")),
+        ("same, Build Advisor's pick decides the tie", None, rgf, "DEX", None, "gloomassassin",
+         ("astarion", "gloomassassin")),
+        ("same, Assassin subclass", None,
+         [("Ranger", "Gloom Stalker", 5), ("Rogue", "Assassin", 4), ("Fighter", None, 3)], "DEX", None, None,
+         ("astarion", "gloomassassin")),
+        ("Rogue 4 with a longbow: the archer build", None, [("Rogue", None, 4)], "DEX", ["ranged"], None,
+         ("astarion", "gloomassassin")),
+        ("Rogue 4 with hand crossbows", None, [("Rogue", None, 4)], "DEX", ["handxbow"], None, ("astarion", "thx")),
+        ("Wizard 5, no subclass yet: the pure build", None, [("Wizard", None, 5)], "INT", None, None,
+         ("gale", "evoker")),
+        ("an unknown subclass (Rogue 3 'Swashbuckler')", None, [("Rogue", "Swashbuckler", 3)], "DEX", None, None,
+         ("astarion", "thx")),
+        ("no class levels, STR highest", None, [], "STR", None, None, ("karlach", "giants")),
+        ("no class levels, nothing known: the first single-class build", None, [], None, None, None,
+         ("gale", "evoker")),
+        ("Astarion respecced to Wizard 12", "astarion", [("Wizard", "Evocation School", 12)], "INT", None, None,
+         ("gale", "evoker")),
+        ("Wyll respecced to Paladin 12 (Oathbreaker)", "wyll", [("Paladin", "Oathbreaker", 12)], "STR", None, None,
+         ("darkurge", "oathbreaker")),
+        ("Astarion as Rogue 3 keeps his own build", "astarion", [("Rogue", "Thief", 3)], "DEX", None, None,
+         ("astarion", "thx")),
+    ]
+    for name, key, classes, main, atk, ba_pick, want in cases:
+        got = pick(key, classes, main, atk, ba_pick)
+        if (got[1], got[0]) != want:
+            fails.append(f"{name}: got {got[1]}.{got[0]} ({got[2]}), want {want[0]}.{want[1]}")
+            continue
+        again = pick(key, list(reversed(classes)), main, atk, ba_pick)
+        if again[:2] != got[:2]:
+            fails.append(f"{name}: class order changes the pick ({got[1]}.{got[0]} vs {again[1]}.{again[0]})")
+        own = key is not None and got[1] == key
+        if own and got[3] is not None:
+            fails.append(f"{name}: an origin's own build reported as the closest build")
+        if not own:
+            c = got[3]
+            if c is None or not (0 <= c.sim <= 1) or not str(got[2]).startswith("closest build, "):
+                fails.append(f"{name}: no similarity / closest-build reason ({got[2]})")
+
+    # the record reaches the result (F6 header) and the tooltip title
+    bb, _ck, why, cc = G.LA.Logic.BuildFor(L.table_from({"ctx": {"classes": [
+        {"name": "Barbarian", "sub": "Path of Giants", "level": 6}]}}, recursive=True))
+    state = L.table_from({"act": 1, "region": "WLD_Main_A", "paths": {}, "comp": {}, "owned": {}, "markerPos": {},
+                          "ties": {}}, recursive=True)
+    res = G.LA.Logic.Recommend("p_x", L.table_from({"name": "Hireling"}), state, None, None,
+                               L.table_from({"build": bb, "why": why, "closest": cc}))
+    if res.build is None or not res.build.closest or res.build.sim != 100 or res.build["from"] != "karlach":
+        fails.append("Recommend: the result does not carry closest / similarity / whose sets "
+                     f"({None if res.build is None else dict(res.build.items())})")
+    elif not lua_list(res.rows):
+        fails.append("Recommend for the closest build: no rows")
+    else:
+        G.LA.Tip.Apply(res)
+        titles = [G.LA.Tip.advice[k].title for k in list(G.LA.Tip.advice.keys())]
+        if not titles or not all(str(t).endswith("for Hireling (closest build)") for t in titles):
+            fails.append(f"tooltip titles do not name the closest build: {titles[:2]}")
+    W = window_lua(env)
+    WG = W.globals()
+    line = WG.LA.Win.ClosestLine(W.table_from({"build": {"n": "Path of Giants Barbarian 12", "closest": True,
+                                                          "sim": 64, "from": "karlach"}}, recursive=True))
+    if line != "Closest build: Path of Giants Barbarian 12 (64% alike; Karlach's sets)":
+        fails.append(f"F6 closest-build line: {line!r}")
+    if WG.LA.Win.ClosestLine(W.table_from({"build": {"n": "x"}}, recursive=True)) is not None:
+        fails.append("F6 shows a closest-build line for a character's own build")
+    env.counts["characters"] = len(cases)
+    return fails
+
+
+def check_gear_sets_api(env):
+    """LA.Api.GearSets (what Build Advisor's Gear sections read): up to three ranked sets per build, one item list per
+    act in slot order with the game's item names; 'only if you already have it' slots marked; an owned item marked
+    from the last result; a build Loot Advisor has no sets for gives nil; a Tav's build is found under any origin."""
+    L = env.lua()
+    G = L.globals()
+    fails = []
+    api = G.LA.Api
+    if api is None or api.GearSets is None:
+        return ["LA.Api.GearSets missing"]
+    n = 0
+    for ck in ("astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge"):
+        cd = G.LA.Data.chars[ck]
+        for b in lua_list(cd.b if cd is not None else None):
+            g = api.GearSets(ck, b.id)
+            n += 1
+            if g is None:
+                fails.append(f"{ck}.{b.id}: no gear sets")
+                continue
+            if g.char != ck or g.build != b.n:
+                fails.append(f"{ck}.{b.id}: wrong owner / name ({g.char}, {g.build})")
+            ranks = sorted(g.sets.keys())
+            if not ranks or ranks[0] != 1 or ranks[-1] > 3:
+                fails.append(f"{ck}.{b.id}: set ranks {ranks}")
+            for rank in ranks:
+                for act in sorted(g.sets[rank].keys()):
+                    want = b.a[act].sets[rank]
+                    lst = g.sets[rank][act]
+                    items = lua_list(lst["items"])
+                    slots = lua_list(G.LA.SLOTS)
+                    got_slots = [i.slot for i in items]
+                    if got_slots != [s for s in slots if want.it[s] is not None]:
+                        fails.append(f"{ck}.{b.id} set {rank} act {act}: slots {got_slots}")
+                    if lst.name != want.n:
+                        fails.append(f"{ck}.{b.id} set {rank} act {act}: name {lst.name!r} != {want.n!r}")
+                    ow = G.LA.AsSet(want.ow)
+                    for i in items:
+                        if i.name != G.LA.Item(want.it[i.slot]).n:
+                            fails.append(f"{ck}.{b.id} set {rank} act {act} {i.slot}: name {i.name!r}")
+                        if bool(i.onlyOwned) != bool(ow[i.slot]):
+                            fails.append(f"{ck}.{b.id} set {rank} act {act} {i.slot}: onlyOwned {i.onlyOwned}")
+    if api.GearSets("astarion", "no_such_build") is not None:
+        fails.append("a build without sets gives sets")
+    tav = api.GearSets("generic", "sorcadin")
+    if tav is None or tav.char != "laezel":
+        fails.append(f"a Tav on sorcadin: sets of {None if tav is None else tav.char}, want laezel (first origin)")
+    first = api.GearSets("astarion", "thx")
+    item = first.sets[1][1]["items"][1]
+    G.LA.Result = L.table_from({"rows": [{"id": item.id, "s": "owned"}]}, recursive=True)
+    again = api.GearSets("astarion", "thx")
+    if not again.sets[1][1]["items"][1].owned:
+        fails.append("an item the last result lists as owned is not marked owned")
+    if again.sets[1][1]["items"][2] is not None and again.sets[1][1]["items"][2].owned:
+        fails.append("an item not owned is marked owned")
+    G.LA.Result = None
+    env.counts["builds"] = n
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -2071,4 +2241,7 @@ CHECKS = [
     ("F6 window hidden while the game's pause menu or a message box is open", check_f6_hides_under_pause_menu,
      False),
     ("one name per character: the game's name in tooltip, F6 and Sets page", check_live_names, False),
+    ("closest build for characters on no Build Advisor build (similarity, tie-breaks, F6, tooltip)",
+     check_closest_build, False),
+    ("gear sets for other mods (LA.Api.GearSets: ranked sets, a list per act)", check_gear_sets_api, False),
 ]

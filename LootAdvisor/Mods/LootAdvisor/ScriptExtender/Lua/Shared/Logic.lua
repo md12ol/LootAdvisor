@@ -6,7 +6,8 @@
 --  3 traders -> marker on the trader; 'l' items (random loot, generic +1/+2) list only with odds, no frame/text
 --  4/5 markers = best + runner-up per slot of the CURRENT act, still obtainable now; owned items keep the frame only
 --  6 build: live class levels -> closest build of the character; tie -> BuildAdvisor's pick; none -> main stat;
---       characters without builds of their own (companions, Tavs, hirelings): the closest build of any origin
+--       characters without builds of their own (companions, Tavs, hirelings) and origins respecced away from all of
+--       theirs: the most similar Build Advisor build (L.ClosestBuild), shown as the closest build
 --  markers for everyone in the party, camp and who may still join (L.MergeMarkers); arrows stay the selected's
 --  8 items that cost an origin companion are left out unless that already happened
 --  12 off-screen arrows only for the 5 best (client paints; rows carry the rank)
@@ -139,39 +140,200 @@ end
 -- the origin characters whose builds Loot Advisor scores, in a fixed order (ties between builds go to the first)
 L.ORIGINS = { "astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge" }
 
--- A character without builds of its own (Halsin, Jaheira, Minsc, Minthara, a Tav, a hireling): the closest build of
--- any origin by live class levels, else the first build whose main ability is the character's highest.
--- -> build, the origin it belongs to, why
-function L.MatchAnyBuild(ctx)
-  local best, bestScore, bestChar, any = nil, -1e9, nil, false
-  for _, ck in ipairs(L.ORIGINS) do
-    local cd = LA.Data.chars[ck]
-    local info = (LA.Mod.builds or {})[ck] or {}
-    for _, b in ipairs(cd and cd.b or {}) do
-      local score, overlap = classScore(b, info[b.id], ctx)
-      if overlap then
-        any = true
-        if score > bestScore + 1e-6 then best, bestScore, bestChar = b, score, ck end
-      end
-    end
+-- ---------------------------------------------------------------- closest build
+-- How alike a character and a build are, 0-1: the weighted share of what can be read from the character. A part the
+-- character gives no data for (no subclass yet, no abilities, no weapon) is left out of the weights for every build
+-- alike, so the ranking stays comparable.
+L.SIM_WEIGHTS = { class = 55, sub = 20, main = 15, caster = 5, weapon = 5 }
+L.FULL_CASTERS = { Wizard = true, Sorcerer = true, Cleric = true, Druid = true, Bard = true, Warlock = true }
+L.HALF_CASTERS = { Paladin = true, Ranger = true }
+local ATK_FAMILY = { melee1h = "melee", finesse = "melee", melee2h = "melee", thrown = "melee", ranged = "ranged",
+                     handxbow = "ranged" }
+local ABIL = { "STR", "DEX", "CON", "INT", "WIS", "CHA" }
+
+-- 2 = mostly a full caster, 1 = some casting (a full caster dip, Paladin / Ranger half, Eldritch Knight, Arcane
+-- Trickster), 0 = none: the scale of the generated builds table's caster field. nil without class levels.
+function L.CasterType(classes)
+  local total, full, half, third = 0, 0, 0, false
+  for _, c in ipairs(classes or {}) do
+    local n = tonumber(c.level) or 0
+    total = total + n
+    if L.FULL_CASTERS[c.name] then full = full + n elseif L.HALF_CASTERS[c.name] then half = half + n end
+    local s = LA.Norm(c.sub)
+    if s:find("eldritchknight", 1, true) or s:find("arcanetrickster", 1, true) then third = true end
   end
-  if any then return best, bestChar, "closest to the class levels" end
-  local hi = mainAbility(ctx)
-  for _, ck in ipairs(L.ORIGINS) do
-    local cd = LA.Data.chars[ck]
-    for _, b in ipairs(cd and cd.b or {}) do
-      if hi and ((LA.Mod.builds or {})[ck] or {})[b.id] and LA.Mod.builds[ck][b.id].main == hi then
-        return b, ck, "no build matches the classes - picked by main ability " .. hi
-      end
-    end
-  end
-  local cd = LA.Data.chars[L.ORIGINS[1]]
-  return cd and cd.b[1], L.ORIGINS[1], "no build matches the classes - first build"
+  if total == 0 then return nil end
+  if full / total >= 0.6 then return 2 end
+  if full > 0 or half / total >= 0.5 or third then return 1 end
+  return 0
 end
 
--- The build for one person on the roster: p = { key, ctx = {classes, abilities}, ba = Build Advisor build order }.
+-- the character's highest abilities (all of them when tied), else the main ability of its stand-in build (ctx.main)
+local function mainAbilities(ctx)
+  local hi, set = -1, {}
+  for _, k in ipairs(ABIL) do
+    local v = (ctx.abilities or {})[k]
+    if type(v) == "number" then
+      if v > hi then hi, set = v, { [k] = true } elseif v == hi then set[k] = true end
+    end
+  end
+  if next(set) == nil and ctx.main then set[ctx.main] = true end
+  return set
+end
+
+-- ctx.atk: the styles of the equipped weapons (Server/State.lua S.WeaponStyles), a list or one string
+local function liveStyles(ctx)
+  local out = {}
+  if type(ctx.atk) == "string" and ctx.atk ~= "" then out[ctx.atk] = true end
+  if type(ctx.atk) == "table" then for _, a in ipairs(ctx.atk) do out[a] = true end end
+  return out
+end
+
+local function subMatches(live, want)
+  return live:find(want, 1, true) ~= nil or want:find(live, 1, true) ~= nil
+end
+
+-- -> similarity 0-1, parts { class, sub, main, caster, weapon = 0-1, nil when the character gives no data for it;
+-- prec = share of the build's levels in classes the character has, nclass = classes in the build }
+function L.Similarity(b, info, ctx)
+  info = info or {}
+  local cl = (type(b.cl) == "table" and next(b.cl)) and b.cl or info.cl or {}
+  local sc = type(b.sc) == "table" and b.sc or {}
+  local total, shared, subLv, subHit, inLive = 0, 0, 0, 0, {}
+  for _, c in ipairs(ctx.classes or {}) do
+    local n = tonumber(c.level) or 0
+    local want = cl[c.name]
+    total = total + n
+    inLive[c.name] = true
+    if want then shared = shared + math.min(n, want) end
+    local live = LA.Norm(c.sub)
+    if live ~= "" and n > 0 then
+      subLv = subLv + n
+      local ws = want and LA.Norm(sc[c.name]) or nil
+      if ws == "" then subHit = subHit + 0.5 * n -- the build takes any subclass of that class
+      elseif ws and subMatches(live, ws) then subHit = subHit + n end
+    end
+  end
+  local blv, bin, nclass = 0, 0, 0
+  for c, n in pairs(cl) do
+    blv, nclass = blv + n, nclass + 1
+    if inLive[c] then bin = bin + n end
+  end
+  local p = { prec = blv > 0 and bin / blv or 0, nclass = nclass }
+  if total > 0 then p.class = shared / total end
+  if subLv > 0 then p.sub = subHit / subLv end
+  local mains = mainAbilities(ctx)
+  if next(mains) ~= nil then p.main = (info.main and mains[info.main]) and 1 or 0 end
+  local live = L.CasterType(ctx.classes)
+  if live then
+    local want = tonumber(info.caster)
+    p.caster = want and (1 - math.abs(live - want) / 2) or 0
+  end
+  -- a caster's staff or dagger says nothing about its build
+  local styles = liveStyles(ctx)
+  if next(styles) ~= nil and live ~= 2 then
+    local want = info.atk or ""
+    p.weapon = 0
+    if styles[want] then p.weapon = 1
+    elseif want ~= "" then
+      for a in pairs(styles) do if ATK_FAMILY[a] == ATK_FAMILY[want] then p.weapon = 0.5 end end
+    end
+  end
+  local sum, wsum = 0, 0
+  for k, w in pairs(L.SIM_WEIGHTS) do
+    if p[k] then sum, wsum = sum + w * p[k], wsum + w end
+  end
+  return wsum > 0 and sum / wsum or 0, p
+end
+
+-- The builds a character is compared with: its own (an origin's, every one Loot Advisor scores), then every Build
+-- Advisor build of the origins in L.ORIGINS order; a build id already in the list is not added again.
+function L.Candidates(ownKey)
+  local out, seen = {}, {}
+  local function add(ck, b, own)
+    if seen[b.id] then return end
+    seen[b.id] = true
+    out[#out + 1] = { b = b, ck = ck, own = own, info = ((LA.Mod.builds or {})[ck] or {})[b.id], order = #out + 1 }
+  end
+  local cd = ownKey and LA.Data.chars[ownKey]
+  for _, b in ipairs(cd and cd.b or {}) do add(ownKey, b, true) end
+  for _, ck in ipairs(L.ORIGINS) do
+    local d = LA.Data.chars[ck]
+    for _, b in ipairs(d and d.b or {}) do
+      if b.o == "BuildAdvisor" then add(ck, b, false) end
+    end
+  end
+  return out
+end
+
+-- The most similar candidate. Equal similarity: the character's own build, Build Advisor's pick, Build Advisor's
+-- order, more of the build's levels in the character's classes, fewer classes, then the candidate order.
+-- -> { b, ck, sim, parts, info } or nil
+function L.ClosestBuild(ownKey, ctx, baPick, baOrder)
+  local rank = {}
+  for i, id in ipairs(baOrder or {}) do rank[id] = rank[id] or i end
+  local function better(x, y)
+    if math.abs(x.sim - y.sim) > 1e-6 then return x.sim > y.sim end
+    if x.own ~= y.own then return x.own end
+    local xp, yp = x.b.id == baPick, y.b.id == baPick
+    if xp ~= yp then return xp end
+    local xr, yr = rank[x.b.id] or 1e9, rank[y.b.id] or 1e9
+    if xr ~= yr then return xr < yr end
+    if math.abs(x.parts.prec - y.parts.prec) > 1e-6 then return x.parts.prec > y.parts.prec end
+    if x.parts.nclass ~= y.parts.nclass then return x.parts.nclass < y.parts.nclass end
+    return x.order < y.order
+  end
+  local best
+  for _, c in ipairs(L.Candidates(ownKey)) do
+    c.sim, c.parts = L.Similarity(c.b, c.info, ctx)
+    if not best or better(c, best) then best = c end
+  end
+  return best
+end
+
+-- "closest build, 78% alike: same classes, other subclass, main ability DEX"
+function L.ClosestWhy(c)
+  local p, out = c.parts or {}, {}
+  if p.class == nil then out[#out + 1] = "no class levels yet"
+  elseif p.class >= 0.999 then out[#out + 1] = "same classes"
+  elseif p.class <= 0 then out[#out + 1] = "no class in common"
+  else out[#out + 1] = ("%d%% of the class levels"):format(math.floor(p.class * 100 + 0.5)) end
+  if p.sub ~= nil then
+    out[#out + 1] = p.sub >= 0.999 and "same subclass" or p.sub > 0 and "subclass partly" or "other subclass"
+  end
+  local main = c.info and c.info.main
+  if p.main ~= nil and main then out[#out + 1] = (p.main > 0 and "main ability " or "main ability not ") .. main end
+  return ("closest build, %d%% alike: %s"):format(L.Percent(c.sim), table.concat(out, ", "))
+end
+
+function L.Percent(sim) return math.floor((sim or 0) * 100 + 0.5) end
+
+-- An origin keeps its own builds while at least half its class levels are in classes one of them has.
+function L.OwnBuildFits(key, ctx)
+  local cd = key and LA.Data.chars[key]
+  if not cd then return false end
+  if not ctx.classes or #ctx.classes == 0 then return true end
+  local info = (LA.Mod.builds or {})[key] or {}
+  for _, b in ipairs(cd.b) do
+    local _, p = L.Similarity(b, info[b.id], { classes = ctx.classes })
+    if (p.class or 0) >= 0.5 then return true end
+  end
+  return false
+end
+
+-- A character without builds of its own (Halsin, Jaheira, Minsc, Minthara, a Tav, a hireling): the closest Build
+-- Advisor build. -> build, the origin whose sets it is, why, the closest-build record (similarity, parts)
+function L.MatchAnyBuild(ctx, baPick, baOrder)
+  local c = L.ClosestBuild(nil, ctx, baPick, baOrder)
+  if not c then return nil end
+  return c.b, c.ck, L.ClosestWhy(c), c
+end
+
+-- The build for one person: p = { key, ctx = {classes, abilities, atk}, ba = Build Advisor build order, baPick }.
 -- Without class levels to read (a companion not met yet, not loaded), its first Build Advisor build stands in for
--- them. Origins match among their own builds, everyone else among all builds. -> build, origin it belongs to, why
+-- them. An origin matches among its own builds while one fits its classes (L.OwnBuildFits); everyone else, and an
+-- origin respecced away from all of them, gets the closest build. -> build, origin it belongs to, why, closest-build
+-- record (nil for an origin's own build)
 function L.BuildFor(p)
   local ctx = p.ctx or {}
   local ba = p.ba or (LA.Mod.baOrigins or {})[p.key]
@@ -187,11 +349,13 @@ function L.BuildFor(p)
       end
     end
   end
-  if LA.Data.chars[p.key] then
+  if L.OwnBuildFits(p.key, ctx) then
     local b, why = L.MatchBuild(p.key, ctx, p.baPick, ba)
-    return b, p.key, why
+    return b, p.key, why, nil
   end
-  return L.MatchAnyBuild(ctx)
+  local c = L.ClosestBuild(LA.Data.chars[p.key or ""] and p.key or nil, ctx, p.baPick, ba)
+  if not c then return nil end
+  return c.b, c.ck, L.ClosestWhy(c), c
 end
 
 local function ownerAvailable(c, state)
@@ -307,7 +471,8 @@ end
 
 -- state = { act, region, durge, paths={x="yes"/"no"}, comp={c={team,party,dead}}, owned={[stats id]=n},
 --           markerPos={[markerId]={x,y,z,live}}, tiePicks={[stats id]=char}, wear={[stats id]=char} }
--- opts.build: the build to use (a character without builds of its own, L.BuildFor), opts.why: why that build
+-- opts.build: the build to use (L.BuildFor), opts.why: why that build, opts.closest: L.ClosestBuild's record when it
+-- is the closest build rather than one of the character's own (res.build.sim = similarity in %, .from = whose sets)
 function L.Recommend(charKey, ctx, state, baPick, baOrder, opts)
   local res = { char = charKey, name = ctx.name, act = state.act, region = state.region, rows = {}, markers = {},
                 frames = {}, texts = {} }
@@ -319,6 +484,8 @@ function L.Recommend(charKey, ctx, state, baPick, baOrder, opts)
   if not b then res.notCovered = true; return res end
   local ties = state.ties or L.Ties(state)
   res.build = { id = b.id, n = b.n, why = why }
+  local cl = opts and opts.closest
+  if cl then res.build.closest, res.build.sim, res.build.from = true, L.Percent(cl.sim), cl.ck end
   local act = state.act or 1
   local a = b.a and b.a[act]
   if not a then return res end

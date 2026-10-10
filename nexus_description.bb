@@ -3,7 +3,9 @@
 
 [color=#e8a33d][b]Spoiler warning:[/b] Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes (who can die, which side you take, endings).[/color]
 
-Loot Advisor shows, for the origin character you have selected, the best items per slot and act for that character's build. Advice follows the character's actual build, the current act, your story choices and what the party already owns. It covers the seven origin characters: Astarion, Gale, Karlach, Lae'zel, Shadowheart, Wyll and the Dark Urge. Halsin, Jaheira, Minsc, Minthara, Tavs and hirelings borrow the closest origin build.
+Loot Advisor shows, for the origin character you have selected, the best items per slot and act for that character's build. Advice follows the character's actual build, the current act, your story choices and what the party already owns. It covers the seven origin characters: Astarion, Gale, Karlach, Lae'zel, Shadowheart, Wyll and the Dark Urge.
+
+[b]Made for Build Advisor's builds.[/b] The sets are made for the builds of [url=https://github.com/md12ol/BuildAdvisor]Build Advisor[/url]. Any other character (Halsin, Jaheira, Minsc, Minthara, a custom Tav, a hireling, or an origin respecced into a class mix no build has) gets the recommendations of the closest Build Advisor build: most alike in class levels, then subclass, main ability, caster type and weapon style. The F6 list names that build and how alike it is.
 
 [size=4][b]In the game[/b][/size]
 [list]
@@ -36,7 +38,7 @@ The download also holds [b]INSTALL.md[/b], the offline [b]Handbook.html[/b] (eve
 Set "Enabled": false in LootAdvisor_settings.json (Script Extender folder) and save once, so no map markers are stored in the save; then disable or remove Loot Advisor in the mod manager.
 
 [size=4][b]Works with Build Advisor[/b][/size]
-Installed together with [url=https://github.com/md12ol/BuildAdvisor]Build Advisor[/url], Loot Advisor uses the build you picked there for each character. Each mod also works on its own.
+Installed together with [url=https://github.com/md12ol/BuildAdvisor]Build Advisor[/url], Loot Advisor uses the build you picked there for each character, and Build Advisor's window lists that build's gear sets, act by act. Each mod also works on its own.
 
 [size=4][b]Spoilers[/b][/size]
 The advice names item locations and the story choices that open or close them. Items that need a theft, a kill or a story choice are included with a warning.
