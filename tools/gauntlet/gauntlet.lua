@@ -938,12 +938,12 @@ function G.refusalReason(P, R, blockers, moved)
 end
 
 -- ------------------------------------------------------------------------------------------------ movement
--- A scripted cast that needs a step moves first, by the rules: the game's pathfinder gives the route (the same calls
--- as Autopilot's froute / fsafe), the character runs it with CharacterMoveToPosition within its Movement, and the
+-- A scripted cast that needs a step moves first, by the rules: the game's pathfinder gives the route,
+-- the character runs it with CharacterMoveToPosition within its Movement, and the
 -- Movement walked is charged. The spot is the first point on a route where the target is in range; a route that leaves
 -- an enemy's reach is avoided when another spot in range has a clean route, else taken (the Attack of Opportunity is
 -- real damage, the same for both sets). In range and in sight already: the cast goes from where the character stands.
-G.REACH = 3.4          -- Autopilot's fsafe ring: the game's reach plus slack for curved routes
+G.REACH = 3.4          -- the game's reach plus slack for curved routes
 G.MOVE_MAX_MS = 8000
 function G.route(u, x, y, z)
   local e = ent(u)
@@ -962,7 +962,7 @@ function G.route(u, x, y, z)
   return nil
 end
 -- The first foe (index into foes, {x, y, z}) whose reach the polyline leaves within `limit` metres, or nil; inside the
--- ring, a point farther from the foe than the start (+0.15 m) counts as leaving (Autopilot fsafe: curved routes).
+-- ring, a point farther from the foe than the start (+0.15 m) counts as leaving (curved routes).
 function G.leavesReach(poly, foes, limit)
   local inside, d0, walked = {}, {}, 0
   for i, f in ipairs(foes) do
