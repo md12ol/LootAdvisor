@@ -1239,11 +1239,49 @@ def py_tests():
     check("items: other items keep their first template", P.item_template("X", {"X": ["t1", "t2"]}) == "t1")
     import pairs as PA
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
-              lambda: control_tests(PA), lambda: reach_tests(P), lambda: lanes_py_tests(R), engine_lane_tests):
+              lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: reach_tests(P),
+              lambda: lanes_py_tests(R), engine_lane_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+def tuned_respec_tests(PA):
+    """Each side's respec is its test plan's: the tuner runs on the plan's gear only for a tuned plan, and a respec
+    whose ability scores differ from the plan's stops the spec (the setup check would test the wrong character)."""
+    calls = []
+
+    class _St:
+        def __init__(self, W, cid, bid, act, lo, sw, respec=None):
+            self.sheet = {"abBase": dict((respec or {}).get("ab") or {"DEX": 17})}
+
+    class _M:
+        State = _St
+
+    def tune(W, cid, bid, act, lo):
+        calls.append(lo)
+        return {"respec": {"ab": {"DEX": 18}}}
+    plans = {"x.b.a3.1": {"char": "x", "build": "b", "act": 3, "gear": {"Ring1": {"id": "R1"}},
+                          "respec": {"tuned": True, "abilities": {"DEX": 18}}},
+             "x.b.a3.opt": {"char": "x", "build": "b", "act": 3, "gear": {}, "respec": {"tuned": False,
+                                                                                         "abilities": {"DEX": 17}}},
+             "x.b.a3.2": {"char": "x", "build": "b", "act": 3, "gear": {}, "respec": {"tuned": True,
+                                                                                       "abilities": {"DEX": 16}}}}
+    try:
+        r = PA.tuned_respec(None, _M, tune, plans, "x.b.a3.1")
+    except SystemExit as e:
+        r = str(e)
+    check("respec: a tuned test plan's respec comes from the tuner on the plan's gear",
+          r == {"ab": {"DEX": 18}} and calls == [{"Ring1": "R1"}], f"{r} {calls}")
+    check("respec: an untuned test plan keeps the build's picks", PA.tuned_respec(None, _M, tune, plans, "x.b.a3.opt")
+          is None)
+    try:
+        PA.tuned_respec(None, _M, tune, plans, "x.b.a3.2")
+        stopped = False
+    except SystemExit:
+        stopped = True
+    check("respec: ability scores other than the plan's stop the spec", stopped)
 
 
 class _Res:
@@ -1696,6 +1734,8 @@ MUTATIONS = [
     ("control: damage taken not compared", PA, "    if _rel(na[\"taken\"], nb[\"taken\"]) > tol:", "    if False:"),
     ("control: saves not compared", PA, "    if na[\"saves\"] != nb[\"saves\"]:", "    if False:"),
     ("control: resistances not compared", PA, "    if na[\"resist\"] != nb[\"resist\"]:", "    if False:"),
+    ("respec: the plan's ability scores not compared", PA, "    if want and got != want:", "    if False:"),
+    ("respec: tuned plans keep the build's picks", PA, "    if rs.get(\"tuned\"):", "    if False:"),
     ("control: damage not compared", PA, "    if _rel(na[\"dpr\"], nb[\"dpr\"]) > tol:", "    if False:"),
     ("control search: items with actions swapped", PA, "if alt == cur or alt in lo.values() or has_action(alt):",
      "if alt == cur or alt in lo.values():"),

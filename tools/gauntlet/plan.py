@@ -4,7 +4,9 @@
 
 DIR is the gear optimizer's code folder (tools/optimizer: odata / model / mech); its model supplies the build sheet
 (abilities, HP, proficiency, class levels at the act's level) and its prediction for each set. pairs.json lists
-[{"char", "build", "act", "a": <set>, "b": <set>}] where a set is {"name", "items": {slot: {"sid": ...}}}.
+[{"char", "build", "act", "a": <set>, "b": <set>}] where a set is {"name", "items": {slot: {"sid": ...}}, "respec"}; respec
+names the set's test plan (pairs.py): the sheet, feats, styles and the model's numbers then follow that plan's tuned
+respec, the one the test character was given, instead of the build's own picks.
 
 Per set the spec holds
   sheet      the build's bare sheet (no gear): abilities, HP, proficiency  -> boosts in game
@@ -536,12 +538,14 @@ def granted_proficiencies(stats, sids):
 
 
 # ------------------------------------------------------------------------------------------------ specs
-def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
+def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None):
+    """respec: the test plan's tuned respec (pairs.tuned_respec) the test character was given, or None for the
+    build's own picks; the sheet, feats, styles, plan and the model's numbers follow it."""
     lo = {k: v["sid"] for k, v in (setrec.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
-    bare = model.State(W, cid, bid, act, {}, {})
-    st = model.State(W, cid, bid, act, lo, {})
+    bare = model.State(W, cid, bid, act, {}, {}, respec=respec)
+    st = model.State(W, cid, bid, act, lo, {}, respec=respec)
     g = grants(G, bare.BI["seq"][: bare.level], bare.subs, bare.feats, bare.styles)
-    pred = model.score(W, cid, bid, act, lo, None, detail=True)
+    pred = model.score(W, cid, bid, act, lo, None, detail=True, respec=respec)
     core = core_plan(model, bare, stats)
     acts, skipped = item_actions(st, stats, mech)
     # choice items (Markoheshkir attunements, elemental weapons): the model's pick is applied as a status in the
@@ -594,6 +598,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
     build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
     return {
         "char": cid, "build": bid, "act": act, "set": setrec.get("name"), "set_id": setrec.get("id"),
+        "respec_from": setrec.get("respec"),
         "sheet": {"abilities": dict(bare.sheet["ab"]), "hp": bare.sheet["hp"], "prof": bare.sheet["prof"],
                   "level": bare.level},
         "class_levels": g["class_levels"], "subclasses": bare.subs, "subclass_names": g["subclass_names"],
@@ -619,11 +624,15 @@ def main(argv=None):
     ap.add_argument("--optimizer", required=True, help="the gear optimizer's code folder")
     ap.add_argument("--pairs", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--test-plans", help="the optimizer's test plans (default: pairs.py TEST_PLANS)")
     a = ap.parse_args(argv)
     sys.path.insert(0, os.path.abspath(a.optimizer))
     import mech
     import model
     import odata
+    import pairs as PA
+    import respec as RS
+    plans = PA.load_test_plans(a.test_plans or PA.TEST_PLANS)
     W = odata.World()
     stats = W.stats
     templates = {sid: (rec.get("templates") or []) for sid, rec in W.items.items()}
@@ -634,7 +643,10 @@ def main(argv=None):
     for p in pairs:
         row = dict(p, specs={})
         for side in ("a", "b"):
-            row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates)
+            pid = p[side].get("respec")
+            r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
+            row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates,
+                                          respec=r)
         row.pop("a"), row.pop("b")
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", row["specs"]["a"]["set"], "/", row["specs"]["b"]["set"])

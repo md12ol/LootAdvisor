@@ -134,6 +134,9 @@ the run. `run.py --report` leaves invalid runs out, and marks the whole report I
 the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
 damage taken (AC, hit points, saving throws, resistances, damage reduction; damage per round and damage taken within
 5%): `pairs.py --find-control char:build:act` searches for them, `--control` adds the chosen one.
+Each side of a pair names its test plan (`--select char:build:act:N` compares with research set N): the optimizer tunes
+ability scores, feats and fighting styles to each set, the test character is respecced to that plan, and `plan.py`
+builds the expected sheet and the model's numbers from the same respec.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository
