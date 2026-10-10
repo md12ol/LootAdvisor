@@ -455,9 +455,10 @@ end
 
 -- ------------------------------------------------------------------------------------------------ the rest of the party
 -- Solo runs: the other party members are moved 40 m away and kept out of the fight; put back when the run ends.
-function G.parkOthers(u)
+function G.parkOthers(u, spot)
   G.parked = G.parked or {}
   local ox, oy, oz = Osi.GetPosition(u)
+  if spot then ox, oy, oz = spot[1] - 40, spot[2], spot[3] end
   if not ox then return 0 end
   local n = 0
   for _, m in ipairs(partyMembers()) do
@@ -511,6 +512,8 @@ function G.spawnEnemies(list, E, faction)
     local d = try(Osi.CreateAt, E.template, p[1], p[2], p[3], 0, 0, "")
     if d then
       out[#out + 1] = d
+      G.spawned = G.spawned or {}
+      G.spawned[uuid(d)] = true
       if faction then pcall(Osi.SetFaction, d, faction) end
       forceEnemy(d, E)
     else
@@ -701,9 +704,19 @@ local function ground(x, z, nearY)
   return nearY
 end
 
-function G.arena(scn, mode, selfaoe, origin)
+-- Enemy spots: around the character (melee, self-centred auras, the defence ring) or a line at the build's range,
+-- laid out along the arena's direction (default +x). A = an arena from arenas.json (start, dir, high): the character
+-- starts at A.start and a pack's fourth enemy stands on A.high, the arena's high ground.
+function G.arena(scn, mode, selfaoe, origin, A)
   local S = G.SCENARIOS[scn]
+  if A and A.start then origin = A.start end
   local x0, y0, z0 = origin[1], origin[2], origin[3]
+  local dx, dz = 1, 0
+  if A and A.dir then
+    local l = math.sqrt(A.dir[1] ^ 2 + A.dir[2] ^ 2)
+    if l > 0 then dx, dz = A.dir[1] / l, A.dir[2] / l end
+  end
+  local function at(f, side) return { x0 + f * dx - side * dz, 0, z0 + f * dz + side * dx } end
   local d = G.RANGE[mode] or 6.0
   local pts = {}
   local n = S.enemies
@@ -711,14 +724,33 @@ function G.arena(scn, mode, selfaoe, origin)
     local r = selfaoe and 2.2 or 1.6
     for i = 1, n do
       local a = (i - 1) * (2 * math.pi / math.max(n, 1)) * (selfaoe and 1 or 0.35)
-      pts[#pts + 1] = { x0 + r * math.cos(a), 0, z0 + r * math.sin(a) }
+      pts[#pts + 1] = at(r * math.cos(a), r * math.sin(a))
     end
   else
     local offs = { { 0, 0 }, { 1.8, 0 }, { 0, 1.8 }, { 1.8, 1.8 } }
-    for i = 1, n do pts[#pts + 1] = { x0 + d + offs[i][1], 0, z0 + offs[i][2] - (n > 1 and 0.9 or 0) } end
+    for i = 1, n do pts[#pts + 1] = at(d + offs[i][1], offs[i][2] - (n > 1 and 0.9 or 0)) end
+    if A and A.high and n >= 4 then pts[4] = { A.high[1], 0, A.high[3] } end
   end
-  for _, p in ipairs(pts) do p[2] = ground(p[1], p[3], y0) end
+  for i, p in ipairs(pts) do p[2] = ground(p[1], p[3], (A and A.high and i == 4 and n >= 4) and A.high[2] or y0) end
   return { x0, y0, z0 }, pts
+end
+
+-- Living characters inside the arena that are not the party: an arena must be empty before a run starts. Enemies a
+-- previous run spawned can outlive their delete request by a moment; they are deleted again and not counted.
+function G.arenaIntruders(A)
+  local out = {}
+  local party = {}
+  for _, m in ipairs(partyMembers()) do party[m] = true end
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local u = try(function() return e.Uuid.EntityUuid end)
+    if u and not party[u] and not (G.spawned or {})[u] and try(Osi.IsDead, u) == 0 then
+      local x, _, z = Osi.GetPosition(u)
+      if x and math.sqrt((x - A.center[1]) ^ 2 + (z - A.center[3]) ^ 2) <= A.radius then
+        out[#out + 1] = string.format("%s at %.0f,%.0f", name(u), x, z)
+      end
+    end
+  end
+  return out
 end
 
 -- ------------------------------------------------------------------------------------------------ catalogue
@@ -873,6 +905,11 @@ function G.run(req)
   local act = tostring(req.act or spec.act)
   local E = req.enemy or (C.enemies and C.enemies[act])
   if not E then G.fail("no enemy stats for act " .. act); return G.status end
+  local A
+  if req.arena then
+    A = (C.arenas or {})[req.arena]
+    if not A then G.fail("unknown arena " .. tostring(req.arena)); return G.status end
+  end
   G.origin = G.origin or { Osi.GetPosition(u) }
   local F = { char = u, req = req, spec = spec, plan = spec.plan or {}, S = S, manual = req.mode == "manual",
     rounds = req.rounds or S.rounds, cooldown = {}, started = math.floor(now() / 1000), state = "prep" }
@@ -885,10 +922,10 @@ function G.run(req)
       G.reset()
       G.results = { prep = prepRes }
       G.status = "fighting"
-      local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin)
+      local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin, A)
       pcall(Osi.TeleportToPosition, u, cpos[1], cpos[2], cpos[3], "", 0, 0, 0, 0, 1)
       if not F.manual then
-        G.results.parked = G.parkOthers(u)
+        G.results.parked = G.parkOthers(u, A and A.park)
         G.results.reactions = G.reactionsApply(F.plan)
       end
       local buffs = {}
@@ -896,6 +933,17 @@ function G.run(req)
       if req.haste then buffs[#buffs + 1] = C.haste or "HASTE" end
       for _, s in ipairs(buffs) do pcall(Osi.ApplyStatus, u, s, -1, 1, u) end
       G.results.buffs = buffs
+      if A then
+        G.results.arena = req.arena
+        for d in pairs(G.spawned or {}) do pcall(Osi.RequestDelete, d) end
+        local intr = G.arenaIntruders(A)
+        if #intr > 0 then
+          G.fail("arena " .. req.arena .. " not clear: " .. table.concat(intr, "; "))
+          F.state = "done"
+          if not F.manual then G.reactionsRestore(); G.unparkOthers() end
+          return
+        end
+      end
       F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
       if #F.enemies == 0 then G.fail("no enemies"); F.state = "done"; return end
       wait(1500, function()

@@ -84,6 +84,12 @@ def owned_part(W, model, stats, G, cid, bid, act):
             "resources": g["resources"], "plan": core}
 
 
+def arenas():
+    """Fixed fight spots (tools/gauntlet/arenas.json): start, direction, high ground, park spot, radius."""
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "arenas.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
 def set_entry(W, mech, stats, cid, s, templates):
     items, spells = [], []
     lo = {k: v["sid"] for k, v in (s.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
@@ -154,7 +160,7 @@ def main(argv=None):
         for c in opt.get("compare") or []:
             pass
     out = {"version": 1, "enemies": {str(k): dict(v, template=TEMPLATE, hp=ENEMY_HP) for k, v in model.ENEMY.items()},
-           "buffs": BUFFS, "haste": HASTE, "enemy_faction": ENEMY_FACTION, "builds": builds, "sets": sets, "tuned": {}}
+           "buffs": BUFFS, "haste": HASTE, "enemy_faction": ENEMY_FACTION, "arenas": arenas(), "builds": builds, "sets": sets, "tuned": {}}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, default=str)
     print(f"{len(builds)} builds, {len(sets)} sets -> {a.out}")

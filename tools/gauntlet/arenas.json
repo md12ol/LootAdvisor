@@ -1,0 +1,17 @@
+{
+ "undercity_cistern": {
+  "about": "Act 3, Lower City level, Undercity Ruins / Abandoned Cistern. Surveyed by engine: ground 10-18 m (a 5 m ledge east of the start), caustic brine and water puddles that are part of the level, no living NPC within 30 m in a save where the Undercity Ruins fights are over. Chasm edge at z < 857: every spot stays north of it.",
+  "level": "CTY_Main_A",
+  "center": [-167.0, 14.0, 870.0],
+  "radius": 16.0,
+  "start": [-181.0, 12.0, 870.0],
+  "dir": [1.0, 0.0],
+  "high": [-166.0, 18.0, 864.0],
+  "park": [-156.0, 17.4, 937.5],
+  "surfaces": [
+   {"kind": "CausticBrine", "at": [-172.0, 12.0, 870.0]},
+   {"kind": "CausticBrine", "at": [-161.0, 12.0, 879.0]},
+   {"kind": "water puddle", "at": [-184.0, 10.0, 873.0]}
+  ]
+ }
+}

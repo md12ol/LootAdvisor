@@ -90,6 +90,17 @@ def lua_tests():
     import math
     d = [math.hypot(g.T_p[i + 1][1], g.T_p[i + 1][3]) for i in range(4)]
     check("arena: self-centred aura -> enemies around the character", all(1.5 < x < 3.0 for x in d), str(d))
+    L.execute('T_c, T_p = GAUNTLET.arena("pack", "caster", false, {0, 0, 0}, '
+              '{ start = {10, 5, 20}, dir = {0, 1}, high = {13, 9, 30} })')
+    p = [(g.T_p[i + 1][1], g.T_p[i + 1][3]) for i in range(4)]
+    check("arena: the character starts on the arena's start spot", g.T_c[1] == 10 and g.T_c[3] == 20)
+    check("arena: enemies laid out along the arena's direction", all(abs(z - 30.0) <= 2.0 for _, z in p[:3]), str(p))
+    check("arena: a pack's fourth enemy on the high ground", p[3] == (13, 30), str(p))
+    with open(os.path.join(G_DIR, "arenas.json"), encoding="utf-8") as fh:
+        import json
+        ar = json.load(fh)
+    check("arenas.json: every arena has level, centre, radius, start, park",
+          all(all(k in a for k in ("level", "center", "radius", "start", "park")) for a in ar.values()))
     reaction_tests(L)
 
 
