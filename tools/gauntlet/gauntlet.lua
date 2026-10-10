@@ -1363,7 +1363,11 @@ local function doAction(F, a, R, rec0)
     local x, y, z = Osi.GetPosition(tgt)
     okc, err = pcall(Osi.UseSpellAtPosition, F.char, a.spell, x, y, z, 1)
   else
-    okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt)
+    -- cast from where the character stands (the 5-argument UseSpell, "without move"): the harness moved it first when
+    -- the target was out of range or sight. Left to itself the engine stepped away from an enemy in melee before a
+    -- ranged attack or a projectile spell, the enemy's Attack of Opportunity interrupted the step and the cast was
+    -- refused (every Fire Bolt once the enemy stood 1 m away); the game lets a player shoot from where they stand
+    okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)
   end
   if not okc then return fallback("engine refused " .. tostring(err)) end
   rec.result = "pending"

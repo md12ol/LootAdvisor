@@ -234,6 +234,22 @@ def party_tests(L):
     check("hostility: a character the enemies are not hostile to gets both factions (the enemies' given one) set "
           "hostile, put back after",
           g.T_h1 is True and g.T_hr == 2 and g.T_h2 is True and g.T_h3 is True)
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local args
+      Osi.UseSpell = function(...) args = { ... } end
+      Osi.GetPosition = function() return 0, 0, 0 end
+      local F = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end }
+      local R = { r = 1, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G.rounds = { R }
+      G._doAction(F, { spell = "Projectile_FireBolt", group = "action", target = "@boss", cost = "free" }, R)
+      T_nomove = args and #args == 5 and args[5] == 1
+      Osi.UseSpell, Osi.GetPosition = nil, nil
+      F.pending = nil
+    """)
+    check("cast: the character casts from where it stands (UseSpell without move; the harness moves it first)",
+          L.globals().T_nomove is True)
     p = lst(L.globals().T_party)
     check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
           p == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], str(p))
@@ -1866,6 +1882,8 @@ MUTATIONS = [
     ("party: player characters outside DB_Players left out", GL,
      "if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then", "if false then"),
     ("hostility: only one way", GL, "  for _, p in ipairs({ { a, b }, { b, a } }) do", "  for _, p in ipairs({ { a, b } }) do"),
+    ("cast: the engine moves before a cast", GL, "pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)",
+     "pcall(Osi.UseSpell, F.char, a.spell, tgt)"),
     ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
     ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
      "    remove = sorted(all_class_passives - set(passives))"),
