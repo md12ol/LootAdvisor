@@ -2,7 +2,7 @@
 
 One entry per origin character: race proficiencies, the research file, the research tag vocabulary
 (codes used in data/research/<char>.md -> build ids) and the builds that get scores and sets:
-  - the BuildAdvisor builds for that origin (Mods/BuildAdvisor/.../Builds.lua, BA.Origins),
+  - the BuildAdvisor builds for that origin (BuildAdvisor/Mods/BuildAdvisor/.../Builds.lua, BA.Origins),
   - 2-3 popular community alternatives covered by the research,
   - Dark Urge: a resisting-Durge build checked in game (White Dragonborn, Hexblade Warlock 12, CHA 19, Great Weapon
     Master) plus the top community Durge builds.
@@ -497,7 +497,8 @@ XREFS = {
 
 # BuildAdvisor gear lines and BA.Origins are read from Builds.lua at run time (la_common.load_builds_lua).
 BUILDS_LUA = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))),
-                          "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared", "Builds.lua")
+                          "BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared",
+                          "Builds.lua")
 
 
 # ---------------------------------------------------------------- Builds.lua sync (round 3, 2026-10-09)

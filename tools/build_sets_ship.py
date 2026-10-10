@@ -1,9 +1,9 @@
 """Build the SHIPPABLE LootAdvisor Sets page: the same page as the online copy
 (tools/build_sets_artifact.py + tools/sets_artifact/, all UX fixes), but with NO game art and NO game text inside.
 
-    python tools/build_sets_ship.py            # -> Mods/LootAdvisor/Page/Sets.html + Shared/ShipManifest.lua
+    python tools/build_sets_ship.py            # -> LootAdvisor/Mods/LootAdvisor/Page/Sets.html + ShipManifest.lua
     python tools/build_sets_ship.py --check    # also print the leak report (game text left in the page)
-    python tools/build_sets_ship.py --release [DIR]   # also write DIR/Page/Sets.html (install folder copy)
+    python tools/build_sets_ship.py --release [DIR]   # also write DIR/Page/Sets.html (player package copy)
 
 What ships (our own data): set lists, scores, ids, our why / how-to texts, conditions, the sheet rules, the page code,
 and a MANIFEST of game files (paths only) plus loca handles. What does NOT ship: icons, frames, portraits, UI art, the
@@ -34,7 +34,7 @@ import build_sets_artifact as B  # noqa: E402
 
 ROOT = B.ROOT
 REPO = B.REPO
-MOD = os.path.join(REPO, "Mods", "LootAdvisor")
+MOD = os.path.join(REPO, "LootAdvisor", "Mods", "LootAdvisor")
 PAGE_DIR = os.path.join(MOD, "Page")
 MANIFEST_LUA = os.path.join(MOD, "ScriptExtender", "Lua", "Shared", "ShipManifest.lua")
 SHIP_SRC = os.path.join(HERE, "sets_ship")
@@ -546,7 +546,7 @@ def build(args):
         f.write(page)
     ver = hashlib.md5(page.encode("utf-8")).hexdigest()[:12]
     if args.release:
-        # install-folder copy: the same single file - header, logo and our art are inside it; opened
+        # player-package copy: the same single file - header, logo and our art are inside it; opened
         # there (no game files next to it) it shows the "load a save once, then open the live page" card
         rel = os.path.join(args.release, "Page")
         os.makedirs(rel, exist_ok=True)
@@ -598,6 +598,6 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--no-fonts", action="store_true")
-    ap.add_argument("--release", metavar="DIR", nargs="?", const=os.path.join(REPO, "LootAdvisor"),
-                    help="also write DIR/Page/Sets.html (default DIR: the install folder LootAdvisor/LootAdvisor)")
+    ap.add_argument("--release", metavar="DIR", nargs="?", const=os.path.join(REPO, "dist", "LootAdvisor"),
+                    help="also write DIR/Page/Sets.html (default DIR: the local player package dist/LootAdvisor)")
     build(ap.parse_args())

@@ -17,12 +17,13 @@ concurrency:
   group: release
   cancel-in-progress: false
 env:
-  # the mod and its player package, in one place (repo layout may move: change only these; the mod source path
-  # lives in BG3Tools tools/build_pak.py)
+  # the mod and its player package, in one place (the mod source is $MOD/{Mods,Public,Localization}; BG3Tools
+  # tools/build_pak.py finds it and assembles the package)
   MOD: LootAdvisor
   MOD_NAME: Loot Advisor
-  PACKAGE_DIR: LootAdvisor        # the package directory the build step produces (relative to this repo)
+  PACKAGE_DIR: dist/LootAdvisor   # the package directory the build step produces (relative to this repo)
   SIBLINGS: BuildAdvisor BG3Tools
+  PILLOW_VERSION: "11.3.0"
 
 jobs:
   release-please:
@@ -72,6 +73,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
+      - run: pip install -q "pillow==$PILLOW_VERSION"   # the handbook generator embeds a screenshot
       - name: Stamp version, build the pak and the package
         env:
           V: ${{ steps.ver.outputs.version }}

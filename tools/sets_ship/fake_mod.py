@@ -13,7 +13,7 @@ CHUNK = 4_000_000
 
 def main(out, state=None):
     os.makedirs(out, exist_ok=True)
-    page = os.path.join(B.REPO, "Mods", "LootAdvisor", "Page", "Sets.html")
+    page = os.path.join(B.REPO, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html")
     D = page_data(page)
     loca = json.load(open(os.path.join(B.DATA, "cache", "loca_english.json"), encoding="utf-8"))
     h = {e[0]: loca.get(e[0], "") for e in D["T"]}

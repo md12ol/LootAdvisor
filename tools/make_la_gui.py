@@ -1,7 +1,8 @@
 """Builds a mod's own GUI textures + GUI/metadata.lsf into its GUI folder (IMAGES.md Plan A).
 
-  python LootAdvisor/tools/make_la_gui.py <mod GUI folder>                e.g. Mods/LootAdvisor/GUI  (Loot Advisor set)
-  python LootAdvisor/tools/make_la_gui.py <mod GUI folder> --set build    e.g. Mods/BuildAdvisor/GUI (Build Advisor set)
+  python LootAdvisor/tools/make_la_gui.py <mod GUI folder>              (Loot Advisor set)
+  python LootAdvisor/tools/make_la_gui.py <mod GUI folder> --set build  (Build Advisor set)
+  <mod GUI folder>: LootAdvisor/LootAdvisor/Mods/LootAdvisor/GUI or BuildAdvisor/BuildAdvisor/Mods/BuildAdvisor/GUI
 
 Build Advisor set (Assets/BuildAdvisor/, its own copy so it works without Loot Advisor):
   ba_tile_ring.DDS  196x196 BC3 sRGB  "Prism" rainbow ring for creation / level-up tiles (race, class, subclass,

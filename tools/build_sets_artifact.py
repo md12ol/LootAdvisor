@@ -10,7 +10,7 @@ Reads the CURRENT data (read-only, never edited here):
   data/items_all/*.jsonl           every item: stats, effects, description (loca), icon
   data/research/conditions.md      condition codes (labels only)
   data/cache/stats_resolved.json   spells / passives / statuses (icons, boosts)
-  Mods/BuildAdvisor/.../Builds.lua feats and fighting styles of the BuildAdvisor builds
+  BuildAdvisor/Mods/BuildAdvisor/.../Builds.lua feats and fighting styles of the BuildAdvisor builds
   game paks (read-only, tools/pak.py): icons, UI art, fonts
   shots/sets/<char>_<act>_<setid>_{model,sheet}.png   in-game captures, picked up when present
 
@@ -33,7 +33,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)                       # LootAdvisor/
-REPO = ROOT                                        # LootAdvisor/ (holds Mods/LootAdvisor since the 2026-10 restructure)
+REPO = ROOT                                        # LootAdvisor/ (the mod source is LootAdvisor/Mods/LootAdvisor)
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(HERE, "sets_artifact"))
 import playertext as P  # noqa: E402  (player-facing text rules, UX audit F5)
@@ -43,8 +43,8 @@ OUT_DIR = os.path.join(ROOT, "artifact")
 CACHE = os.path.join(OUT_DIR, ".cache")
 SHOTS = os.path.join(ROOT, "shots", "sets")
 TEMPLATE = os.path.join(HERE, "sets_artifact")
-BUILDS_LUA = os.path.join(os.path.dirname(ROOT), "BuildAdvisor", "Mods", "BuildAdvisor", "ScriptExtender", "Lua", "Shared",
-                          "Builds.lua")
+BUILDS_LUA = os.path.join(os.path.dirname(ROOT), "BuildAdvisor", "BuildAdvisor", "Mods", "BuildAdvisor",
+                          "ScriptExtender", "Lua", "Shared", "Builds.lua")
 
 CHARS = ["astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge"]
 SLOTS = ["Helmet", "Cloak", "Breast", "Gloves", "Boots", "Amulet", "Ring1", "Ring2",

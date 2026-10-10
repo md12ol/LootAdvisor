@@ -14,7 +14,7 @@ General method (no per-item or per-map rules):
  3. Entrances. Every placed item with a teleport use-action (OnUsePeaceActions ActionType 3, Attributes Target =
     arrival trigger) is an edge "source zone -> target zone". Zone-crossing teleporters are the entrances.
 At runtime the mod finds the player's zone (cell lookup), walks the entrance graph to the item's zone and marks
-the first entrance on the shortest way (nearest to the player). See Mods/LootAdvisor/.../Shared/Zones.lua.
+the first entrance on the shortest way (nearest to the player). See LootAdvisor/Mods/LootAdvisor/.../Shared/Zones.lua.
 
   python LootAdvisor/tools/level_links.py   (teleporters + triggers, run first)
   python LootAdvisor/tools/entrances.py

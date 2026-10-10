@@ -43,7 +43,7 @@ def walk_pairs(a, b, path=""):
         yield path, a, b
 
 if __name__ == "__main__":
-    ship = page_data(os.path.join(B.REPO, "Mods", "LootAdvisor", "Page", "Sets.html"))
+    ship = page_data(os.path.join(B.REPO, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html"))
     art = page_data(os.path.join(B.OUT_DIR, "_preview.html"))
     loca = json.load(open(os.path.join(B.DATA, "cache", "loca_english.json"), encoding="utf-8"))
     res = resolve({k: v for k, v in ship.items() if k not in ("T", "art", "artPaths", "fonts")}, ship["T"], loca)

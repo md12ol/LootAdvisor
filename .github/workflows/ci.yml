@@ -13,13 +13,12 @@ concurrency:
 permissions:
   contents: read
 env:
-  # the mod and its player package, in one place (repo layout may move: change only these; the mod source path
-  # lives in BG3Tools tools/build_pak.py)
+  # the mod in one place (its source is $MOD/{Mods,Public,Localization}; BG3Tools tools/build_pak.py finds it)
   MOD: LootAdvisor
-  PACKAGE_DIR: LootAdvisor
-  LUA_DIRS: Mods tools/gauntlet
+  LUA_DIRS: LootAdvisor tools/gauntlet
   RUFF_VERSION: "0.16.9"
   LUPA_VERSION: "2.8"
+  PILLOW_VERSION: "11.3.0"
 
 jobs:
   lint:
@@ -88,7 +87,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -q "lupa==$LUPA_VERSION"
+      - run: pip install -q "lupa==$LUPA_VERSION" "pillow==$PILLOW_VERSION"
       - name: Regression suite, tracked files only (local-only checks listed as [LOCAL])
         run: python LootAdvisor/tests/run.py --ci
       - name: Mutation check (every CI check goes red when its rule is broken)
@@ -97,5 +96,5 @@ jobs:
         run: python LootAdvisor/tests/test_gauntlet.py
       - name: Leak scan of shipped files
         run: python LootAdvisor/tools/leak_scan.py
-      - name: Pak build (no install, no game) + package folder complete per INSTALL.md
-        run: python BG3Tools/tools/ci_release.py check "$MOD" "LootAdvisor/$PACKAGE_DIR"
+      - name: Pak build + player package zip (into dist/, no install, no game), zip checked against INSTALL.md
+        run: python BG3Tools/tools/ci_release.py check "$MOD"

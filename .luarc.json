@@ -1,0 +1,8 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.4",
+  "workspace.library": [".ide"],
+  "workspace.checkThirdParty": false,
+  "workspace.ignoreDir": ["dist", "data", "artifact", "third_party", "analysis"],
+  "diagnostics.globals": ["Ext", "Osi", "Mods", "_C", "_D", "_P", "Game", "LA", "LAS", "BA", "AP", "CAM", "GAUNTLET", "GAUNTLET_UI"]
+}
