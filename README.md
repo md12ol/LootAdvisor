@@ -78,9 +78,10 @@ model as the research sets. It needs the Rebuild outputs and writes only to `too
 python tools/optimizer/run.py --jobs 8      # all origins, builds, acts (--only gale[:build[:act]] for one)
 python tests/test_optimizer.py              # checks its output against the game data
 ```
-The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it rebuilds a character's sheet with
-boosts, spawns the items and enemies, fights scripted rounds and records damage and survival. It changes the loaded
-save, so use a test save and never save afterwards. It talks to the game through Loot Advisor's dev eval hook
+The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it takes a character levelled to the
+build (a test save per build; `--respec emulated` rebuilds the sheet with boosts instead), spawns the items and
+enemies, fights scripted rounds and records damage and survival. It changes the loaded save, so use a test save and
+never save afterwards. It talks to the game through Loot Advisor's dev eval hook
 (`"Dev": true` in `LootAdvisor_settings.json`; setup in BG3Tools `tools/testing/README.md`, whose `cheat.py` gives the
 same engine shortcuts for other tests).
 ```bash
@@ -89,11 +90,23 @@ python tools/gauntlet/engine.py probe       # API check, party, position, diffic
 # manual runs: build the catalogue, then press F9 in the game and pick build, set, act and scenario
 python tools/gauntlet/catalog.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json
 # scripted runs: pick pairs (optimizer set vs research set), write specs, run, report
-python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --select shadowheart:lightcleric:3 --out pairs.json
+python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --control --select shadowheart:lightcleric:3 --out pairs.json
 python tools/gauntlet/plan.py --optimizer tools/optimizer --pairs pairs.json --out specs.json
-python tools/gauntlet/run.py specs.json --results results.jsonl
+python tools/gauntlet/run.py specs.json --results results.jsonl --char UUID
 python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md report.md
+# both sides of a pair at once: two party members levelled to the same build, two lanes (arenas.json)
+python tools/gauntlet/engine.py survey undercity_lanes
+python tools/gauntlet/run.py specs.json --results results.jsonl --lanes undercity_lanes --char UUID_A --char-b UUID_B
 ```
+While a run is active nothing else may use the eval hook (the run's own status reads would lose answers): the run
+holds a lock file and `engine.py` refuses other commands until it ends.
+
+**Two lanes** run both sets of a pair at the same time in two separate combats: each lane has its own character, set,
+enemies and arena spot. Each lane's enemies get their own faction, hostile to that lane's character and neutral to the
+other lane; the lanes lie farther apart than the farthest spell of either set reaches (from anywhere inside one lane
+to anywhere inside the other, plus a margin), the sides swap lanes and the first lane alternates every repeat. A hit
+from one lane on the other, a shared combat, or an enemy hostile to the other lane's character fails the run. With one
+character, or lanes too close for the pair's spells, the sides run one after the other.
 The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
 through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
 Scripted runs park the rest of the party 40 m away and set every party character's reactions so the game never asks
@@ -107,9 +120,13 @@ the base spell, then the cantrip; an item spell is used only when it can be paid
 only when the game shows it (a cast event, damage to its target, or its cost spent); otherwise it is logged as failed
 and its fallback runs. A run is recorded as invalid, with the causes, when it ends early (the character's turn never
 came after the recovery attempts, the prep timed out, ...), a round passes without a confirmed action, or the
-character casts something outside its plan. `run.py --report` leaves invalid runs out, and marks the whole report
-INVALID when a control pair (two sets the model rates within 5%) differs in the game by more than `--control-tol`
-(default 15%).
+character casts something outside its plan. Before the fight every field of the setup is read back from the game
+and compared with the plan (items, proficiency as the game judges it for each item, the character's own classes,
+subclasses and feats, abilities, hit points, spells, slots, resources, buffs, reactions, enemies); one mismatch fails
+the run. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
+the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
+damage taken (AC, hit points, saving throws, resistances, damage reduction; damage per round and damage taken within
+5%): `pairs.py --find-control char:build:act` searches for them, `--control` adds the chosen one.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

@@ -95,7 +95,7 @@ def grants(G, seq, subs, feats_taken, styles):
         for r in rs:
             all_class_passives |= set(_split(r.get("PassivesAdded")))
     passives, removed, spells, res, profs, interrupts = [], set(), [], {}, [], []
-    counts = {}
+    counts, sub_names = {}, {}
     first = seq[0] if seq else None
 
     def apply(r, is_first):
@@ -135,6 +135,8 @@ def grants(G, seq, subs, feats_taken, styles):
             sname = sub_of.get(cls, {}).get(_norm(sub)) or next(
                 (v for k, v in sub_of.get(cls, {}).items() if _norm(sub).startswith(k[:6]) or k.startswith(_norm(sub)[:6])),
                 None)
+            if sname:
+                sub_names[cls] = sname
             for r in rows.get(table.get(sname), []) if sname else []:
                 if int(r.get("Level") or 0) == lv:
                     apply(r, False)
@@ -155,7 +157,8 @@ def grants(G, seq, subs, feats_taken, styles):
     remove = sorted(all_class_passives - set(passives))
     resources = [{"kind": k, "level": lv, "n": n} for (k, lv), n in sorted(res.items())]
     return dict(passives=passives, passives_remove=remove, spells=list(dict.fromkeys(spells)), resources=resources,
-                class_levels=counts, boosts=list(dict.fromkeys(profs)), interrupts=list(dict.fromkeys(interrupts)))
+                class_levels=counts, boosts=list(dict.fromkeys(profs)), interrupts=list(dict.fromkeys(interrupts)),
+                subclass_names=sub_names)
 
 
 # ------------------------------------------------------------------------------------------------ round plans
@@ -466,6 +469,72 @@ def model_avg(expr):
     return tot
 
 
+# ------------------------------------------------------------------------------------------------ reach
+# How far from the caster a spell's effect can land, for the spacing of two lanes fighting at once. A weapon attack's
+# range names the weapon's range; a spell that spawns more projectiles (Chain Lightning) reaches as far again from
+# the target it hit.
+WEAPON_RANGE = {"MeleeMainWeaponRange": 3.0, "MeleeOffHandWeaponRange": 3.0, "RangedMainWeaponRange": 18.0,
+                "RangedOffHandWeaponRange": 18.0, "ThrownObjectRange": 18.0}
+AREA_KEYS = ("AreaRadius", "ExplodeRadius", "HitRadius", "SurfaceRadius")
+
+
+def _num(v, default=0.0):
+    if v in WEAPON_RANGE:
+        return WEAPON_RANGE[v]
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
+
+def spell_reach(stats, spid, seen=()):
+    """Metres from the caster to the farthest point the spell's effect can land: the zone's length, or the target
+    range plus the largest area radius, plus the reach of the projectiles it spawns from the target (a spell that
+    spawns itself again counts once)."""
+    st = stats.get(spid) or {}
+    if not st or spid in seen or len(seen) > 3:
+        return 0.0
+    if st.get("SpellType") == "Zone":
+        own = _num(st.get("Range"))
+    else:
+        own = _num(st.get("TargetRadius")) + max([_num(st.get(k)) for k in AREA_KEYS] + [0.0])
+    props = ";".join(st.get(k) or "" for k in ("SpellSuccess", "SpellFail", "SpellProperties"))
+    spawned = [spell_reach(stats, x, tuple(seen) + (spid,)) for x in re.findall(r"SpawnExtraProjectiles\((\w+)", props)]
+    return own + max(spawned + [0.0])
+
+
+def set_reach(stats, spells):
+    """-> {"m": the largest reach over the spells, "spell": the spell that reaches that far}."""
+    best = (0.0, None)
+    for sp in spells:
+        r = spell_reach(stats, sp)
+        if r > best[0]:
+            best = (r, sp)
+    return {"m": round(best[0], 1), "spell": best[1]}
+
+
+def item_proficiency(stats, sid, profs):
+    """Is the character proficient with this item (None: the item needs no proficiency)? profs = the build's
+    proficiency groups plus the ones the set's items grant."""
+    grp = (stats.get(sid) or {}).get("Proficiency Group") or ""
+    groups = [g for g in re.split(r"[;,]\s*", grp) if g and g != "None"]
+    if not groups:
+        return None
+    return bool(set(groups) & set(profs))
+
+
+def granted_proficiencies(stats, sids):
+    """Proficiency groups the items grant (Proficiency(X) in their Boosts or an equip passive's)."""
+    out = []
+    for sid in sids:
+        st = stats.get(sid) or {}
+        txt = st.get("Boosts") or ""
+        for p in _split(st.get("PassivesOnEquip")):
+            txt += ";" + ((stats.get(p) or {}).get("Boosts") or "")
+        out += re.findall(r"Proficiency\((\w+)\)", txt)
+    return out
+
+
 # ------------------------------------------------------------------------------------------------ specs
 def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
     lo = {k: v["sid"] for k, v in (setrec.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
@@ -510,6 +579,16 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         tpl = item_template(sid, templates)
         items.append({"slot": SLOT_GAME[slot] or "Elixir", "stats": sid, "template": tpl, "use": slot == "Elixir" or None,
                       "name": W.items[sid].get("name")})
+    # proficiency per worn item: the build's (class, race, feats) and what the set's items grant; the setup check reads
+    # the game's own answer (the "not proficient" warning) for every item marked true
+    build_profs = (W.build_entry(cid, bid).get("proficiencies") or []) if hasattr(W, "build_entry") else []
+    profs_all = set(build_profs) | set(re.findall(r"Proficiency\((\w+)\)", ";".join(g["boosts"])))
+    profs_all |= set(granted_proficiencies(stats, [it["stats"] for it in items]))
+    for it in items:
+        if not it.get("use"):
+            it["proficient"] = item_proficiency(stats, it["stats"], profs_all)
+    item_unlocks = re.findall(r"UnlockSpell\((\w+)", ";".join((stats.get(it["stats"]) or {}).get("Boosts") or ""
+                                                                 for it in items))
     slots = {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))}
     set_interrupts = granted_interrupts([], [it["stats"] for it in items], stats)
     build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
@@ -517,7 +596,10 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         "char": cid, "build": bid, "act": act, "set": setrec.get("name"), "set_id": setrec.get("id"),
         "sheet": {"abilities": dict(bare.sheet["ab"]), "hp": bare.sheet["hp"], "prof": bare.sheet["prof"],
                   "level": bare.level},
-        "class_levels": g["class_levels"], "subclasses": bare.subs, "feats": bare.feats, "styles": bare.styles,
+        "class_levels": g["class_levels"], "subclasses": bare.subs, "subclass_names": g["subclass_names"],
+        "feats": bare.feats, "styles": bare.styles,
+        "spells_plan": sorted({re.sub(r"_\d+$", "", x) for x in used}),
+        "reach": set_reach(stats, sorted(used | {a["spell"] for a in acts} | set(item_unlocks))),
         "passives_add": g["passives"], "passives_remove": g["passives_remove"],
         "spells_add": sorted(set(g["spells"]) | used),
         "slots": slots,

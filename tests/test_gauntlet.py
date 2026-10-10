@@ -22,7 +22,12 @@
 - run.py statistics, run validity, the control-pair gate (fair rounds, the dice) and re-judging older records;
   engine.py retries and invalid runs;
 - plan.py helpers: upcast chains, the affordability forecast, reaction answers, hotbar rows by role, spell
-  requirements.
+  requirements, how far a spell reaches, proficiency per item;
+- two lanes at once: per-lane run state (timers, events), lane factions and relations (set, put back), the isolation
+  check, the start barrier, a shared combat or hits across lanes fail the run; run.py's lane spacing and schedule,
+  engine.py's lane run and its lock;
+- a real respec: nothing emulated in prep, classes / subclasses / feats compared; the game's proficiency answer;
+- the control pair: equal damage and equal damage taken in the model, and the search for one.
 """
 import itertools
 import json
@@ -129,10 +134,19 @@ def lua_tests():
     with open(os.path.join(G_DIR, "arenas.json"), encoding="utf-8") as fh:
         ar = json.load(fh)
     check("arenas.json: every arena has level, centre, radius, start, park",
-          all(all(k in a for k in ("level", "center", "radius", "start", "park")) for a in ar.values()))
+          all(all(k in a for k in ("level", "center", "radius", "start", "park")) for a in ar.values()
+              if "lanes" not in a))
+    lane_sets = [a for a in ar.values() if "lanes" in a]
+    check("arenas.json: a lanes entry names two arenas of the same level, each with its own enemy faction",
+          lane_sets and all(len(a["lanes"]) == 2 and all(ar.get(x["arena"], {}).get("level") == a["level"] and
+                                                         x.get("enemy_faction") for x in a["lanes"].values()) and
+                            len({x["enemy_faction"] for x in a["lanes"].values()}) == 2 for a in lane_sets))
+    check("arenas.json: lanes are mirrored (the same direction, the same radius)",
+          all(len({tuple(ar[x["arena"]]["dir"]) for x in a["lanes"].values()}) == 1 and
+              len({ar[x["arena"]]["radius"] for x in a["lanes"].values()}) == 1 for a in lane_sets))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests, setup_tests):
+              rules_tests, setup_tests, lane_tests, respec_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -526,7 +540,7 @@ def refusal_tests(L):
       local F = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end }
       local R = { r = 1, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
       G.rounds = { R }
-      G.fightOn = true
+      G.fighting = true
       local cl = { spell = "Projectile_MAG_ChainLightning", group = "item", target = "@boss", per = "short",
                    alt = { spell = "Zone_LightningBolt", group = "action", target = "@boss" } }
       G._doAction(F, cl, R)
@@ -548,7 +562,7 @@ def refusal_tests(L):
       local P = { who = "c1", spell = "X", reacts0 = 0 }
       T_why2 = G.refusalReason(P, { reactions_seen = {} }, { "no line of sight" }, 0).why
       T_why3 = G.refusalReason(P, { reactions_seen = {} }, {}, 0).why
-      G.fightOn = false
+      G.fighting = false
     """)
     g = L.globals()
     check("refusal: another caster's or another spell's failure is no refusal of this cast", g.T_wait is False)
@@ -725,7 +739,7 @@ def start_tests(L):
       T_res = G.results
       T_state = G.F.state
       G.F.state = "done"
-      G.fightOn = false
+      G.fighting = false
       G.prep = prep
       Ext.Timer.WaitFor = function(_, f) f() end
       Osi.AddBoosts, Osi.CreateAt, Osi.HasActiveStatus, Osi.GetPosition = nil, nil, nil, nil
@@ -858,6 +872,305 @@ def setup_tests(L):
           any("refused" in c for c in causes), str(causes))
 
 
+def lane_tests(L):
+    """Two lanes at once: each lane keeps its own run state (timers and events land in their lane), each lane's
+    enemies are hostile to its own character only (factions and relations set, then put back), both fights start
+    together once every lane is ready, the first lane first; hits across lanes and a shared combat fail the run."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.status = "base"
+      G.inLane("A", function() G.reset(); G.status = "a"; G.rounds = { "ra" } end)
+      G.inLane("B", function() G.reset(); G.status = "b" end)
+      T_iso = { base = G.status, a = G.laneField("A", "status"), b = G.laneField("B", "status"),
+                ra = G.laneField("A", "rounds")[1], cur = G.curLane }
+      -- a timer runs in the lane that set it
+      local queue = {}
+      Ext.Timer.WaitFor = function(_, f) queue[#queue + 1] = f end
+      G.inLane("A", function() G._wait(10, function() T_tlane = G.curLane; G.status = "a2" end) end)
+      for _, f in ipairs(queue) do f() end
+      Ext.Timer.WaitFor = function(_, f) f() end
+      T_timer = { lane = T_tlane, a = G.laneField("A", "status"), base = G.status }
+      -- events go to the lane they name; a hit on the other lane's enemy goes to both
+      G.LANES = { on = true, order = { "A", "B" }, members = { A = { cA = true, eA = true }, B = { cB = true, eB = true } } }
+      for _, id in ipairs({ "A", "B" }) do
+        G.inLane(id, function() G.dmg = {}; G.fighting = true; G.round = 1; G.t0 = 0 end)
+      end
+      G._on.attacked("eA", "cA", "cA", "Fire", 5, "x", "s")
+      G._on.attacked("eB", "cA", "cA", "Fire", 7, "x", "s")
+      G._on.attacked("zz", "qq", "qq", "Fire", 1, "x", "s")
+      T_ev = { a = #G.laneField("A", "dmg"), b = #G.laneField("B", "dmg") }
+      T_cross = G.crossLaneHits(G.laneField("A", "dmg"), "cA", G.LANES.members, "A")
+      T_crossB = G.crossLaneHits(G.laneField("B", "dmg"), "cB", G.LANES.members, "B")
+      for _, id in ipairs({ "A", "B" }) do G.inLane(id, function() G.fighting = false end) end
+      -- factions: both characters in the party's faction -> each gets its lane's; relations set and put back
+      local set, rels, facs = {}, {}, {}
+      Osi.GetFaction = function(u) return facs[u] or "Hero_h" end
+      Osi.SetFaction = function(u, f) facs[u] = f; set[#set + 1] = u .. "=" .. f end
+      Osi.GetRelation = function() return 50 end
+      Osi.SetRelation = function(a, b, v) rels[a .. ">" .. b] = v end
+      local LS = { lanes = { A = { enemy_faction = "fEA", char_faction = "fCA" }, B = { enemy_faction = "fEB", char_faction = "fCB" } } }
+      local LL = { order = { "B", "A" }, chars = { A = "cA", B = "cB" } }
+      local st = G.laneFactions(LL, LS)
+      T_rel = { aa = rels["fEA>fCA"], ab = rels["fEA>fCB"], ba = rels["fCB>fEA"], bb = rels["fEB>fCB"],
+                ee = rels["fEA>fEB"], fa = facs.cA, fb = facs.cB }
+      local n = G.laneFactionsRestore(st)
+      T_rest = { aa = rels["fEA>fCA"], fa = facs.cA, n = n }
+      Osi.GetFaction, Osi.SetFaction, Osi.GetRelation, Osi.SetRelation = nil, nil, nil, nil
+      -- isolation: an enemy hostile to the other lane's character fails the lane
+      local P = { cA = { 0, 0, 0 }, cB = { 80, 0, 0 } }
+      Osi.GetPosition = function(u) local p = P[u]; if p then return p[1], p[2], p[3] end end
+      Osi.IsEnemy = function(e, u) return (e == "eA" and u == "cA") and 1 or 0 end
+      T_iso_ok = G.laneIsolation({ char = "cA", enemies = { "eA" }, lane = { others = { B = "cB" }, gap_need = 60 } })
+      Osi.IsEnemy = function() return 1 end
+      T_iso_bad = G.laneIsolation({ char = "cA", enemies = { "eA" }, lane = { others = { B = "cB" }, gap_need = 60 } })
+      P.cB = { 30, 0, 0 }
+      Osi.IsEnemy = function(e, u) return (e == "eA" and u == "cA") and 1 or 0 end
+      T_iso_near = G.laneIsolation({ char = "cA", enemies = { "eA" }, lane = { others = { B = "cB" }, gap_need = 60 } })
+      Osi.IsEnemy = nil
+      -- a round whose combat is the other lane's is marked; the verdict fails it
+      Osi.CombatGetGuidFor = function() return "combat-1" end
+      G.inLane("A", function()
+        G.reset(); G.round = 0
+        local F = { char = "cA", enemies = {}, cooldown = {}, plan = {}, S = { }, lane = { id = "A", others = { B = "cB" } } }
+        G._roundStart(F)
+        T_shared = G.rounds[1].combat_shared
+        T_jshared = G.judge({ { r = 1, done = { action = true }, combat_shared = true } }, "rounds done", {}, { me = "cA" })
+        T_jcross = G.judge({ { r = 1, done = { action = true } } }, "rounds done", { cross_lane_hits = 2 }, { me = "cA" })
+      end)
+      Osi.CombatGetGuidFor, Osi.GetPosition = nil, nil
+      -- the barrier: nothing spawns while a lane prepares; then every ready lane, the first lane first
+      local went = {}
+      local goFight, iso = G.goFight, G.laneIsolation
+      local function go() went[#went + 1] = G.F.lane.id end
+      G.LANES = { on = true, order = { "B", "A" }, members = {}, t0 = 0 }
+      G.inLane("A", function() G.F = { state = "ready", lane = { id = "A" }, go = go } end)
+      G.inLane("B", function() G.F = { state = "prep", lane = { id = "B" }, go = go } end)
+      G.lanesGo()
+      T_went0 = #went
+      G.inLane("B", function() G.F.state = "ready" end)
+      G.lanesGo()
+      T_went = went
+      -- the lane's isolation joins its setup check
+      G.laneIsolation = function(F)
+        if F.lane.id == "A" then return { { field = "lane B character beyond 60 m", want = true, got = false } } end
+        return {}
+      end
+      G.inLane("A", function()
+        G.results = { setup = { start = { checked = 0, mismatches = {} } } }
+        G.laneSetup(G.F)
+      end)
+      T_isoA = G.laneField("A", "results").setup.start.mismatches[1]
+      -- the fight loop steps every lane
+      local stepped = {}
+      local step = G.step
+      G.step = function(F) stepped[#stepped + 1] = F.lane.id end
+      G.inLane("A", function() G.F.state = "wait" end)
+      G.inLane("B", function() G.F.state = "wait" end)
+      Ext.Utils.MonotonicTime = function() return 1e9 end
+      G._tickFn()
+      Ext.Utils.MonotonicTime = function() return 0 end
+      T_stepped = stepped
+      G.step, G.goFight, G.laneIsolation = step, goFight, iso
+      -- the last lane to finish puts the factions and the party back
+      local restored = 0
+      local fr, up = G.laneFactionsRestore, G.unparkOthers
+      G.laneFactionsRestore = function() restored = restored + 1; return 1 end
+      G.unparkOthers = function() restored = restored + 10 end
+      G.inLane("A", function() G.F.state = "done" end)
+      G.lanesDone()
+      T_done1 = restored
+      G.inLane("B", function() G.F.state = "done" end)
+      G.lanesDone()
+      T_done2, T_on = restored, G.LANES.on
+      G.laneFactionsRestore, G.unparkOthers = fr, up
+      -- the runner: the party parked except both characters, each lane its own arena, enemy faction and character
+      local runs, parkedKeep = {}, nil
+      local run, park, cat = G.run, G.parkOthers, G.catalog
+      G.run = function(r) runs[#runs + 1] = { lane = G.curLane, id = r.lane.id, arena = r.arena, ef = r.lane.enemy_faction,
+        nohigh = r.lane.no_high, char = r.char, first = r.lane.first } return "started" end
+      G.parkOthers = function(_, _, keep) parkedKeep = keep; return 2 end
+      G.catalog = function() return { arenas = {
+        a1 = { center = { 0, 0, 0 }, start = { 0, 0, 0 }, high = { 1, 1, 1 } }, a2 = { center = { 90, 0, 0 }, start = { 90, 0, 0 } },
+        LN = { lanes = { A = { arena = "a1", enemy_faction = "fEA" }, B = { arena = "a2", enemy_faction = "fEB" } }, park = { 5, 5, 5 } } } } end
+      local lf = G.laneFactions
+      G.laneFactions = function() return { stub = true } end
+      G.LANES = nil
+      T_rl = G.runLanes({ run_id = "L1", lanes = "LN", first = "B", gap_need = 60,
+        entries = { { id = "A", req = { char = "cA" } }, { id = "B", req = { char = "cB" } } } })
+      T_busy = G.runLanes({ run_id = "L2", lanes = "LN", first = "A", entries = {} })
+      T_runs, T_keep, T_order = runs, parkedKeep, G.LANES.order
+      G.run, G.parkOthers, G.catalog, G.laneFactions = run, park, cat, lf
+      T_singleBusy = G.run({ mode = "scripted" })
+      G.LANES = nil
+      -- a lane's whole start: no parking of its own, its enemies in the lane's faction and listed as the lane's, the
+      -- isolation in the setup check, then the fight
+      local q2, facs2 = {}, {}
+      Ext.Timer.WaitFor = function(_, f) q2[#q2 + 1] = f end
+      Osi.CreateAt = function() return "eL" end
+      Osi.SetFaction = function(u, f) facs2[u] = f end
+      Osi.GetPosition = function() return 0, 0, 0 end
+      local prep2, park2 = G.prep, G.parkOthers
+      G.prep = function() G.status = "prepped"; G.results = { items = {} } end
+      G.parkOthers = function() T_selfparked = true; return 0 end
+      G.LANES = { on = true, order = { "A" }, members = {}, t0 = 0, parkedCount = 3 }
+      G.inLane("A", function()
+        G.F = nil
+        G.run({ mode = "scripted", scenario = "boss", label = "l", char = "cL", enemy = { template = "t", ac = 10,
+          save = 0, atk = 0, dmg = 1, dc = 10, hp = 0 }, spec = { plan = {} },
+          lane = { id = "A", others = {}, enemy_faction = "fX", first = "A" } })
+      end)
+      for _ = 1, 80 do if #q2 == 0 then break end; table.remove(q2, 1)() end
+      T_lstate = G.laneField("A", "F").state
+      T_lres = G.laneField("A", "results")
+      T_lfac, T_lmem = facs2.eL, G.LANES.members.A
+      G.inLane("A", function() G.F.state = "done"; G.fighting = false end)
+      G.prep, G.parkOthers = prep2, park2
+      Ext.Timer.WaitFor = function(_, f) f() end
+      Osi.CreateAt, Osi.SetFaction, Osi.GetPosition = nil, nil, nil
+      G.LANES = nil
+      -- parking: every party member but the lanes' characters goes, out of combat
+      local moved = {}
+      Osi.DB_Players = { Get = function() return { { "cA" }, { "cB" }, { "cC" } } end }
+      Osi.FindValidPosition = function(x, y, z) return x, y, z end
+      Osi.TeleportToPosition = function(u) moved[#moved + 1] = u end
+      G.parked = nil
+      T_npark = G.parkOthers(nil, { 5, 5, 5 }, { cA = true, cB = true })
+      T_moved = moved
+      G.unparkOthers()
+      Osi.DB_Players, Osi.FindValidPosition, Osi.TeleportToPosition = nil, nil, nil
+    """)
+    g = L.globals()
+    check("lanes: each lane keeps its own run state; the base run is untouched",
+          g.T_iso.base == "base" and g.T_iso.a == "a" and g.T_iso.b == "b" and g.T_iso.ra == "ra" and
+          g.T_iso.cur == "base", str(dict(g.T_iso)))
+    check("lanes: a timer runs in the lane that set it", g.T_timer.lane == "A" and g.T_timer.a == "a2" and
+          g.T_timer.base == "base", str(dict(g.T_timer)))
+    check("lanes: an event goes to the lane it names, a hit across lanes and an unknown one to both",
+          g.T_ev.a == 3 and g.T_ev.b == 2, str(dict(g.T_ev)))
+    check("lanes: a hit from one lane's character on the other lane's enemy is counted against it",
+          g.T_cross == 1 and g.T_crossB == 0, f"{g.T_cross} {g.T_crossB}")
+    check("lanes: each lane's enemies hostile to its own character, neutral to the other lane and its enemies",
+          g.T_rel.aa == 0 and g.T_rel.ab == 50 and g.T_rel.ba == 50 and g.T_rel.bb == 0 and g.T_rel.ee == 50,
+          str(dict(g.T_rel)))
+    check("lanes: characters of one faction each get their lane's faction", g.T_rel.fa == "fCA" and g.T_rel.fb == "fCB",
+          str(dict(g.T_rel)))
+    check("lanes: relations and factions put back after the run", g.T_rest.aa == 50 and g.T_rest.fa == "Hero_h",
+          str(dict(g.T_rest)))
+    check("lanes: isolation passes for separate lanes", len(g.T_iso_ok) == 0, str([dict(m) for m in g.T_iso_ok.values()]))
+    bad = [m.field for m in g.T_iso_bad.values()]
+    check("lanes: an enemy hostile to the other lane's character fails the lane", any("not hostile to lane B" in f
+                                                                                       for f in bad), str(bad))
+    near = [m.field for m in g.T_iso_near.values()]
+    check("lanes: the other lane's character closer than the spacing fails the lane",
+          any("beyond 60" in f for f in near), str(near))
+    check("lanes: a round in the other lane's combat is marked and fails the run",
+          g.T_shared is True and g.T_jshared.valid is False and any("shared one combat" in c
+                                                                   for c in lst(g.T_jshared.causes)), str(g.T_shared))
+    check("lanes: hits on the other lane fail the run", g.T_jcross.valid is False and
+          any("other lane" in c for c in lst(g.T_jcross.causes)))
+    check("lanes: no lane spawns its enemies while another prepares; then both, the first lane first",
+          g.T_went0 == 0 and lst(g.T_went) == ["B", "A"], f"{g.T_went0} {lst(g.T_went)}")
+    check("lanes: a lane's isolation failure is a setup mismatch of that lane",
+          g.T_isoA is not None and g.T_isoA.field == "lane B character beyond 60 m")
+    check("lanes: the fight loop steps every lane", sorted(lst(g.T_stepped)) == ["A", "B"], str(lst(g.T_stepped)))
+    check("lanes: factions and party put back only after the last lane", g.T_done1 == 0 and g.T_done2 == 11 and
+          g.T_on is False, f"{g.T_done1} {g.T_done2}")
+    runs = [dict(r) for r in g.T_runs.values()]
+    check("lanes: the runner starts each lane in its own state with its arena, enemy faction and character",
+          g.T_rl == "started" and sorted((r["lane"], r["id"], r["arena"], r["ef"], r["char"]) for r in runs) ==
+          [("A", "A", "a1", "fEA", "cA"), ("B", "B", "a2", "fEB", "cB")], str(runs))
+    check("lanes: mirrored layout (no high ground unless every lane has one), first lane passed on",
+          all(r["nohigh"] is True and r["first"] == "B" for r in runs) and lst(g.T_order) == ["B", "A"], str(runs))
+    check("lanes: the rest of the party parked, both lane characters kept",
+          g.T_keep is not None and g.T_keep.cA is True and g.T_keep.cB is True)
+    check("lanes: a lane starts its fight with its enemies in the lane's faction, listed as the lane's",
+          g.T_lstate == "wait" and g.T_lfac == "fX" and g.T_lmem is not None and g.T_lmem.eL is True and
+          g.T_lmem.cL is True, f"{g.T_lstate} {g.T_lfac}")
+    check("lanes: a lane does not park the party itself; its isolation is part of its setup check",
+          g.T_selfparked is None and g.T_lres.parked == 3 and g.T_lres.lane_isolation is not None,
+          f"{g.T_selfparked} {g.T_lres.parked}")
+    check("lanes: parking moves every party member but the lanes' characters",
+          g.T_npark == 1 and lst(g.T_moved) == ["cC"], f"{g.T_npark} {lst(g.T_moved)}")
+    check("lanes: a second lane run or a single run while lanes fight is refused",
+          g.T_busy == "busy" and g.T_singleBusy == "busy", f"{g.T_busy} {g.T_singleBusy}")
+
+
+def respec_tests(L):
+    """A real respec: prep emulates nothing (no passives, spells or sheet boosts); the setup check compares the
+    character's own classes, subclasses and feats with the build. Proficiency: the game's own answer for each item the
+    build is proficient with."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local calls = {}
+      for _, f in ipairs({ "AddPassive", "RemovePassive", "AddSpell", "AddBoosts" }) do
+        Osi[f] = function(_, x) calls[#calls + 1] = f .. " " .. tostring(x) end
+      end
+      Osi.HasPassive = function() return 0 end
+      local eq = G.equipped
+      G.equipped = function() return {} end
+      G.prep({ char = "c1", real_respec = true, passives_add = { "P1" }, passives_remove = { "P2" }, spells_add = { "S1" },
+        boosts = { "Proficiency(HeavyArmor)" }, sheet = { abilities = { STR = 20 }, hp = 99, prof = 5 }, slots = { ["3"] = 3 },
+        resources = { { kind = "Rage", n = 3 } }, items = {} })
+      T_calls = calls
+      T_respec = G.results.respec
+      for _, f in ipairs({ "AddPassive", "RemovePassive", "AddSpell", "AddBoosts", "HasPassive" }) do Osi[f] = nil end
+      -- the character's classes, subclasses, feats
+      local SD = { cR = { Name = "Ranger" }, sG = { Name = "GloomStalker" }, cF = { Name = "Fighter" },
+        sB = { Name = "BattleMaster" }, fS = { Name = "Sharpshooter" }, fA = { Name = "Alert" }, fI = { Name = "AbilityScoreIncrease" } }
+      Ext.StaticData.Get = function(id) return SD[id] end
+      local ups = { { Feat = "fS" }, { Feat = "fI" }, { Feat = "00000000-0000-0000-0000-000000000000" } }
+      Ext.Entity.Get = function() return { Classes = { Classes = {
+        { ClassUUID = "cR", SubClassUUID = "sG", Level = 9 }, { ClassUUID = "cF", SubClassUUID = "sB", Level = 3 } } },
+        LevelUp = { LevelUps = ups }, SpellBook = { Spells = { { Id = { Prototype = "Projectile_FireBolt" } } } } } end
+      local sheet = G.sheet
+      G.sheet = function() return { slots = {}, resources = {} } end
+      Osi.HasPassive = function() return 0 end
+      G.results = { prep = { bare = {}, items = {} } }
+      local spec = { real_respec = true, class_levels = { Ranger = 9, Fighter = 3 },
+        subclass_names = { Ranger = "GloomStalker", Fighter = "BattleMaster" }, feats = { "Sharpshooter", "Ability Improvement +2 DEX" },
+        spells_plan = { "Projectile_FireBolt" }, spells_add = { "Zone_NotKnown" } }
+      T_ok = G.setupCheck({ char = "c1" }, spec, "start")
+      spec.class_levels = { Ranger = 8, Fighter = 3, Rogue = 1 }
+      spec.feats = { "Sharpshooter", "Alert" }
+      spec.subclass_names.Fighter = "Champion"
+      T_bad = G.setupCheck({ char = "c1" }, spec, "start")
+      ups[#ups + 1] = { Feat = "fA" }
+      ups[#ups + 1] = { Feat = "fA" }
+      spec.class_levels = { Ranger = 9 }
+      T_extra = G.setupCheck({ char = "c1" }, spec, "start")
+      -- proficiency: an item the build is proficient with that the game calls non-proficient fails the run
+      G.equipped = function() return { Breast = "it1", MeleeMainHand = "it2" } end
+      Osi.GetStatString = function(it) return it == "it1" and "ARM_X" or "WPN_Y" end
+      Osi.IsProficientWith = function(_, it) return it == "it1" and 0 or 1 end
+      T_prof = G.setupCheck({ char = "c1" }, { items = { { slot = "Breast", stats = "ARM_X", proficient = true },
+        { slot = "MeleeMainHand", stats = "WPN_Y", proficient = true }, { slot = "Amulet", stats = "A", proficient = nil } } },
+        "start")
+      G.equipped, G.sheet = eq, sheet
+      Osi.GetStatString, Osi.IsProficientWith, Osi.HasPassive = nil, nil, nil
+      Ext.Entity.Get = function() return nil end
+      Ext.StaticData.Get = function() return nil end
+    """)
+    g = L.globals()
+    calls = lst(g.T_calls)
+    check("real respec: prep adds no passive, spell or sheet boost (only the carry limit)",
+          g.T_respec == "real" and calls == ["AddBoosts CarryCapacityMultiplier(50)"], str(calls))
+    ok = [(m.field, m.want, m.got) for m in g.T_ok.mismatches.values()]
+    check("real respec: the character's classes, subclasses, feats and plan spells match the build", ok == [], str(ok))
+    bad = sorted(m.field for m in g.T_bad.mismatches.values())
+    check("real respec: a wrong class level, a missing class, a wrong subclass and a missing feat are named",
+          {"class Ranger level", "class Rogue level", "subclass of Fighter", "feat alert"} <= set(bad), str(bad))
+    extra = sorted((m.field, m.want, m.got) for m in g.T_extra.mismatches.values() if m.field.startswith("feat"))
+    check("real respec: a feat taken twice that the build takes once is named", ("feat alert", 1, 2) in extra, str(extra))
+    cls = sorted(m.field for m in g.T_extra.mismatches.values() if m.field.startswith("class"))
+    check("real respec: a class the build does not have is named", cls == ["class Fighter level (not in the build)"],
+          str(cls))
+    pf = [m.field for m in g.T_prof.mismatches.values() if m.field.startswith("proficient")]
+    check("proficiency: the game's non-proficient answer for a planned item fails the run; items without a "
+          "proficiency are not asked", pf == ["proficient with ARM_X"], str(pf))
+
+
 def py_tests():
     import plan as P
     import run as R
@@ -924,11 +1237,179 @@ def py_tests():
     check("items: the story copy of Gortash's gloves is never spawned",
           P.item_template("MAG_Gortash_Gloves", {"MAG_Gortash_Gloves": ["story-copy"]}) == P.SAFE_TEMPLATE["MAG_Gortash_Gloves"])
     check("items: other items keep their first template", P.item_template("X", {"X": ["t1", "t2"]}) == "t1")
-    for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R)):
+    import pairs as PA
+    for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
+              lambda: control_tests(PA), lambda: reach_tests(P), lambda: lanes_py_tests(R), engine_lane_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+class _Res:
+    """A model result for the control tests: damage, durability numbers, turns lost, unknown effects."""
+
+    def __init__(self, dpr, ac=20, hp=100, taken=10.0, saves=None, dr=0.0, mult=None, unknown=()):
+        self.dpr, self.lost, self.unknown = dpr, 0.05, set(unknown)
+        self.dur = {"incoming": taken, "R": hp / taken, "ac": ac, "hp": hp, "saves": saves or {"DEX": 5.0},
+                    "dr": dr, "mult": mult or {}}
+
+
+def control_tests(PA):
+    """The control pair: the model rates the two sets alike in damage AND in damage taken (AC, HP, saves,
+    resistances, damage reduction, damage taken, rounds survived); the search swaps items the model values alike."""
+    n = PA.numbers
+    ok, why = PA.control_check(n(_Res(70.0)), n(_Res(71.0)))
+    check("control: equal damage and equal defence is a control", ok is True, str(why))
+    ok, why = PA.control_check(n(_Res(70.0)), n(_Res(80.0)))
+    check("control: damage 14% apart is no control", ok is False and any("damage per round" in w for w in why))
+    ok, why = PA.control_check(n(_Res(70.0)), n(_Res(70.0, ac=21)))
+    check("control: a different AC is no control (equal damage only is not enough)", ok is False and
+          any(w.startswith("ac") for w in why), str(why))
+    ok, why = PA.control_check(n(_Res(70.0)), n(_Res(70.0, taken=11.0)))
+    check("control: 10% more damage taken is no control", ok is False and any("damage taken" in w for w in why),
+          str(why))
+    for kw, word in ((dict(saves={"DEX": 6.0}), "saving"), (dict(mult={"Fire": 0.5}), "resist"), (dict(dr=2.0), "dr")):
+        ok, why = PA.control_check(n(_Res(70.0)), n(_Res(70.0, **kw)))
+        check(f"control: a different {word} is no control", ok is False and any(word in w for w in why), str(why))
+    # the search: ring R2 (adds 5, like R1) is a control swap; R3 adds AC; R4 grants an action; W2 sits in an idle slot
+    value = {"R1": 5.0, "R2": 5.0, "R3": 5.0, "R4": 5.0, "W1": 3.0, "W2": 3.0, "H1": 2.0, "H2": 2.1, "B1": 2.0, "B2H": 2.0}
+
+    def score(lo):
+        ac = 21 if "R3" in lo.values() else 20
+        return _Res(50.0 + sum(value.get(x, 0.0) for x in lo.values()), ac=ac)
+    alts = {"Ring1": ["R2", "R3", "R4"], "MainHand": ["W2"], "Helmet": ["H2"], "Ranged": ["B2H"]}
+    cands = PA.find_controls(score, [("base", {"Ring1": "R1", "MainHand": "W1", "Helmet": "H1", "Ranged": "B1"})],
+                             lambda s: alts.get(s, []), lambda sid: sid == "R4", idle_slots=("MainHand",),
+                             legal=lambda lo: lo.get("Ranged") != "B2H")
+    swaps = [c["swaps"] for c in cands]
+    check("control search: an equal-value swap is found, two swaps preferred", swaps and swaps[0] ==
+          {"Ring1": "R2", "Helmet": "H2"} and {"Ring1": "R2"} in swaps, str(swaps))
+    check("control search: a swap that changes the defence is left out", all("R3" not in s.values() for s in swaps))
+    check("control search: an item with an action of its own is left out", all("R4" not in s.values() for s in swaps))
+    check("control search: idle slots and sets the game would not let be worn are left out",
+          all("MainHand" not in s and "Ranged" not in s for s in swaps), str(swaps))
+    check("control: the chosen pair names a build, a base set and its swaps",
+          all(PA.CONTROL.get(k) for k in ("char", "build", "act", "base", "swaps")))
+    st = {"Ring_U": {"Boosts": "UnlockSpell(Target_X)"}, "Ring_P": {"PassivesOnEquip": "P1"},
+          "P1": {"Boosts": "UnlockSpell(Shout_Y)"}, "Ring_N": {"Boosts": "RollBonus(Attack,1)"},
+          "Bow": {"Weapon Properties": "Twohanded;Ammunition"}, "HX": {"Weapon Properties": "Light"}}
+    check("control: actions granted by an item or its equip passive are found",
+          PA.grants_action(st, "Ring_U") and PA.grants_action(st, "Ring_P") and not PA.grants_action(st, "Ring_N"))
+    check("control: a two-handed weapon beside an off-hand cannot be worn",
+          not PA.wearable(st, {"Ranged": "Bow", "RangedOff": "HX"}) and PA.wearable(st, {"Ranged": "HX", "RangedOff": "HX"}))
+
+
+def reach_tests(P):
+    """Lane spacing and proficiency data from the spell and item data."""
+    st = {"Zone_Bolt": {"SpellType": "Zone", "Range": "30"},
+          "Projectile_Ball": {"SpellType": "Projectile", "TargetRadius": "18", "ExplodeRadius": "4"},
+          "Projectile_Chain": {"SpellType": "Projectile", "TargetRadius": "18",
+                               "SpellSuccess": "DealDamage(1d8,Lightning);SpawnExtraProjectiles(Projectile_Chain_Jump)"},
+          "Projectile_Chain_Jump": {"TargetRadius": "18"},
+          "Projectile_Self": {"TargetRadius": "RangedMainWeaponRange",
+                              "SpellFail": "SpawnExtraProjectiles(Projectile_Self)"},
+          "Target_Melee": {"TargetRadius": "MeleeMainWeaponRange"}}
+    check("reach: a zone reaches its length, a ball its range plus radius",
+          P.spell_reach(st, "Zone_Bolt") == 30 and P.spell_reach(st, "Projectile_Ball") == 22)
+    check("reach: spawned projectiles reach on from the target", P.spell_reach(st, "Projectile_Chain") == 36)
+    check("reach: a spell that spawns itself counts once; weapon ranges by name",
+          P.spell_reach(st, "Projectile_Self") == 18 and P.spell_reach(st, "Target_Melee") == 3)
+    check("reach: the set's reach is its farthest spell", P.set_reach(st, ["Target_Melee", "Projectile_Chain"]) ==
+          {"m": 36.0, "spell": "Projectile_Chain"})
+    items = {"ARM_H": {"Proficiency Group": "HeavyArmor"}, "WPN_S": {"Proficiency Group": "Shortswords;MartialWeapons"},
+             "RING": {"Proficiency Group": ""}, "HELM": {"PassivesOnEquip": "HP"}, "HP": {"Boosts": "Proficiency(HeavyArmor)"}}
+    check("proficiency: by the item's groups; none needed for items without one",
+          P.item_proficiency(items, "WPN_S", {"MartialWeapons"}) is True and
+          P.item_proficiency(items, "ARM_H", {"LightArmor"}) is False and P.item_proficiency(items, "RING", set()) is None)
+    check("proficiency: proficiencies an item grants (also through its equip passive)",
+          P.granted_proficiencies(items, ["HELM", "RING"]) == ["HeavyArmor"])
+
+
+def lanes_py_tests(R):
+    """run.py's lane scheduling: the spacing rule, the sides swapping lanes and the first lane alternating per repeat,
+    one character -> one after the other."""
+    ar = {"a1": {"center": [0, 0, 0], "radius": 16}, "a2": {"center": [0, 0, 72], "radius": 16},
+          "LN": {"lanes": {"A": {"arena": "a1"}, "B": {"arena": "a2"}}, "margin": 10}}
+    ok, need, have = R.lane_gap(ar, "LN", [18, 12])
+    check("lanes: two spots 72 m apart hold sets reaching 18 m (16 + 18 + 16 + 10)", ok and need == 60 and have == 72,
+          f"{ok} {need} {have}")
+    ok2, need2, _ = R.lane_gap(ar, "LN", [36, None])
+    check("lanes: a set reaching 36 m is too far for them", ok2 is False and need2 == 78)
+    sch = [R.lane_schedule(k) for k in range(4)]
+    check("lanes: the sides swap lanes every repeat", [s["sides"]["A"] for s in sch] == ["a", "b", "a", "b"] and
+          [s["sides"]["B"] for s in sch] == ["b", "a", "b", "a"], str(sch))
+    check("lanes: the first lane alternates every repeat", [s["first"] for s in sch] == ["A", "B", "A", "B"])
+    check("lanes: one lane only -> one after the other, the first side alternating",
+          R.sequential_order(0) == ["a", "b"] and R.sequential_order(1) == ["b", "a"])
+
+    class A_:
+        lanes, char, char_b = "LN", "cA", None
+    p = {"specs": {"a": {"reach": {"m": 18}}, "b": {"reach": {"m": 18}}}}
+    ok3, why3 = R.lanes_possible(A_, p, ar)
+    check("lanes: one character -> no two lanes, with the reason", ok3 is False and "one character" in why3, why3)
+    A_.char_b = "cB"
+    ok4, gap4 = R.lanes_possible(A_, p, ar)
+    check("lanes: two characters and room -> two lanes, with the spacing they need", ok4 is True and gap4 == 60)
+    p["specs"]["b"]["reach"]["m"] = 36
+    ok5, why5 = R.lanes_possible(A_, p, ar)
+    check("lanes: a pair whose spells reach the other lane runs one after the other", ok5 is False and "need" in why5,
+          str(why5))
+
+
+def engine_lane_tests():
+    """engine.py: a run holds the lock (nothing else may use the eval hook meanwhile; the CLI refuses), released when
+    it ends; a lane run returns each lane's record; a lane that never writes one is an invalid run."""
+    import engine as E
+    d = tempfile.mkdtemp(prefix="gauntlet_lanes_")
+    old = (E.ev, E.RUNS, E.write_se, E.LOCK)
+    try:
+        E.RUNS, E.write_se, E.LOCK = d, (lambda name, obj: None), os.path.join(d, "active.lock")
+        seen = {}
+
+        def ev(code, timeout=10.0, side="server"):
+            if "runLanes" in code:
+                body = json.loads(code.split("[==[", 1)[1].split("]==]", 1)[0])
+                seen["body"] = body
+                seen["locked"] = E.active() is not None
+                for e in body["entries"]:
+                    if e["id"] in seen.get("write", ("A", "B")):
+                        with open(os.path.join(d, f"run_1_00{e['id'] == 'A' and 1 or 2}_{e['id']}.json"), "w",
+                                  encoding="utf-8") as f:
+                            json.dump({"lanes_run": body["run_id"], "lane": e["id"], "valid": True}, f)
+                    elif e["id"] == "B":
+                        # a record of another lane run must not count for this one
+                        with open(os.path.join(d, "run_0_000_B.json"), "w", encoding="utf-8") as f:
+                            json.dump({"lanes_run": "lanes0", "lane": "B", "valid": True}, f)
+                return "started"
+            return "lanes " + seen["body"]["run_id"] + " on"
+        E.ev = ev
+        recs = E.run_lanes("LN", [("A", {"rounds": 2}, {}), ("B", {"rounds": 2}, {})], "B", gap_need=60, poll=0.01,
+                           log=lambda *a: None)
+        check("engine lanes: one start for both lanes, the first lane named", seen["body"]["first"] == "B" and
+              [e["id"] for e in seen["body"]["entries"]] == ["A", "B"])
+        check("engine lanes: each lane's record returned", sorted(recs) == ["A", "B"] and
+              recs["A"]["lane"] == "A", str(recs))
+        check("engine: the run holds the lock while it runs and drops it after", seen["locked"] is True and
+              E.active() is None)
+        for fn in os.listdir(d):
+            os.remove(os.path.join(d, fn))
+        seen["write"] = ("A",)
+        try:
+            E.run_lanes("LN", [("A", {}, {}), ("B", {}, {})], "A", timeout=0.2, poll=0.01, log=lambda *a: None)
+            raised = None
+        except E.RunInvalid as e:
+            raised = str(e)
+        check("engine lanes: a lane without a record is an invalid run, not a hang", raised is not None and
+              "did not finish" in raised, str(raised))
+        check("engine: the lock is dropped after a failed run too", E.active() is None)
+        E.ev = lambda *a, **k: (_ for _ in ()).throw(AssertionError("eval while a run is active"))
+        with E._Held("test", 60):
+            rc = E.main(["engine.py", "eval", "return 1"])
+        check("engine: the CLI does not talk to the game while a run holds the lock", rc == 2)
+    finally:
+        E.ev, E.RUNS, E.write_se, E.LOCK = old
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def _rec(pair, side, dealt, valid=True, invalid=None, scenario="boss"):
@@ -957,6 +1438,11 @@ def gate_tests(R):
     check("control: equal model DPR (within 5%) marks a control pair; a clear model gap does not",
           R.is_control(pairs[1]) and not R.is_control(pairs[0]))
     check("control: an explicit flag wins", R.is_control(_pair("x", 10, 50, control=True)))
+    pt = _pair("x", 100, 101)
+    pt["model"].update(a_taken=10.0, b_taken=13.0, a_R=10.0, b_R=7.7)
+    check("control: equal damage but more damage taken is no control", not R.is_control(pt))
+    pt["model"].update(b_taken=10.2, b_R=9.8)
+    check("control: equal damage and equal damage taken is a control", R.is_control(pt))
     pilot_a = [82, 0, 38, 0, 22, 0, 0, 26, 0, 0, 20, 0, 0, 0, 0, 0]
     pilot_b = [57, 49, 93, 56, 23, 0, 28, 0, 0, 23, 0, 0, 0, 29, 0, 14]
     by = {(1, "a", "boss", False): {"dealt": pilot_a}, (1, "b", "boss", False): {"dealt": pilot_b},
@@ -1077,9 +1563,9 @@ def engine_tests():
     finishes, is an invalid run with its cause, never a hang."""
     import engine as E
     d = tempfile.mkdtemp(prefix="gauntlet_runs_")
-    old = (E.ev, E.RUNS, E.write_se)
+    old = (E.ev, E.RUNS, E.write_se, E.LOCK)
     try:
-        E.RUNS, E.write_se = d, (lambda name, obj: None)
+        E.RUNS, E.write_se, E.LOCK = d, (lambda name, obj: None), os.path.join(tempfile.gettempdir(), "gauntlet_t.lock")
         calls = []
 
         def fake(script):
@@ -1126,13 +1612,96 @@ def engine_tests():
         check("engine: a start the game never showed is sent once more (and only once)", starts == 2, str(starts))
         check("engine: a run that does not finish in time is invalid", "did not finish" in str(raised), str(raised))
     finally:
-        E.ev, E.RUNS, E.write_se = old
+        E.ev, E.RUNS, E.write_se, E.LOCK = old
         shutil.rmtree(d, ignore_errors=True)
 
 
 # ============================================================================================ mutations
-GL, PL, RN, EN = "gauntlet.lua", "plan.py", "run.py", "engine.py"
+GL, PL, RN, EN, PA = "gauntlet.lua", "plan.py", "run.py", "engine.py", "pairs.py"
 MUTATIONS = [
+    ("lanes: one state for all lanes", GL, "  for _, k in ipairs(G.LANE_FIELDS) do G[k] = nxt[k] end\n",
+     "  for _, k in ipairs({}) do G[k] = nxt[k] end\n"),
+    ("lanes: a timer loses its lane", GL, "    local ok, err = pcall(G.inLane, lane, fn)",
+     "    local ok, err = pcall(fn)"),
+    ("lanes: every event to every lane", GL, "  if #out == 0 then return L.order end\n  return out",
+     "  return L.order"),
+    ("lanes: hits across lanes not counted", GL, "if id ~= mine and m[row.target] and (row.amount or 0) > 0 then n = n + 1 end",
+     ""),
+    ("lanes: hits across lanes ignored by the verdict", GL, "  if (results.cross_lane_hits or 0) > 0 then", "  if false then"),
+    ("lanes: a shared combat ignored", GL, "if c ~= \"nil\" and c == R.combat then R.combat_shared = true end", ""),
+    ("lanes: enemies hostile to both lanes", GL, "      local v = (i == j) and 0 or 50", "      local v = 0"),
+    ("lanes: shared character faction kept", GL, "    if shared and lane.char_faction then", "    if false then"),
+    ("lanes: relations never put back", GL, "    if r.was ~= nil then pcall(Osi.SetRelation, r.a, r.b, r.was); n = n + 1 end",
+     ""),
+    ("lanes: isolation not checked", GL, "      cmp(\"enemy \" .. i .. \" not hostile to lane \" .. id .. \"'s character\", 0, "
+     "try(Osi.IsEnemy, e, u))", ""),
+    ("lanes: spacing not checked", GL, "F.lane.gap_need == nil or d >= F.lane.gap_need)", "true)"),
+    ("lanes: enemies in the shared enemy faction", GL,
+     "G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)", "G.spawnEnemies(pts, E, C.enemy_faction)"),
+    ("lanes: each lane parks the party itself", GL,
+     "G.results.parked = F.lane and G.LANES and G.LANES.parkedCount or G.parkOthers(u, A and A.park)",
+     "G.results.parked = G.parkOthers(u, A and A.park)"),
+    ("lanes: enemies not listed as the lane's", GL, "    for _, d in ipairs(F.enemies) do m[uuid(d)] = true end", ""),
+    ("lanes: no barrier", GL, "    if not F or (F.state ~= \"ready\" and F.state ~= \"done\") then return end", ""),
+    ("lanes: isolation not added to the setup check", GL,
+     "    for _, m in ipairs(iso) do sc.mismatches[#sc.mismatches + 1] = m end", ""),
+    ("lanes: party back while a lane fights", GL, "    if F and F.state ~= \"done\" then return end\n  end\n  L.restored",
+     "  end\n  L.restored"),
+    ("lanes: only the first lane stepped", GL, "    for _, id in ipairs(L.order) do G.inLane(id, stepLane) end",
+     "    G.inLane(L.order[1], stepLane)"),
+    ("lanes: the other lane's character parked", GL, "    if m ~= uuid(u) and not (keep and keep[m]) then",
+     "    if m ~= uuid(u) then"),
+    ("lanes: high ground in one lane only", GL, "    if not (A and A.high) then allHigh = false end", ""),
+    ("lanes: single runs allowed during lanes", GL,
+     "  if G.LANES and G.LANES.on and not req.lane then return \"busy\" end", ""),
+    ("respec: emulation on a real respec", GL, "  local emulate = not spec.real_respec", "  local emulate = true"),
+    ("respec: classes not compared", GL,
+     "    for cls, n in pairs(spec.class_levels or {}) do cmp(\"class \" .. cls .. \" level\", n, lv[cls] or 0) end", ""),
+    ("respec: extra classes allowed", GL,
+     "      if not (spec.class_levels or {})[cls] then cmp(\"class \" .. cls .. \" level (not in the build)\", 0, n) end",
+     ""),
+    ("respec: subclasses not compared", GL,
+     "    for cls, want in pairs(spec.subclass_names or {}) do cmp(\"subclass of \" .. cls, want, sub[cls]) end", ""),
+    ("respec: feats not compared", GL, "      for n, k in pairs(want) do cmp(\"feat \" .. n, k, have[n] or 0) end", ""),
+    ("respec: feats taken twice pass", GL, "if not isAbilityFeat(n) then out[n] = (out[n] or 0) + 1 end",
+     "if not isAbilityFeat(n) then out[n] = 1 end"),
+    ("proficiency: not asked", GL, "      if phase == \"start\" and it.proficient == true then",
+     "      if false then"),
+    ("control: damage taken not required alike", RN,
+     "        if m.get(ka) and m.get(kb) and abs(m[ka] / m[kb] - 1) > CONTROL_MODEL_EQ:\n            return False",
+     "        pass"),
+    ("schedule: sides never swap lanes", RN,
+     "    sides = {lane_ids[0]: \"a\", lane_ids[1]: \"b\"} if k % 2 == 0 else {lane_ids[0]: \"b\", lane_ids[1]: \"a\"}",
+     "    sides = {lane_ids[0]: \"a\", lane_ids[1]: \"b\"}"),
+    ("schedule: the first lane never alternates", RN, "    first = lane_ids[k % 2]", "    first = lane_ids[0]"),
+    ("schedule: one lane, same order every repeat", RN,
+     "    return list(sides) if k % 2 == 0 else list(reversed(sides))", "    return list(sides)"),
+    ("spacing: spell reach ignored", RN, "        need = max(need, x[\"radius\"] + reach + y[\"radius\"] + float(LS.get(\"margin\") or 0))",
+     "        need = max(need, x[\"radius\"] + y[\"radius\"])"),
+    ("lanes: one character accepted", RN, "    if not a.char or not a.char_b:", "    if not a.char:"),
+    ("lanes: too-close lanes accepted", RN, "    if not ok:\n        return False, f\"lanes", "    if False:\n        return False, f\"lanes"),
+    ("engine: no lock during a lane run", EN,
+     "    with _Held(\"lanes \" + \",\".join(i for i, _r, _s in entries), timeout + 60):\n        return _run_lanes(",
+     "    if True:\n        return _run_lanes("),
+    ("engine: the CLI ignores the lock", EN, "    held = active()", "    held = None"),
+    ("engine: lane records of another run accepted", EN,
+     "if rec.get(\"lanes_run\") == run_id and rec.get(\"lane\") in want:", "if rec.get(\"lane\") in want:"),
+    ("reach: spawned projectiles ignored", PL, "    return own + max(spawned + [0.0])", "    return own"),
+    ("reach: area radius ignored", PL,
+     "        own = _num(st.get(\"TargetRadius\")) + max([_num(st.get(k)) for k in AREA_KEYS] + [0.0])",
+     "        own = _num(st.get(\"TargetRadius\"))"),
+    ("proficiency: item-granted proficiencies ignored", PL, "            txt += \";\" + ((stats.get(p) or {}).get(\"Boosts\") or \"\")\n"
+     "        out += re.findall", "            pass\n        out += re.findall"),
+    ("control: AC not compared", PA, "    for k in (\"ac\", \"hp\", \"dr\"):", "    for k in (\"hp\", \"dr\"):"),
+    ("control: damage taken not compared", PA, "    if _rel(na[\"taken\"], nb[\"taken\"]) > tol:", "    if False:"),
+    ("control: saves not compared", PA, "    if na[\"saves\"] != nb[\"saves\"]:", "    if False:"),
+    ("control: resistances not compared", PA, "    if na[\"resist\"] != nb[\"resist\"]:", "    if False:"),
+    ("control: damage not compared", PA, "    if _rel(na[\"dpr\"], nb[\"dpr\"]) > tol:", "    if False:"),
+    ("control search: items with actions swapped", PA, "if alt == cur or alt in lo.values() or has_action(alt):",
+     "if alt == cur or alt in lo.values():"),
+    ("control search: idle slots swapped", PA, "            if slot in idle_slots or has_action(cur):",
+     "            if has_action(cur):"),
+    ("control search: unwearable sets", PA, "            if not legal(lo2):\n                continue\n", ""),
     ("casts: UseSpell returning counts as done", GL, 'rec.result = "pending"\n  F.pending = P',
      'rec.result = "done"; R.done[a.group or "free"] = true'),
     ("casts: any caster's cast confirms", GL, "if c.who == P.who and baseSpell(c.spell)", "if baseSpell(c.spell)"),
