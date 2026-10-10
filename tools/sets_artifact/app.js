@@ -74,6 +74,12 @@
     var pr = owners.filter(function (c) { return c !== me && inParty(c); });
     return pr.length ? { k: "give", who: pr } : { k: "free", who: owners.filter(function (c) { return c !== me; }) };
   }
+  // an exact tie in words ("Equal for X and Y; X keeps it"), or "" for any other item (the online page has no tie data)
+  function tieSay(e, lc) {
+    var T = window.LA_TIES, it = ITEMS[e.sid] || {};
+    return T && T.say ? T.say(it, lc || null, function (c) { return CHAR_NAME[c] || c; }) : "";
+  }
+  function hasOwner(e) { return !!(e.owner && e.owner.length); }
   function tieBy(by) { return by === "wear" ? "wears it" : by === "game" ? "picked in the game" : "your pick on this page"; }
   // the tie-pick line of an item card: who has it, or buttons to give it to one of the tied party members
   function tieHtml(sid, lc) {
@@ -165,9 +171,10 @@
     else if (e.oa && HAVE[e.oa] && ITEMS[e.oa]) { r.sid = e.oa; r.swap = { kind: "oa", why: "you have " + itemOf(e.oa).n + ", which beats it" + (e.oaGain ? " (+" + e.oaGain + ")" : "") }; }
     else if (LIVE && e.pa && liveContest(set, e).k === "give") {
       var lcg = liveContest(set, e);
-      alt("pa", lcg.pick ? capf(names(lcg.who)) + " gets " + itemOf(e.sid).n + " (" + tieBy(lcg.by) + ")" : names(lcg.who) + " is in your party and gets more from " + itemOf(e.sid).n);
+      alt("pa", lcg.pick ? capf(names(lcg.who)) + " gets " + itemOf(e.sid).n + " (" + tieBy(lcg.by) + ")" : tieSay(e, lcg) || names(lcg.who) + " is in your party and gets more from " + itemOf(e.sid).n);
     }
-    else if (!LIVE && F.party && e.pa) alt("pa", names(e.owner) + " gets more from " + itemOf(e.sid).n);
+    // (an exact tie's owner has an alternative too, used only when the item goes to another tied character)
+    else if (!LIVE && F.party && e.pa && hasOwner(e)) alt("pa", tieSay(e) || names(e.owner) + " gets more from " + itemOf(e.sid).n);
     else if (e.own && F.gone && !HAVE[e.sid]) alt("fb", "an Act " + ROMAN[e.act] + " item you don't have");
     return r;
   }
@@ -197,7 +204,7 @@
     var base = r.sid === r.e.sid ? (r.e.tags || []) : ((ITEMS[r.sid] || {}).tg || []);
     base.forEach(function (x) { t[x] = 1; });
     if (r.sid === r.e.sid && r.e.own) t.own = 1;
-    if (r.sid === r.e.sid && r.e.pa) t.party = 1;
+    if (r.sid === r.e.sid && r.e.pa && (LIVE || hasOwner(r.e))) t.party = 1;
     // live: a contested item whose better owner is not in the party is no conflict
     if (LIVE && t.party && r.sid === r.e.sid && liveContest(set, r.e).k === "free") delete t.party;
     return t;
@@ -671,7 +678,7 @@
       say.push(severe ? (t.story ? "Story lock" : "Theft or kill") : t.miss ? "Missable" : "Tip");
     }
     if (t.own) { bd += '<span class="bdg o" aria-hidden="true">&#8635;</span>'; say.push("From Act " + ROMAN[r.e.act] + ", only if you kept it"); }
-    if (t.party) { bd += '<span class="bdg p" aria-hidden="true">' + uimg("ico_party", "", "") + "</span>"; say.push(capf(names(r.e.owner)) + " gets more from it"); }
+    if (t.party) { bd += '<span class="bdg p" aria-hidden="true">' + uimg("ico_party", "", "") + "</span>"; say.push(tieSay(r.e, LIVE ? liveContest(set, r.e) : null) || capf(names(r.e.owner)) + " gets more from it"); }
     if (r.swap) { bd += '<span class="bdg s" aria-hidden="true">&#8644;</span>'; say.push((r.swap.kind === "oa" || r.swap.kind === "ca" ? "Better option, replaces " : "Swapped in for ") + itemOf(r.e.sid).n); }
     else if ((r.e.oa && ITEMS[r.e.oa]) || (r.e.ca && ITEMS[r.e.ca])) say.push(r.e.oa ? "An earlier-act item you may own beats it" : "A Dark Urge item beats it");
     if (HAVE[r.sid]) say.push("You have it");
@@ -841,8 +848,9 @@
       if (lc && lc.cands && lc.cands.length >= 2) h += tieHtml(e.sid, lc);
       else if (lc && lc.k === "shared") h += '<span class="o">Shared pick: ' + esc(names(lc.who)) + " is in your party and gets exactly as much from it. Decide who wears it.</span>";
       else if (lc && lc.k === "free") h += '<span class="y">' + (lc.who.length ? esc(capf(names(lc.who))) + " would get more from it, but is not in your party right now." : "Nobody else in your party needs it more.") + "</span>";
-      else if (lc) h += '<span class="o">' + esc(capf(names(lc.who))) + " is in your party and gets more from it: use " + itemName(e.pa) + " here.</span>";
-      else if (e.pa) h += '<span class="o">Party conflict: ' + esc(names(e.owner)) + " gets more from it. With " + esc(names(e.owner)) + " in your party, use " + itemName(e.pa) + " here instead. (The character sheet assumes " + esc(it.n) + "; switch on \"Give contested items\" in My playthrough to use the alternative.)</span>";
+      else if (lc) h += '<span class="o">' + (tieSay(e, lc) ? esc(tieSay(e, lc)) + ": use " : esc(capf(names(lc.who))) + " is in your party and gets more from it: use ") + itemName(e.pa) + " here.</span>";
+      else if (e.pa && hasOwner(e)) h += '<span class="o">Party conflict: ' + (tieSay(e) ? esc(tieSay(e)) + "." : esc(names(e.owner)) + " gets more from it.") + " With " + esc(names(e.owner)) + " in your party, use " + itemName(e.pa) + " here instead. (The character sheet assumes " + esc(it.n) + "; switch on \"Give contested items\" in My playthrough to use the alternative.)</span>";
+      else if (e.pa && tieSay(e)) { h += '<span class="y">' + esc(tieSay(e)) + ".</span>"; if (e.fb && !e.own) h += '<span class="o">Can\'t get it? ' + (e.fbE ? esc(e.fb) : "Use " + itemName(e.fb)) + ".</span>"; }
       else if (e.fb && !e.own) h += '<span class="o">Can\'t get it? ' + (e.fbE ? esc(e.fb) : "Use " + itemName(e.fb)) + ".</span>";
     } else if (info && info !== e) {
       (info.cond || []).forEach(function (cd) { h += '<span class="c">' + esc(cd.t) + "</span>"; });
@@ -945,8 +953,9 @@
     if (lc && lc.pick) out.push(["party", "Tie: " + capf(names([lc.pick])) + " gets it (" + tieBy(lc.by) + ")."]);
     else if (lc && lc.k === "shared") out.push(["party", "Tie with " + names(lc.who) + " (in your party, gets exactly as much from it): pick who gets it in the item card."]);
     else if (lc && lc.k === "free") { if (lc.who.length) out.push(["tip", capf(names(lc.who)) + " would get more from it, but is not in your party right now."]); }
-    else if (orig && e.pa) out.push(["party", capf(names(e.owner)) + " needs it more: use " + itemOf(e.pa).n + " here if " + names(e.owner) + " is with you."]);
-    else if (orig && e.fb && !e.own && (e.cond.length || e.tags.length)) out.push(["alt", "Can't get it? " + (e.fbE ? e.fb : "Use " + itemOf(e.fb).n) + "."]);
+    else if (orig && e.pa && hasOwner(e)) out.push(["party", (tieSay(e) ? tieSay(e) + ": use " : capf(names(e.owner)) + " needs it more: use ") + itemOf(e.pa).n + " here if " + names(e.owner) + " is with you."]);
+    else if (orig && e.pa && tieSay(e)) out.push(["tip", tieSay(e) + "."]);
+    if (orig && e.fb && !e.own && (e.cond.length || e.tags.length) && !(e.pa && (hasOwner(e) || lc))) out.push(["alt", "Can't get it? " + (e.fbE ? e.fb : "Use " + itemOf(e.fb).n) + "."]);
     return out;
   }
   var NOTE_ICON = { story: "ico_warn", crime: "ico_warn", miss: "ico_warnsoft", tip: "ico_warngrey", own: "ico_warnguest", party: "ico_party", alt: "", s: "", up: "" };

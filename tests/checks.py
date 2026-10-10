@@ -655,8 +655,8 @@ local function touch(cell)
   if not STUB.inDefer then STUB.outside = STUB.outside + 1 end
   if cell then STUB.cells = STUB.cells + 1 end
 end
-local function node(ty, name, kids, cell)
-  local d = { Type = ty, Name = name, kids = kids or {} }
+local function node(ty, name, kids, cell, props)
+  local d = { Type = ty, Name = name, kids = kids or {}, props = props or {} }
   return setmetatable({}, { __index = function(_, k)
     touch(cell)
     if k == "Type" then return d.Type end
@@ -664,7 +664,8 @@ local function node(ty, name, kids, cell)
     if k == "VisualChildrenCount" then return #d.kids end
     if k == "VisualChild" then return function(_, i) touch(cell); return d.kids[i] end end
     if k == "Find" then return function(_, n) touch(cell); return n == "ContentRoot" and STUB.content or nil end end
-    if k == "GetProperty" or k == "SetProperty" or k == "Resource" then return function() touch(cell) end end
+    if k == "GetProperty" then return function(_, p) touch(cell); return d.props[p] end end
+    if k == "SetProperty" or k == "Resource" then return function() touch(cell) end end
     return nil
   end })
 end
@@ -674,9 +675,11 @@ local function itemCell()
 end
 local deep = itemCell()
 for _ = 1, 40 do deep = node("Border", "Wrap", { deep }) end
-STUB.content = node("Grid", "ContentRoot", {
+STUB.contentKids = {
   node("ls.UIWidget", "ContainerInventory", { node("Grid", "Slots", { itemCell(), itemCell(), deep }) }),
-  node("ls.UIWidget", "Minimap", { node("Canvas", "Markers", {}) }) })
+  node("ls.UIWidget", "Minimap", { node("Canvas", "Markers", {}) }) }
+STUB.content = node("Grid", "ContentRoot", STUB.contentKids)
+STUB.mk = node
 STUB.root = node("Grid", "Root", { STUB.content })
 local function out(s) STUB.prints[#STUB.prints + 1] = tostring(s) end
 Ext = { Utils = { MonotonicTime = function() STUB.t = STUB.t + 250; return STUB.t end, Print = out,
@@ -719,11 +722,12 @@ def client_lua(env, defer, settings=None):
     return L
 
 
-def run_ticks(L, n):
-    """SessionLoaded, then n game ticks; queued Defer callbacks run between ticks, as the UI update would."""
+def run_ticks(L, n, session=True):
+    """SessionLoaded (unless session=False), then n game ticks; queued Defer callbacks run between ticks, as the UI
+    update would."""
     L.execute("""
       local n = ...
-      STUB.handlers.SessionLoaded()
+      if SESSION then STUB.handlers.SessionLoaded() end
       for _ = 1, n do
         STUB.handlers.Tick({})
         local q = STUB.queue
@@ -732,7 +736,7 @@ def run_ticks(L, n):
         for _, f in ipairs(q) do f() end
         STUB.inDefer = false
       end
-    """.replace("local n = ...", f"local n = {int(n)}"))
+    """.replace("local n = ...", f"local n = {int(n)}").replace("SESSION", "true" if session else "false"))
     return L.globals().STUB
 
 
@@ -1609,6 +1613,277 @@ def check_page_tie_picks(env):
     return fails
 
 
+# ================================================= 15b. an exact tie's owner has an alternative too
+# The owner keeps a tied item only until the player gives it to another tied character (a pick, or the one wearing
+# it); then the owner's sets need an alternative for that slot, as the other tied characters' sets have one.
+def _tie_alt_rule(entries):
+    """entries: [(item, character, is owner, has alternative)] for tied items in a tied character's set.
+    -> (failures, counts). Some slots have no free alternative at all (a barbarian's only useful bows can all belong
+    to others), for owners and the other tied characters alike; so the owners' share of entries with an alternative
+    must be at least half the others' share. The bug this guards (owners never get one) makes it 0."""
+    n = {True: [0, 0], False: [0, 0]}
+    for _sid, _c, owner, alt in entries:
+        n[bool(owner)][0] += 1
+        n[bool(owner)][1] += bool(alt)
+    own = n[True][1] / n[True][0] if n[True][0] else 0.0
+    oth = n[False][1] / n[False][0] if n[False][0] else 0.0
+    fails = []
+    if not n[True][0] or own < 0.5 * oth:
+        fails.append(f"owners of tied items: {n[True][1]} of {n[True][0]} set entries have an alternative, the other "
+                     f"tied characters {n[False][1]} of {n[False][0]}")
+    return fails, {"tied items": len({e[0] for e in entries}), "owner entries with one": f"{n[True][1]}/{n[True][0]}",
+                   "others": f"{n[False][1]}/{n[False][0]}"}
+
+
+def check_tie_owner_alternative_scores(env):
+    """The scorer gives the owner of an exactly tied item an alternative in its sets (party_alt) without marking the
+    item as a party conflict there."""
+    sc = env.scores()
+    owners = json.load(open(os.path.join(env.root, "data", "scores", "owners.json"), encoding="utf-8"))
+    tied = {}
+    for g in owners.values():
+        if g.get("kind") == "unique" and g.get("exact_tie") and g.get("owners"):
+            for sid in g["items"]:
+                tied[sid] = (g["owners"][0], set(g.get("tied") or []))
+    entries, fails = [], []
+    for cid, c in sc.items():
+        for bo in c["builds"].values():
+            for sts in bo["sets"].values():
+                for st in sts:
+                    for sl, it in st["items"].items():
+                        if it["sid"] not in tied or cid not in tied[it["sid"]][1]:
+                            continue
+                        own = tied[it["sid"]][0] == cid
+                        entries.append((it["sid"], cid, own, bool(it.get("party_alt"))))
+                        if own and (it.get("owner") or "party conflict" in (it.get("warn_types") or [])):
+                            fails.append(f"{st['id']} {sl}: {it['sid']} is the owner's, but marked as a party conflict")
+    f2, counts = _tie_alt_rule(entries)
+    env.counts.update(counts)
+    if not tied:
+        fails.append("no exact ties in owners.json (nothing to check)")
+    return sorted(set(fails)) + f2
+
+
+check_tie_owner_alternative_scores.local_only = True
+
+
+def _page_data(env):
+    src = getattr(env, "file_overrides", {}).get("Sets.html")
+    if src is None:
+        src = _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html")
+    m = re.search(r'<script id="la-data" type="application/json">(.*?)</script>', src, re.S)
+    return json.loads(m.group(1)) if m else None
+
+
+def check_tie_owner_alternative_swap(env):
+    """F6 (LootData + Logic.lua) and the Sets page data: the owner's sets carry an alternative for an exactly tied
+    item, and when the tie goes to another tied party member, the owner's set row shows the alternative instead."""
+    L = env.lua()
+    G = L.globals()
+    ties = _ties_from_data(env)
+    data = G.LA.Data
+    chars = list(lua_dict(data.chars))
+    fails, entries, swaps = [], [], 0
+
+    def state(party, picks):
+        comp = {c: {"team": True, "party": c in party, "dead": False} for c in chars if c != "darkurge"}
+        return L.table_from({"act": 1, "region": "", "durge": False, "paths": {}, "comp": comp, "owned": {},
+                             "markerPos": {}, "tiePicks": picks, "wear": {}}, recursive=True)
+    for char in chars:
+        for b in lua_list(data.chars[char].b):
+            for act in ACTS:
+                a = b.a[act] if b.a is not None else None
+                if a is None or a.sets is None:
+                    continue
+                for st in lua_list(a.sets):
+                    for slot, idx in lua_dict(st.it).items():
+                        sid = data["items"][idx].id
+                        mem = ties.get(sid) or []
+                        if char not in mem:
+                            continue
+                        pa = st.pa[slot] if st.pa is not None else None
+                        own = mem[0] == char
+                        entries.append((sid, char, own, bool(pa)))
+                        other = next((c for c in mem if c != char and c != "darkurge"), None)
+                        if not (own and pa and other and char != "darkurge") or swaps >= 40:
+                            continue
+                        # an earlier-act item, a Dark Urge or an owned upgrade decides the slot before the tie
+                        if any(st[f] is not None and (slot in lua_list(st[f]) or st[f][slot] is not None)
+                               for f in ("ow", "ca", "oa")):
+                            continue
+                        # the tie goes to the other one: the owner's set row is the alternative now
+                        s1 = state({char, other}, {sid: other})
+                        s1.act = act
+                        res = G.LA.Logic.Recommend(char, ctx_for(L, char, b), s1, b.id, None)
+                        rows = lua_list(res.rows)
+                        alt_sets = [lua_list(r.sets) for r in rows if r.i == pa and r.slot == slot]
+                        mine_sets = [lua_list(r.sets) for r in rows if r.i == idx and r.slot == slot]
+                        swaps += 1
+                        if not any(st.n in s for s in alt_sets) or any(st.n in s for s in mine_sets):
+                            fails.append(f"{char} {b.id} act {act} '{st.n}' {slot}: {sid} given to {other}, the set "
+                                         f"row is not the alternative")
+    f2, counts = _tie_alt_rule(entries)
+    fails += f2
+    env.counts.update({"F6 " + k: v for k, v in counts.items()})
+    env.counts["swaps"] = swaps
+    if swaps == 0:
+        fails.append("no owner set swapped to its alternative (nothing checked)")
+    # the Sets page reads the same data from its own copy
+    D = _page_data(env)
+    if D is None:
+        return fails + ["Page/Sets.html: no page data found"]
+    pentries = []
+    for c in D["chars"]:
+        for sets in c["sets"].values():
+            for s in sets:
+                for _sl, e in s["slots"].items():
+                    e = D["E"][e] if isinstance(e, int) else e
+                    it = D["items"].get(e["sid"]) or {}
+                    if not it.get("ot"):
+                        continue
+                    mem = list(dict.fromkeys((it.get("o") or []) + it["ot"]))
+                    if c["id"] in mem:
+                        pentries.append((e["sid"], c["id"], c["id"] == (it.get("o") or [None])[0], bool(e.get("pa"))))
+    f3, counts = _tie_alt_rule(pentries)
+    env.counts.update({"page " + k: v for k, v in counts.items()})
+    return fails + ["Sets page: " + f for f in f3]
+
+
+TIE_SAY_NODE = r"""
+const T = require(process.argv[1]);
+const N = { astarion: "Astarion", darkurge: "The Dark Urge", gale: "Gale", wyll: "Wyll" };
+const nm = (c) => N[c] || c;
+const inP = (s) => (c) => s.includes(c);
+const it = { o: ["astarion"], ot: ["astarion", "darkurge"] };
+const it3 = { o: ["gale"], ot: ["gale", "wyll", "astarion"] };
+console.log(JSON.stringify({
+  page: T.say(it, null, nm),
+  picked: T.say(it, T.contest("astarion", it, inP(["astarion", "darkurge"]), { c: "darkurge", by: "pick" }, null), nm),
+  wearer: T.say(it, T.contest("darkurge", it, inP(["astarion", "darkurge"]), { c: "darkurge", by: "wear" }, null), nm),
+  open: T.say(it, T.contest("astarion", it, inP(["astarion", "darkurge"]), null, null), nm),
+  alone: T.say(it, T.contest("astarion", it, inP(["darkurge"]), null, null), nm),
+  three: T.say(it3, null, nm),
+  none: T.say({ o: ["gale"], ot: [] }, null, nm),
+}));
+"""
+TIE_SAY_WANT = {
+    "page": "Equal for Astarion and The Dark Urge; Astarion keeps it",
+    "picked": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
+    "wearer": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
+    "open": "Equal for Astarion and The Dark Urge; pick who gets it",
+    "alone": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
+    "three": "Equal for Gale, Wyll and Astarion; Gale keeps it",
+    "none": "",
+}
+
+
+def check_tie_wording(env):
+    """An exact tie is worded "Equal for X and Y; X keeps it" (X = the owner, or whoever the game / the page gave it
+    to): the Sets page (tools/sets_ship/ties.js say(), run in node; app.js uses it for the item cards and their
+    labels) and the F6 list (Window.lua) for a settled tie. app.js never words a tie as "gets more from it"."""
+    import subprocess
+    src = getattr(env, "file_overrides", {}).get("ties.js")
+    path = os.path.join(REPO, "tools", "sets_ship", "ties.js")
+    tmp = None
+    if src is not None:
+        tmp = tempfile.mkdtemp(prefix="la_tiesay_")
+        path = os.path.join(tmp, "ties.js")
+        open(path, "w", encoding="utf-8").write(src)
+    try:
+        r = subprocess.run(["node", "-e", TIE_SAY_NODE, os.path.abspath(path)], capture_output=True, text=True,
+                           timeout=60)
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    if r.returncode != 0:
+        return ["node failed: " + (r.stderr or r.stdout)[-300:]]
+    got = json.loads(r.stdout)
+    fails = [f"{k}: {got.get(k)!r}, want {v!r}" for k, v in TIE_SAY_WANT.items() if got.get(k) != v]
+    # the item card label: a tie's wording first, the "gets more" sentence only for other contested items
+    app = getattr(env, "file_overrides", {}).get("app.js") or _read(REPO, "tools", "sets_artifact", "app.js")
+    lab = re.search(r'if \(t\.party\) \{[^\n]*say\.push\(([^\n]*)\); \}', app)
+    if not lab or not lab.group(1).startswith("tieSay("):
+        fails.append("app.js: the item card label does not use the tie wording first")
+    # F6: a settled tie's status
+    L = window_lua(env)
+    G = L.globals()
+    G.LA.CHAR_NAME = L.table_from({"astarion": "Astarion", "darkurge": "The Dark Urge"})
+    res = L.table_from({"char": "astarion", "act": 1, "build": {"n": "x"}, "markers": [], "roster": [], "ties": [],
+                        "rows": [{"i": 1, "id": "SID_TIE", "n": "Ambusher", "slot": "MainHand", "rank": 0,
+                                  "s": "better", "better": "darkurge", "picked": "pick", "sets": ["Set A"]}]},
+                       recursive=True)
+    G.LA.Settings.SpoilerNoticeSeen = True
+    G.LA.Win.Toggle()
+    G.LA.Win.Render(res)
+    texts = []
+
+    def walk(el):
+        for c in lua_list(el.children):
+            texts.append(str(c.Label or ""))
+            walk(c)
+    walk(G.LA.Win.content)
+    if not any("The Dark Urge keeps it" in t for t in texts):
+        fails.append("F6: a tie given to The Dark Urge does not say 'The Dark Urge keeps it' in Astarion's list")
+    env.counts["phrasings"] = len(TIE_SAY_WANT)
+    return fails
+
+
+def check_f6_hides_under_pause_menu(env):
+    """The F6 window steps aside while the game's pause menu (GameMenu widget, or a page it opens) is shown and comes
+    back after; the UI tree is read only inside Ext.UI.Defer; the hotkey during the menu only changes what happens
+    after it. Old Script Extender (no Defer): the tree is not read and the window is never hidden."""
+    fails = []
+    L = client_lua(env, defer=True)
+    L.execute("""
+      STUB.hidden = {}
+      LA.Win.SetMenuHidden = function(on) STUB.hidden[#STUB.hidden + 1] = on end
+      STUB.menuProps = { Visibility = "Visible" }
+      STUB.menu = STUB.mk("ls.UIWidget", "GameMenu", nil, nil, STUB.menuProps)
+      local layer = STUB.mk("Grid", "PauseLayer", { STUB.menu })
+      STUB.contentKids[#STUB.contentKids + 1] = layer
+    """)
+    S = run_ticks(L, 6)
+    if not S.hidden or S.hidden[len(S.hidden)] is not True:
+        fails.append(f"pause menu shown: SetMenuHidden ended with {S.hidden[len(S.hidden)] if S.hidden else None}")
+    if S.outside != 0:
+        fails.append(f"{S.outside} UI tree reads outside Ext.UI.Defer")
+    L.execute('STUB.menuProps.Visibility = "Collapsed"')
+    S = run_ticks(L, 4, session=False)
+    if S.hidden[len(S.hidden)] is not False:
+        fails.append("pause menu collapsed: the window stays hidden")
+    L.execute('STUB.menuProps.Visibility = "Visible"; STUB.contentKids[#STUB.contentKids] = nil')
+    S = run_ticks(L, 4, session=False)
+    if S.hidden[len(S.hidden)] is not False:
+        fails.append("pause menu widget gone: the window stays hidden")
+    L2 = client_lua(env, defer=False)
+    L2.execute("""
+      STUB.hidden = {}
+      LA.Win.SetMenuHidden = function(on) STUB.hidden[#STUB.hidden + 1] = on end
+      STUB.contentKids[#STUB.contentKids + 1] = STUB.mk("ls.UIWidget", "GameMenu", nil, nil, { Visibility = "Visible" })
+    """)
+    S2 = run_ticks(L2, 4)
+    if S2.touches != 0 or any(S2.hidden[i] for i in range(1, len(S2.hidden) + 1)):
+        fails.append(f"no Ext.UI.Defer: {S2.touches} UI tree reads, hidden {list(S2.hidden.values())}")
+    # Window.lua: closed during the menu, reopened after; F6 during the menu flips only the reopen
+    W = window_lua(env).globals().LA.Win
+    W.Toggle()
+    W.SetMenuHidden(True)
+    if W.window.Open:
+        fails.append("window still open while the pause menu is open")
+    W.SetMenuHidden(False)
+    if not W.window.Open:
+        fails.append("window not reopened after the pause menu")
+    W.SetMenuHidden(True)
+    W.Toggle()
+    if W.window.Open:
+        fails.append("the hotkey during the pause menu opened the window over it")
+    W.SetMenuHidden(False)
+    if W.window.Open:
+        fails.append("closed with the hotkey during the pause menu, but reopened after it")
+    env.counts["scenarios"] = 6
+    return fails
+
+
 def check_f6_filter_and_ties(env):
     """F6 window: the marker filter offers everyone / the party / the selected character, saves the choice and sends
     the selection again (the server reads the filter from it); open ties get one button per tied party member, a click
@@ -1714,4 +1989,9 @@ CHECKS = [
     ("Sets page tie picks: the game's pick wins over the page's", check_page_tie_picks, False),
     ("F6 window: marker filter and tie-pick buttons", check_f6_filter_and_ties, False),
     ("meta.lsx Description: at most 250 characters, names Script Extender", check_meta_description, False),
+    ("exact ties: the owner's sets get an alternative too (scorer)", check_tie_owner_alternative_scores, False),
+    ("exact ties: the owner's set swaps to it when the tie goes elsewhere (F6 + Sets page)",
+     check_tie_owner_alternative_swap, False),
+    ("exact ties worded 'Equal for X and Y; X keeps it' (Sets page + F6)", check_tie_wording, False),
+    ("F6 window hidden while the game's pause menu is open", check_f6_hides_under_pause_menu, False),
 ]

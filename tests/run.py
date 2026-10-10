@@ -528,6 +528,49 @@ def mutations(sc):
         desc + " " + "x" * C.META_DESCRIPTION_MAX), "red"))
     out.append((names[19], "meta.lsx: the Script Extender line dropped from the description", meta_mut(
         desc.replace("Script Extender", "")), "red"))
+
+    # 20. an exact tie's owner gets an alternative: the scorer gives it to the other tied characters only
+    def m20():
+        sc.reset()
+        sc.patch("tools/score_items.py", 'if not own and keeps.get(it["sid"]) != cid:', "if not own:")
+        sc.run_scoring()
+        return sc.env()
+    out.append((names[20], "score_items.py: no alternative for the owner of a tied item", m20, "red"))
+    # 21a-21b. the owner's set keeps the item after the tie went elsewhere; no alternatives in the data at all
+    out.append((names[21], "Logic.lua Recommend: a set ignores its alternative when the tie went to someone else",
+                lua_mut("Logic.lua", 'elseif st and st.s == "better" and set.pa and set.pa[slot] then',
+                        'elseif false then'), "red"))
+    out.append((names[21], "LootData: no party alternatives in any set", lua_mut("LootData.lua", ",pa={", ",xpa={"),
+                "red"))
+    # 22a-22c. tie wording: the old "gets more" sentence; the keeper not first; F6 says "Better on" for a tie
+    def file_mut(fname, rel, old, new):
+        def make():
+            sc.reset()
+            src = open(os.path.join(LA, *rel), encoding="utf-8").read()
+            if old not in src:
+                raise RuntimeError(f"mutation target not found in {fname}: {old[:60]}")
+            env = sc.env()
+            env.file_overrides = {fname: src.replace(old, new)}
+            return env
+        return make
+    ties_rel = ("tools", "sets_ship", "ties.js")
+    out.append((names[22], "ties.js: a tie worded 'X gets more from it'", file_mut(
+        "ties.js", ties_rel, 'return "Equal for " + list + (keep ? "; " + nameOf(keep) + " keeps it"',
+        'return list + (keep ? "; " + nameOf(keep) + " gets more from it"'), "red"))
+    out.append((names[22], "ties.js: the game's pick does not decide who keeps it", file_mut(
+        "ties.js", ties_rel, "if (lc.pick) keep = lc.pick;", "if (false) keep = lc.pick;"), "red"))
+    out.append((names[22], "app.js: the item card label says 'gets more from it' for a tie", file_mut(
+        "app.js", ("tools", "sets_artifact", "app.js"), "say.push(tieSay(r.e, LIVE ? liveContest(set, r.e) : null) || ",
+        "say.push("), "red"))
+    out.append((names[22], "Window.lua: a settled tie shown as 'Better on X'", lua_mut(
+        "Window.lua", 'elseif s == "better" and r.picked then', 'elseif false then'), "red"))
+    # 23a-23c. pause menu: GameMenu not recognised; the window not closed; never reopened
+    out.append((names[23], "UiTree.lua: the GameMenu widget is not recognised", lua_mut(
+        "UiTree.lua", "LA.UI.PAUSE_WIDGETS = { GameMenu = true,", "LA.UI.PAUSE_WIDGETS = { GameMenuX = true,"), "red"))
+    out.append((names[23], "Window.lua: the window stays open under the pause menu", lua_mut(
+        "Window.lua", "    W.window.Open = false\n  elseif W.reopen then", "  elseif W.reopen then"), "red"))
+    out.append((names[23], "Window.lua: the window is not reopened after the pause menu", lua_mut(
+        "Window.lua", "  elseif W.reopen then", "  elseif false then"), "red"))
     return out, by
 
 

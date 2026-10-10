@@ -68,6 +68,10 @@ local function status(r)
   elseif s == "nospot" then return "No fixed spot", "No fixed place to mark (reward, random or a wandering NPC).", nil
   elseif s == "setonly" then return "Set item", "Part of a set below; not marked on the map.", VIOLET
   elseif s == "closed" then return "Path closed", tostring(r.reason or "Your story choices closed this path."), GREY
+  elseif s == "better" and r.picked then
+    -- a settled exact tie: same wording as the Sets page ("Equal for X and Y; X keeps it")
+    return cname(r.better) .. " keeps it", ("Equal for %s and %s; %s keeps it (%s)."):format(cname(r.better),
+      cname(W.viewer), cname(r.better), r.picked == "wear" and "wears it" or "your pick"), GREY
   elseif s == "better" then return "Better on " .. cname(r.better), ("Fits %s better (best use in your party)."):format(cname(r.better)), GREY
   elseif s == "onlyowned" then return "If you have it", "From an earlier act: counts only if you already have it.", GREY
   end
@@ -94,8 +98,24 @@ local function place(w)
   try(function() w:SetSize({ vp[1] * 0.66, vp[2] * 0.70 }, "Always") end)
 end
 
+-- While the game's pause menu is open the window is closed and remembered (W.reopen), then opened again; the hotkey
+-- only flips what happens after the menu.
+function W.SetMenuHidden(on)
+  if not W.window or W.menuHidden == on then return end
+  W.menuHidden = on
+  if on then
+    W.reopen = W.window.Open == true
+    W.window.Open = false
+  elseif W.reopen then
+    W.reopen = false
+    W.window.Open = true
+    W.Render(LA.Result)
+  end
+end
+
 function W.Toggle()
   W.Init()
+  if W.menuHidden then W.reopen = not W.reopen; return end
   if not W.placed then place(W.window); W.placed = true end
   W.window.Open = not W.window.Open
   if W.window.Open then W.Render(LA.Result) end
@@ -103,6 +123,7 @@ end
 
 function W.Show(open)
   W.Init()
+  if W.menuHidden then W.reopen = open ~= false; return end
   if not W.placed then place(W.window); W.placed = true end
   W.window.Open = open ~= false
   if W.window.Open then W.Render(LA.Result) end
@@ -267,6 +288,7 @@ function W.Render(res)
     return
   end
   pageRow(h)
+  W.viewer = res.char
   if res.notCovered then
     colored(h:AddText(("%s: no build to recommend items for."):format(tostring(res.name or "?"))), GREY)
     return

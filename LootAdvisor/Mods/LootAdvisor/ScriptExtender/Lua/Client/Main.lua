@@ -39,12 +39,15 @@ Ext.Events.NetMessage:Subscribe(function(e)
   end
 end)
 
-local lastSlow, lastDir, lastDev, lastSettings = 0, 0, 0, 0
+local lastSlow, lastDir, lastDev, lastSettings, lastMenu = 0, 0, 0, 0, 0
 local wasEnabled = true
 local function onTick()
   local now = Ext.Utils.MonotonicTime()
   if now - lastSettings > 3000 then lastSettings = now; LA.LoadSettings() end
   if LA.Settings.Dev and now - lastDev > 300 then lastDev = now; pcall(LA.Eval, "LootAdvisor_client") end
+  -- the F6 window steps aside while the game's pause menu is open (read in the deferred UI update)
+  if now - lastMenu >= 100 then lastMenu = now; LA.UI.Run(LA.UI.CheckMenu) end
+  pcall(LA.Win.SetMenuHidden, LA.UI.menuOpen == true)
   if not LA.Settings.Enabled then
     if wasEnabled then wasEnabled = false; LA.Result = nil; pcall(LA.Tip.RestoreAll); LA.UI.Run(LA.Paint.Pass) end
     LA.UI.Run(LA.Tip.Watch) -- puts the game's templates back on tooltips that still carry ours
@@ -80,6 +83,23 @@ Ext.RegisterConsoleCommand("la_dev", function()
   LA.Settings.Dev = not LA.Settings.Dev
   LA.SaveSettings()
   Ext.Utils.Print("[Loot Advisor] Dev = " .. tostring(LA.Settings.Dev))
+end)
+-- console "!la_menu": the widgets below ContentRoot with their Visibility, and whether the pause menu counts as open
+Ext.RegisterConsoleCommand("la_menu", function()
+  LA.UI.Run(function()
+    local root = LA.UI.Root()
+    local content = root and (try(function() return root:Find("ContentRoot") end) or root)
+    LA.UI.Walk(content, function(el, d)
+      if tostring(LA.UI.Type(el)):find("UIWidget", 1, true) then
+        Ext.Utils.Print(("[Loot Advisor] widget %s (%s)"):format(tostring(LA.UI.Name(el)),
+          tostring(try(function() return el:GetProperty("Visibility") end))))
+        return "skip"
+      end
+      if d >= 4 then return "skip" end
+    end, 400)
+    LA.UI.CheckMenu()
+    Ext.Utils.Print("[Loot Advisor] pause menu open: " .. tostring(LA.UI.menuOpen))
+  end)
 end)
 Ext.Events.SessionLoaded:Subscribe(init)
 Ext.Events.ResetCompleted:Subscribe(init)
