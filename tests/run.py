@@ -626,6 +626,10 @@ def mutations(sc):
              "for _, o in ipairs((LA.Logic or {}).ORIGINS or {}) do", "for _, o in ipairs({}) do"),
             ("Api.lua: more than three sets per act", "if rank > (maxSets or 3) then break end", "")):
         out.append((names[n27], desc, lua_mut("Api.lua", old, new), "red"))
+    # 28. worn tied weapons: the old slot name Osiris does not know
+    n28 = names.index("worn tied items: weapon slots asked by the names Osiris uses")
+    out.append((names[n28], "State.lua: main-hand weapon asked as MeleeMainHand again",
+                lua_mut("State.lua", '"Melee Main Weapon"', '"MeleeMainHand"'), "red"))
     return out, by
 
 
