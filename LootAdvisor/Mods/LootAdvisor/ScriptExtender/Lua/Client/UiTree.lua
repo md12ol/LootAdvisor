@@ -70,6 +70,31 @@ function LA.UI.FindNamed(root, name, maxDepth)
   return found
 end
 
+-- The game's pause menu (Esc) and the pages it opens (options, save, load) are widgets on the UI's Pause layer,
+-- named by the x:Name of their XAML page (GameMenu.xaml: "GameMenu"). Script Extender windows draw over every game
+-- widget, so the F6 window hides while one of them is shown. Run through LA.UI.Run only: sets LA.UI.menuOpen.
+-- The widgets sit a few levels below ContentRoot; their insides are not walked.
+LA.UI.PAUSE_WIDGETS = { GameMenu = true, GameOptions = true, InterfaceOptions = true, AccessibilityOptions = true,
+                        ConnectivityMenu = true, LoadGame = true, SaveGame = true }
+local function getVis(e) return e:GetProperty("Visibility") end
+function LA.UI.CheckMenu()
+  local root = LA.UI.Root()
+  if not root then return end
+  local content = try(function() return root:Find("ContentRoot") end) or root
+  local open = false
+  LA.UI.Walk(content, function(el, d)
+    if open then return "skip" end
+    if tostring(LA.UI.Type(el)):find("UIWidget", 1, true) then
+      -- an unreadable Visibility counts as shown: the widget only exists while its state is on the stack
+      local v = try(getVis, el)
+      if LA.UI.PAUSE_WIDGETS[LA.UI.Name(el) or ""] and (v == nil or tostring(v) == "Visible") then open = true end
+      return "skip"
+    end
+    if d >= 4 then return "skip" end
+  end, 400)
+  LA.UI.menuOpen = open
+end
+
 -- A theme resource (SolidColorBrush etc.) looked up from any element; cached.
 local resCache = {}
 function LA.UI.Resource(anyElement, key)
