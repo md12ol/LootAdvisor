@@ -8,6 +8,7 @@ data/cache/stats_resolved.json. Conditions are evaluated as probabilities for th
 (see PREDICATES); a predicate this model does not know counts 0.5 and is reported as a model gap.
 """
 import ast
+import copy
 import math
 import re
 
@@ -45,12 +46,24 @@ def avg_expr(expr, names=None):
     return tot
 
 
+_TREES = {}
+
+
+def _tree(expr):
+    """Parsed expression, memoised per string (the trees are only read); None when it does not parse."""
+    if expr not in _TREES:
+        try:
+            _TREES[expr] = ast.parse(expr, mode="eval")
+        except SyntaxError:
+            _TREES[expr] = None
+    return _TREES[expr]
+
+
 def float_eval(expr, names):
     """Arithmetic of a stats expression (+ - * /, max / min, names) in floats - averages of dice are not whole
     numbers (1d4 = 2.5), so nothing is rounded."""
-    try:
-        tree = ast.parse(expr, mode="eval")
-    except SyntaxError:
+    tree = _tree(expr)
+    if tree is None:
         return None
 
     def ev(n):
@@ -495,6 +508,20 @@ class ItemMech:
                     self.self_status.append(e.get("id"))
         for s in split_top(br.get("StatusOnEquip", "")):
             self.self_status.append(s)
+
+
+_MECH = {}
+
+
+def item_mech(W, sid):
+    """ItemMech(W, sid), built once per item; each call gets its own lists (add_status appends to them)."""
+    t = _MECH.get(sid)
+    if t is None:
+        t = _MECH[sid] = ItemMech(W, sid)
+    im = copy.copy(t)
+    im.triggers, im.spells, im.self_status, im.options = (list(t.triggers), list(t.spells), list(t.self_status),
+                                                          list(t.options))
+    return im
 
 
 def add_status(W, im, status, hand="a"):

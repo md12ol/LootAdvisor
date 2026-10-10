@@ -30,7 +30,8 @@
 
         <!-- Item tooltip: the description strip (Control "LoreDescriptionSection") gets this template while the item
              is recommended: the game's own description strip unchanged, then one row in the style of the tooltip's
-             other rows: our diamond in the description icon's column, a short title in our colour, one short line.
+             other rows: our diamond in the description icon's column, a short title in our colour, one short line
+             (or a warning that wraps to at most 3 lines; the data keeps it that short).
              Lua fills the texts (LA_TipTitle / LA_TipBody / LA_TipWarn) and puts the game's template back
              afterwards. Game resources are looked up dynamically (nothing breaks if a key is missing). -->
         <ControlTemplate x:Key="LA.ItemAdviceTemplate" TargetType="Control">
@@ -49,7 +50,7 @@
                         <TextBlock x:Name="LA_TipBody" Text="" FontSize="{DynamicResource MediumFontSize}"
                                    Foreground="{DynamicResource TooltipColor.Secondary}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
                         <TextBlock x:Name="LA_TipWarn" Text="" FontSize="{DynamicResource MediumFontSize}" Visibility="Collapsed"
-                                   Foreground="{DynamicResource TooltipColor.WarningSoft}" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis"/>
+                                   Foreground="{DynamicResource TooltipColor.WarningSoft}" TextWrapping="Wrap" TextTrimming="CharacterEllipsis"/>
                     </StackPanel>
                 </Grid>
             </StackPanel>

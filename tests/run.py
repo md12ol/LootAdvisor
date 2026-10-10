@@ -159,6 +159,10 @@ class Scratch:
             if fn.endswith(".json") and (fn.startswith("roottemplates_") or fn in (
                     "class_progressions.json", "item_display_names.json", "stats_resolved.json")):
                 shutil.copy2(os.path.join(LA, "data", "cache", fn), os.path.join(self.root, "data", "cache", fn))
+        # score_items.py reads Builds.lua from the sibling BuildAdvisor checkout, relative to its own folder
+        lua = os.path.join(self.dir, os.path.relpath(BUILDS_LUA, ROOT))
+        os.makedirs(os.path.dirname(lua), exist_ok=True)
+        shutil.copy2(BUILDS_LUA, lua)
 
     def patch(self, rel, old, new, count=1):
         p = os.path.join(self.root, rel)
@@ -340,6 +344,36 @@ def mutations(sc):
         return sc.env(lua_patches={"UiTree.lua": [("defer(function() pcall(fn) end)", "pcall(fn)")]})
     out.append((names[10], "UiTree.lua LA.UI.Run: Ext.UI.Defer present but the code runs straight from the tick",
                 m11b, "red"))
+
+    # 12a-12d. tooltip warnings: the tooltip shows the full text again; a short form drops a name; the F6 row gets a
+    # cut text; no short forms at all (nothing to check must fail too)
+    def m12a():
+        sc.reset()
+        return sc.env(lua_patches={"Tooltip.lua": [("body, warn = r.tw, true", "body, warn = r.w, true")]})
+    out.append((names[11], "Tooltip.lua shows the full warning instead of its tooltip form", m12a, "red"))
+
+    def m12b():
+        sc.reset()
+        lua = os.path.join(sc.root, "data", "scores", "lua", "LootData.lua")
+        src = open(lua, encoding="utf-8").read()
+        m = re.search(r'tw="(Theft: owned by [^"]+)"', src)
+        if not m:
+            raise RuntimeError("mutation target not found in LootData.lua: a 'Theft: owned by X' tooltip warning")
+        env = sc.env(lua_patches={"LootData.lua": [(m.group(0), 'tw="Theft."')]})
+        env.mut_note = m.group(1)
+        return env
+    out.append((names[11], "LootData: one tooltip warning loses its owner's name", m12b, "red"))
+
+    def m12c():
+        sc.reset()
+        return sc.env(lua_patches={"Logic.lua": [('w = it.w or ""', 'w = (it.w or ""):sub(1, 40)')]})
+    out.append((names[11], "Logic.lua: the F6 rows get the warning cut at 40 characters", m12c, "red"))
+
+    def m12d():
+        sc.reset()
+        return sc.env(lua_patches={"Logic.lua": [('tw = it.tw or ""', 'tw = ""')],
+                                   "LootData.lua": [(",tw=", ",xtw=")]})
+    out.append((names[11], "no tooltip warnings in the data or the rows (nothing to check)", m12d, "red"))
     return out, by
 
 
@@ -360,17 +394,21 @@ def main_mutate(verbose, ci=False):
                 return 1
         for name, desc, make, expect in muts:
             t0 = time.time()
+            env, crashed = None, False
             try:
                 env = make()
                 fails = by[name](env)
             except Exception as e:  # noqa: BLE001
+                crashed = True
                 fails = [f"mutation setup/check crashed: {e!r}"]
             red = bool(fails)
-            ok = red if expect == "red" else not red
+            # a crash proves nothing about the check, so it fails the mutation whatever was expected
+            ok = not crashed and (red if expect == "red" else not red)
             bad += not ok
-            verdict = ("caught (red)" if red else "NOT caught (green)") if expect == "red" else \
+            verdict = "CRASHED (proves nothing)" if crashed else \
+                ("caught (red)" if red else "NOT caught (green)") if expect == "red" else \
                 ("green as expected" if not red else "STILL RED")
-            note = getattr(env, "mut_note", None) if "env" in dir() else None
+            note = getattr(env, "mut_note", None)
             results.append((name, desc, expect, verdict, ok))
             print(f"[{'OK' if ok else 'BAD'}] {name}\n      mutation: {desc}{' (' + note + ')' if note else ''}\n"
                   f"      -> {verdict}; {len(fails)} failure line(s); {time.time() - t0:.1f}s")

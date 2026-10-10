@@ -244,7 +244,7 @@ class State:
         off = W.items.get(self.loadout.get("OffHand") or "") or {}
         self.shield = bool((off.get("armour") or {}).get("shield"))
         self.offhand_used = bool(off)
-        self.mechs = {s: mech.ItemMech(W, sid) for s, sid in self.loadout.items()}
+        self.mechs = {s: mech.item_mech(W, sid) for s, sid in self.loadout.items()}
         self.choice = dict(choice or {})
         for slot, status in self.choice.items():
             im = self.mechs.get(slot)
@@ -1225,6 +1225,13 @@ def evaluate(W, cid, bid, act, loadout, switches=None, detail=False, respec=None
 
 _OPT = {}
 _CHOICE = {}
+
+
+def reset_caches():
+    """Forget the choice items' best options. _CHOICE keeps the option found for the FIRST loadout evaluated with
+    an item, so a result depends on evaluation order; each optimizer job starts from an empty cache, which keeps a
+    job's result the same in any worker process and order."""
+    _CHOICE.clear()
 
 
 def _options(W, sid):
