@@ -73,7 +73,7 @@ def owned_part(W, model, stats, G, cid, bid, act):
     g = P.grants(G, bare.BI["seq"][: bare.level], bare.subs, bare.feats, bare.styles)
     core = P.core_plan(model, bare, stats)
     core["hotbar"] = P.hotbar_rows(core, g["passives"], g["spells"], [], stats)
-    used = {a["spell"] for r in core["rounds"] + [core["steady"]] for a in r}
+    used = P.plan_spells(core)
     return {"approximate": False, "sheet_from": cid,
             "sheet": {"abilities": dict(bare.sheet["ab"]), "hp": bare.sheet["hp"], "prof": bare.sheet["prof"],
                       "level": bare.level},

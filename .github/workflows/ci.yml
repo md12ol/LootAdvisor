@@ -92,8 +92,10 @@ jobs:
         run: python LootAdvisor/tests/run.py --ci
       - name: Mutation check (every CI check goes red when its rule is broken)
         run: python LootAdvisor/tests/run.py --ci --mutate
-      - name: Gauntlet harness (Lua loads with a stubbed engine, item rule, arena, statistics)
-        run: python LootAdvisor/tests/test_gauntlet.py
+      - name: Gauntlet harness (Lua with a stubbed engine, plans, statistics) and its mutations
+        run: |
+          python LootAdvisor/tests/test_gauntlet.py
+          python LootAdvisor/tests/test_gauntlet.py --mutate
       - name: Optimizer maths (CI tests and their mutations; output checks need game data)
         run: |
           python LootAdvisor/tests/test_optimizer.py --ci

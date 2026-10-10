@@ -80,7 +80,6 @@ def grants(G, seq, subs, feats_taken, styles):
     """What the build's class levels give: passives, spells, resources; plus the passives of every class table (to
     remove the ones the test character has from its own class)."""
     progs, descs, feats, lists = G
-    by_name = {d["Name"]: d for d in descs.values()}
     table = {d["Name"]: d.get("ProgressionTableUUID") for d in descs.values()}
     sub_of = {}
     for d in descs.values():
@@ -95,7 +94,7 @@ def grants(G, seq, subs, feats_taken, styles):
     for t, rs in rows.items():
         for r in rs:
             all_class_passives |= set(_split(r.get("PassivesAdded")))
-    passives, removed, spells, res, profs = [], set(), [], {}, []
+    passives, removed, spells, res, profs, interrupts = [], set(), [], {}, [], []
     counts = {}
     first = seq[0] if seq else None
 
@@ -110,6 +109,9 @@ def grants(G, seq, subs, feats_taken, styles):
             m = re.match(r"UnlockSpell\((\w+)", b)
             if m:
                 spells.append(m.group(1))
+            m = re.match(r"UnlockInterrupt\((\w+)", b)
+            if m:
+                interrupts.append(m.group(1))
             if re.match(r"Proficiency\(\w+\)$", b):
                 profs.append(b)
         for sel in _split(r.get("Selectors")):
@@ -153,7 +155,7 @@ def grants(G, seq, subs, feats_taken, styles):
     remove = sorted(all_class_passives - set(passives))
     resources = [{"kind": k, "level": lv, "n": n} for (k, lv), n in sorted(res.items())]
     return dict(passives=passives, passives_remove=remove, spells=list(dict.fromkeys(spells)), resources=resources,
-                class_levels=counts, boosts=list(dict.fromkeys(profs)))
+                class_levels=counts, boosts=list(dict.fromkeys(profs)), interrupts=list(dict.fromkeys(interrupts)))
 
 
 # ------------------------------------------------------------------------------------------------ round plans
@@ -167,12 +169,104 @@ def A(spell, group, target="@boss", why=None, **kw):
     return d
 
 
-def best_variant(stats, spell, top):
-    """Highest upcast variant (<spell>_<n>) the slots allow; the base spell otherwise."""
-    for lv in range(top, 0, -1):
-        if f"{spell}_{lv}" in stats:
-            return f"{spell}_{lv}"
-    return spell
+def plan_spells(core):
+    """Every spell the round plan may cast, fallbacks included (the sheet must know them all)."""
+    used = set()
+    for r in core["rounds"] + [core["steady"]]:
+        for a in r:
+            while a:
+                used.add(a["spell"])
+                a = a.get("alt")
+    return used
+
+
+def upcast_chain(stats, spell, levels):
+    """The spell's variants from the highest slot level the character has down to the base spell: the round plan
+    tries them in this order, so a spent L6 slot falls back to L5 and so on instead of failing."""
+    out = [f"{spell}_{lv}" for lv in sorted(set(levels), reverse=True) if f"{spell}_{lv}" in stats]
+    return list(dict.fromkeys(out + [spell]))
+
+
+def chain(names, group, target, why, tail=None, **kw):
+    """Nested priority chain: names[0] with alt names[1] ... and finally tail."""
+    a = tail
+    for n in reversed(names):
+        a = A(n, group, target, why, alt=a, **kw)
+    return a
+
+
+def parse_costs(s):
+    """UseCosts -> [(kind, n, level)], read like the in-game harness does (SpellSlotsGroup:1:1:3 = one L3 slot)."""
+    out = []
+    for part in (s or "").split(";"):
+        f = [x.strip() for x in part.split(":")]
+        if f[0] == "SpellSlotsGroup":
+            out.append(("SpellSlot", int(f[1]) if len(f) > 1 else 1, int(f[3]) if len(f) > 3 else 1))
+        elif f[0]:
+            out.append((f[0], int(f[1]) if len(f) > 1 and f[1].isdigit() else 1,
+                        int(f[2]) if len(f) > 2 and f[2].isdigit() else 0))
+    return out
+
+
+TURN_RESOURCES = {"ActionPoint": 1, "BonusActionPoint": 1, "ReactionActionPoint": 1, "Movement": 9}
+
+
+def forecast(plan, slots, resources, stats, n_rounds=16):
+    """What the round plan will cast with the character's resources: per round, the first affordable action of each
+    chain (the same choice the in-game harness makes each turn). No rests. -> [[spell, ...] per round]."""
+    pool = {("SpellSlot", int(lv)): int(n) for lv, n in (slots or {}).items()}
+    for r in resources or []:
+        k = (r["kind"], int(r.get("level") or 0))
+        pool[k] = pool.get(k, 0) + r["n"]
+    out = []
+    for i in range(n_rounds):
+        turn = dict(TURN_RESOURCES)
+        lst = plan["rounds"][i] if i < len(plan["rounds"]) else plan["steady"]
+        picks = []
+        for a in lst:
+            while a:
+                spec = (stats.get(a["spell"]) or {}).get("UseCosts")
+                costs = [] if a.get("cost") == "free" else parse_costs(a.get("cost") or spec)
+                ok = all((turn[k] if k in turn else pool.get((k, lv), 0)) >= n for k, n, lv in costs)
+                if ok:
+                    for k, n, lv in costs:
+                        if k in turn:
+                            turn[k] -= n
+                        else:
+                            pool[(k, lv)] -= n
+                    picks.append(a["spell"])
+                    break
+                a = a.get("alt")
+        out.append(picks)
+    return out
+
+
+def granted_interrupts(passives, item_stats, stats):
+    """Interrupts (reactions) the build's passives and the set's items unlock: UnlockInterrupt in their Boosts, also
+    through an item's PassivesOnEquip."""
+    out = []
+
+    def scan(sid, depth=0):
+        st_ = stats.get(sid) or {}
+        out.extend(re.findall(r"UnlockInterrupt\((\w+)", st_.get("Boosts") or ""))
+        if depth == 0:
+            for p in _split(st_.get("PassivesOnEquip")):
+                scan(p, 1)
+    for p in passives:
+        scan(p, 1)
+    for sid in item_stats:
+        scan(sid)
+    return list(dict.fromkeys(out))
+
+
+# reactions every set has and the model counts (both sides of a pair alike)
+COMMON_REACTIONS = ["Interrupt_AttackOfOpportunity"]
+
+
+def reaction_policy(build_interrupts, set_interrupts):
+    """The plan's reaction answers: the build's and the set's reactions fire on their own ("auto"); everything else
+    the test character has (racial, tadpole, its own class and items) stays off ("never", the harness default)."""
+    return {k: "auto" for k in list(build_interrupts) + list(set_interrupts) + COMMON_REACTIONS}
 
 
 def core_plan(model, st, stats):
@@ -182,6 +276,7 @@ def core_plan(model, st, stats):
     mode = plan["mode"]
     opening, steady, bonus_open, bonus_steady = [], [], [], []
     top = len(model.slots(cl))
+    slot_levels = [i + 1 for i, n in enumerate(model.slots(cl)) if n]
     fighter = cl.get("Fighter", 0)
 
     def attacks(spell, n, target="@boss"):
@@ -224,18 +319,20 @@ def core_plan(model, st, stats):
             opening.append(A(spell, "free", "@boss", "Dread Ambusher attack", requires="action"))
     else:
         cantrip = plan.get("cantrip")
-        nukes = [best_variant(stats, s_, top) for s_, lv in plan.get("nukes") or [] if st.level >= lv
+        nukes = [s_ for s_, lv in plan.get("nukes") or [] if st.level >= lv
                  and int((stats.get(s_) or {}).get("Level") or 1) <= top]
-        chain = A(cantrip, "action", "@boss", "cantrip") if cantrip else None
+        # each spell as a chain: highest slot first, down to the base spell, then the cantrip
+        act = A(cantrip, "action", "@boss", "cantrip") if cantrip else None
         for nk in nukes[:1]:
-            chain = A(nk, "action", "@boss", "nuke", at_target_pos=nk.startswith("Zone_") or None, alt=chain)
+            act = chain(upcast_chain(stats, nk, slot_levels), "action", "@boss", "nuke", tail=act,
+                        at_target_pos=nk.startswith("Zone_") or None)
         if plan.get("rotd") and cl.get("Cleric", 0) >= 2:
-            chain = A("Shout_RadianceOfTheDawn", "action", "@self", "Radiance of the Dawn", alt=chain)
-        steady = [chain] if chain else []
+            act = A("Shout_RadianceOfTheDawn", "action", "@self", "Radiance of the Dawn", alt=act)
+        steady = [act] if act else []
         opening = list(steady)
         if plan.get("conc") and st.level >= plan["conc"][1]:
-            opening = [A(best_variant(stats, plan["conc"][0], top), "action", "@self", "concentration spell",
-                         alt=chain)]
+            opening = [chain(upcast_chain(stats, plan["conc"][0], slot_levels), "action", "@self",
+                             "concentration spell", tail=act)]
         if plan.get("spiritual"):
             bonus_open.append(A("Target_SpiritualWeapon", "bonus", "@boss", "Spiritual Weapon"))
         if plan.get("hex") and cl.get("Warlock", 0):
@@ -367,7 +464,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
                                                                         (sp.get("targets") or 1), 1),
                              "target": "@boss", "at_target_pos": spid.startswith("Zone_") or None})
     acts.sort(key=lambda r: (r["per"] == "none", -r["value"]))
-    used = {a["spell"] for r in core["rounds"] + [core["steady"]] for a in r}
+    used = plan_spells(core)
     items = []
     for slot in EQUIP_ORDER:
         sid = lo.get(slot)
@@ -376,6 +473,9 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         tpl = item_template(sid, templates)
         items.append({"slot": SLOT_GAME[slot] or "Elixir", "stats": sid, "template": tpl, "use": slot == "Elixir" or None,
                       "name": W.items[sid].get("name")})
+    slots = {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))}
+    set_interrupts = granted_interrupts([], [it["stats"] for it in items], stats)
+    build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
     return {
         "char": cid, "build": bid, "act": act, "set": setrec.get("name"), "set_id": setrec.get("id"),
         "sheet": {"abilities": dict(bare.sheet["ab"]), "hp": bare.sheet["hp"], "prof": bare.sheet["prof"],
@@ -383,10 +483,12 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
         "class_levels": g["class_levels"], "subclasses": bare.subs, "feats": bare.feats, "styles": bare.styles,
         "passives_add": g["passives"], "passives_remove": g["passives_remove"],
         "spells_add": sorted(set(g["spells"]) | used),
-        "slots": {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))},
+        "slots": slots,
         "resources": g["resources"], "boosts": g["boosts"], "items": items, "statuses": sorted(set(choice.values())),
         "plan": dict(core, item_actions=acts, item_skipped=skipped,
-                     hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats)),
+                     hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats),
+                     reactions=reaction_policy(build_interrupts, set_interrupts), reactions_default="never",
+                     forecast=forecast(core, slots, g["resources"], stats)),
         "expect": {"ac": st.sheet["ac"], "hp": st.sheet["hp"], "attacks": st.sheet.get("attacks"),
                    "spell": st.sheet.get("spell"), "dpr": round(pred.dpr, 1), "offence": round(pred.offence, 1),
                    "R": round(pred.R, 2), "score": round(pred.score, 2), "events": pred.events},

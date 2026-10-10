@@ -35,6 +35,20 @@ def ev(code, timeout=10.0, side="server"):
     raise TimeoutError("no answer from the game (is it running with Dev on?)")
 
 
+def ev_retry(code, tries=3, timeout=10.0, side="server"):
+    """ev() for reads only (safe to send twice): a timeout is retried, the last one raised."""
+    for i in range(tries):
+        try:
+            return ev(code, timeout=timeout, side=side)
+        except TimeoutError:
+            if i == tries - 1:
+                raise
+
+
+class RunInvalid(RuntimeError):
+    """A run that produced no measurement; the message is the cause recorded with it."""
+
+
 def _load(src_name, dst_name, side):
     with open(os.path.join(HERE, src_name), encoding="utf-8") as f:
         src = f.read()
@@ -60,28 +74,75 @@ def write_se(name, obj):
         json.dump(obj, f, default=str)
 
 
-def run(req, spec=None, timeout=1800, poll=5.0, log=print):
-    """One gauntlet run; returns the run record (the file the game writes into LootAdvisor_gauntlet/)."""
+STATE = ("local F = GAUNTLET.F\nreturn tostring(GAUNTLET.status) .. ' r' .. tostring(GAUNTLET.round) .. ' ' .. "
+         "tostring(F and F.req and F.req.run_id)")
+
+
+def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
+    """One gauntlet run; returns the run record (the file the game writes into LootAdvisor_gauntlet/). The game
+    starts the run on timers and answers at once; a busy game that misses an eval is asked again (status reads
+    only: the start is sent at most twice, the second time only if the game never showed this run). A run that
+    cannot finish raises RunInvalid with the cause instead of hanging."""
+    timeout = timeout or 300 + 120 * int(req.get("rounds") or 16)
     os.makedirs(RUNS, exist_ok=True)
     before = set(os.listdir(RUNS))
     if spec is not None:
         write_se("LootAdvisor_gauntlet_spec.json", spec)
         req = dict(req, spec_file="LootAdvisor_gauntlet_spec.json")
-    r = ev("return GAUNTLET.run(Ext.Json.Parse([==[" + json.dumps(req) + "]==]))")
-    log("  run:", r.strip())
+    req = dict(req, run_id=req.get("run_id") or f"run{time.time_ns()}")
+    start = "return GAUNTLET.run(Ext.Json.Parse([==[" + json.dumps(req) + "]==]))"
+    label = req["run_id"]
+
+    def send_start():
+        try:
+            return ev(start, timeout=20.0).strip()
+        except TimeoutError:
+            return "no answer yet"
+    r = send_start()
+    log("  run:", r)
+    if r == "busy":
+        raise RunInvalid("the game is still busy with another run")
+    seen, resent, misses, failed_polls, polls = r == "started", False, 0, 0, 0
     t0 = time.time()
     while time.time() - t0 < timeout:
         time.sleep(poll)
         new = sorted(set(os.listdir(RUNS)) - before)
         if new:
-            time.sleep(0.5)
+            time.sleep(min(0.5, poll))
             with open(os.path.join(RUNS, new[-1]), encoding="utf-8") as f:
                 return json.load(f)
-        st = ev("return tostring(GAUNTLET.status) .. ' r' .. tostring(GAUNTLET.round)")
+        try:
+            st = ev(STATE, timeout=10.0)
+            misses = 0
+        except TimeoutError:
+            misses += 1
+            log(f"  no answer from the game ({misses}/{max_misses})")
+            if misses >= max_misses:
+                _abort()
+                raise RunInvalid(f"the game did not answer {misses} status reads in a row")
+            continue
+        polls += 1
+        if label in st:
+            seen = True
+        elif not seen and not resent and polls >= 3:
+            resent = True
+            log("  the game never showed this run: starting it again")
+            if send_start() == "busy":
+                raise RunInvalid("the game is busy with another run")
         if "failed" in st:
-            raise RuntimeError(st.strip())
-    ev("return GAUNTLET.abort()")
-    raise TimeoutError("run did not finish")
+            failed_polls += 1
+            if failed_polls >= 2:      # one more poll for the run record the game writes when it stops a run
+                _abort()
+                raise RunInvalid(st.strip())
+    _abort()
+    raise RunInvalid(f"the run did not finish within {timeout} s")
+
+
+def _abort():
+    try:
+        ev_retry("return GAUNTLET.abort()", tries=2)
+    except TimeoutError:
+        pass
 
 
 def main(argv):

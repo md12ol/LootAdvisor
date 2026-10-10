@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 2
+G.VERSION = 3
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -120,17 +120,53 @@ local function canPay(u, costs)
   end
   return true
 end
-local function pay(u, costs)
+-- Pays what the engine has not already taken: before[i] is the amount of costs[i] read just before the cast, so a
+-- cost the engine deducted itself is not paid a second time.
+local function pay(u, costs, before)
   local e = ent(u)
-  for _, c in ipairs(costs) do
-    for _, entry in ipairs(resList(u, c.kind) or {}) do
+  for i, c in ipairs(costs) do
+    local owed = c.n
+    if before and before[i] then owed = c.n - math.max(0, before[i] - resAmount(u, c.kind, c.level)) end
+    for _, entry in ipairs(owed > 0 and resList(u, c.kind) or {}) do
       if not c.level or c.level == 0 or entry.Level == c.level then
-        entry.Amount = math.max(0, entry.Amount - c.n)
+        entry.Amount = math.max(0, entry.Amount - owed)
         break
       end
     end
   end
   pcall(function() e:Replicate("ActionResources") end)
+end
+-- the engine's own cooldown on a spell (per-rest item spells, per-turn class actions); true while it cannot be cast
+local function onCooldown(u, spell)
+  local e = ent(u)
+  local cds = e and try(function() return e.SpellBookCooldowns.Cooldowns end)
+  for i = 1, (cds and #cds or 0) do
+    local id = try(function() return cds[i].SpellId.Prototype end)
+    if id == spell and (try(function() return cds[i].Cooldown end) or 0) > 0 then return true end
+  end
+  return false
+end
+-- Can the character pay for this action right now: action / bonus action / spell slot / class resource from the
+-- action's costs, the harness's own per-rest record, and the engine's cooldown. Returns ok, reason.
+function G.afford(F, a)
+  if F.afford then return F.afford(a) end
+  local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
+  local ok, why = canPay(F.char, costs)
+  if not ok then return false, "no resource " .. tostring(why) end
+  if a.per and F.cooldown[a.spell] then return false, "used this rest" end
+  if onCooldown(F.char, a.spell) then return false, "on cooldown" end
+  return true
+end
+-- Picks the first action of a priority chain (a, a.alt, a.alt.alt, ...) that the character can pay for at the call;
+-- the ones passed over are logged with their reason. nil when nothing in the chain is affordable.
+function G.pickAffordable(F, a, skips)
+  while a do
+    local ok, why = G.afford(F, a)
+    if ok then return a end
+    if skips then skips[#skips + 1] = { spell = a.spell, why = why } end
+    a = a.alt
+  end
+  return nil
 end
 
 -- Refill: "long" = everything; "short" = what the game replenishes on a short rest (+ short-rest cooldowns)
@@ -274,6 +310,9 @@ end
 function G.prep(spec)
   G.reset()
   G.status = "prepping"
+  -- a prep that was given up (timed out) must not mark a later run as prepped when its timers finally finish
+  local gen = (G.prepGen or 0) + 1
+  G.prepGen = gen
   local u = spec.char
   G.results.items = {}
   G.results.before = G.sheet(u)
@@ -330,6 +369,7 @@ function G.prep(spec)
           equipAll(u, spec.items or {}, 1, function()
             for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
             wait(600, function()
+              if G.prepGen ~= gen then return end
               G.refill(u, "long")
               pcall(Osi.SetHitpointsPercentage, u, 100)
               G.results.after = G.sheet(u)
@@ -347,17 +387,19 @@ end
 -- ------------------------------------------------------------------------------------------------ reactions
 -- A reaction the game asks about ("Use reaction?" for Destructive Wrath, Hellish Rebuke, Shield, smites...) stops a
 -- scripted turn until someone answers. Scripted runs therefore set every party character's reactions so the game
--- never asks: each reaction either fires on its own ("auto") or not at all ("never"). The default is "auto"; a plan
--- names any reaction it compares in plan.reactions = { Interrupt_X = "auto" | "never" }, so both sets of a pair run
--- with the same answers. The player's own settings are saved first and put back when the run ends, aborts or fails:
--- reactions are the player's choice whenever a person has control, so manual runs never touch them.
+-- never asks: each reaction either fires on its own ("auto") or not at all ("never"). The default is "never": the
+-- test character's own reactions (racial ones such as Hellish Rebuke, tadpole powers, its own class and items) are
+-- not part of either set. A plan names the reactions it compares in plan.reactions = { Interrupt_X = "auto" }
+-- (plan.py lists the ones the build and the set grant), so both sets of a pair run with the same answers. The
+-- player's own settings are saved first and put back when the run ends, aborts or fails: reactions are the player's
+-- choice whenever a person has control, so manual runs never touch them.
 -- Interrupt preference flags: "Enabled" = may fire, "Ask" = the game asks first.
 local POLICY_FLAGS = { auto = { "Enabled" }, never = {}, ask = { "Ask", "Enabled" } }
-function G.reactionFlags(policy) return POLICY_FLAGS[policy] or POLICY_FLAGS.auto end
+function G.reactionFlags(policy) return POLICY_FLAGS[policy] or POLICY_FLAGS.never end
 function G.reactionPolicy(name, plan)
   local p = plan and plan.reactions and plan.reactions[name]
   if p and POLICY_FLAGS[p] then return p end
-  return (plan and POLICY_FLAGS[plan.reactions_default or ""] and plan.reactions_default) or "auto"
+  return (plan and POLICY_FLAGS[plan.reactions_default or ""] and plan.reactions_default) or "never"
 end
 -- "InterruptInteractionTypes(Ask,Enabled)" -> { "Ask", "Enabled" }
 function G.flagsFromString(s)
@@ -375,6 +417,26 @@ function G.reactionsOf(u)
   local _, P = prefsOf(u)
   local out = {}
   for k, v in pairs(P or {}) do out[k] = G.flagsFromString(v) end
+  return out
+end
+-- Lists the interrupts the character can use, read from the preference map, the interrupt container (class, racial,
+-- tadpole and item interrupts) and Interrupt_ entries in the spell book. A name missing from the preference map would
+-- fire with the game's default, so the policy is written for each name found.
+function G.knownInterrupts(u)
+  local e, P = prefsOf(u)
+  local out, seen = {}, {}
+  local function add(n)
+    if type(n) == "string" and n ~= "" and not seen[n] then seen[n] = true; out[#out + 1] = n end
+  end
+  for k in pairs(P or {}) do add(k) end
+  for _, x in ipairs(e and try(function() return e.InterruptContainer.Interrupts end) or {}) do
+    add(try(function() return x.InterruptData.Interrupt end) or try(function() return x.Data.Interrupt end))
+  end
+  for _, s in ipairs(e and try(function() return e.SpellBook.Spells end) or {}) do
+    local id = try(function() return s.Id.Prototype end)
+    if type(id) == "string" and id:match("^Interrupt_") then add(id) end
+  end
+  table.sort(out)
   return out
 end
 local function setPrefs(u, want)
@@ -404,14 +466,20 @@ function G.reactionsApply(plan, chars)
     local own = G.reactionsOf(u)
     if G.savedReactions[u] == nil then G.savedReactions[u] = own end
     local want, pol = {}, {}
-    for k in pairs(own) do
+    for _, k in ipairs(G.knownInterrupts(u)) do
       pol[k] = G.reactionPolicy(k, plan)
       want[k] = G.reactionFlags(pol[k])
     end
     setPrefs(u, want)
-    local back, ok = G.reactionsOf(u), true
-    for k, flags in pairs(want) do if not sameFlags(back[k] or {}, flags) then ok = false end end
-    report[u] = { name = name(u), reactions = pol, verified = ok }
+    local back, ok, uncovered = G.reactionsOf(u), true, {}
+    for k, flags in pairs(want) do
+      if not sameFlags(back[k] or {}, flags) then
+        ok = false
+        uncovered[#uncovered + 1] = k
+      end
+    end
+    table.sort(uncovered)
+    report[u] = { name = name(u), reactions = pol, verified = ok, uncovered = uncovered }
   end
   return report
 end
@@ -600,8 +668,37 @@ local function spellRange(spell)
   return nil
 end
 
+-- Cast confirmation. Osi.UseSpell returning is no proof of a cast (the pilot logged Fire Bolts as done that never
+-- happened: no line of sight, facing, an enemy in melee). An action counts as done only when the engine shows it:
+-- a CastedSpell event of the character for that spell (an upcast variant counts for its base spell), damage from the
+-- character to the action's target, or one of the action's resources going down. No evidence within the timeout =
+-- a failed action, logged as such, and the fallback runs.
+G.CONFIRM_MS, G.CONFIRM_MAX_MS = 6000, 15000
+local function baseSpell(s) return (tostring(s or ""):gsub("_%d+$", "")) end
+-- P = { who, spell, target, casts0, dmg0, res = { { kind, level, before } } }; resNow(kind, level) -> amount now
+function G.castEvidence(P, casts, dmg, resNow)
+  for i = (P.casts0 or 0) + 1, #(casts or {}) do
+    local c = casts[i]
+    if c.who == P.who and baseSpell(c.spell) == baseSpell(P.spell) then return "cast" end
+  end
+  for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
+    local d = dmg[i]
+    if P.target and P.target ~= P.who and d.target == P.target and (d.source == P.who or d.owner == P.who)
+      and not tostring(d.cause or ""):match("Surface") then
+      return "damage"
+    end
+  end
+  for _, r in ipairs(P.res or {}) do
+    local v = resNow and resNow(r.kind, r.level)
+    if v and r.before and v < r.before then return "resource" end
+  end
+  return nil
+end
+
 -- one scripted action: {spell, target, group ("action" | "bonus" | "free"), cost (override; "free" = granted, e.g.
--- an Extra Attack), requires ("action" / "surge": only after that succeeded this round), alt (fallback action), ms}
+-- an Extra Attack), requires ("action" / "surge": only after that succeeded this round), alt (fallback action),
+-- done_key (what R.done records instead of the group), ms}. A cast that the engine accepts is left PENDING in
+-- F.pending until G.settle confirms or fails it.
 local function doAction(F, a, R)
   if a.requires and not R.done[a.requires] then
     R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round" }
@@ -615,14 +712,20 @@ local function doAction(F, a, R)
     if a.alt then rec.result = reason .. " -> alt"; return doAction(F, a.alt, R) end
   end
   if not tgt then return fallback("no target") end
+  local okp, why = G.afford(F, a)
+  if not okp then return fallback(why) end
   local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
-  local ok, why = canPay(F.char, costs)
-  if not ok then return fallback("no resource " .. tostring(why)) end
-  if a.per and F.cooldown[a.spell] then return fallback("used this rest") end
   local range = a.range or spellRange(a.spell)
   if tgt ~= F.char and range and dist(F.char, tgt) > range + 1.0 then
     return fallback(string.format("out of range %.1f > %.1f", dist(F.char, tgt), range))
   end
+  local res, before = {}, {}
+  for i, c in ipairs(costs) do
+    before[i] = resAmount(F.char, c.kind, c.level)
+    res[#res + 1] = { kind = c.kind, level = c.level, before = before[i] }
+  end
+  local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
+    target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now() }
   local okc, err
   if a.at_target_pos then
     local x, y, z = Osi.GetPosition(tgt)
@@ -631,17 +734,45 @@ local function doAction(F, a, R)
     okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt)
   end
   if not okc then return fallback("engine refused " .. tostring(err)) end
-  pay(F.char, costs)
-  rec.result = "done"
-  if a.group then R.done[a.group] = true end
-  if a.spell == "Shout_ActionSurge" then R.done.surge = true end
-  if a.per then F.cooldown[a.spell] = a.per end
+  rec.result = "pending"
+  F.pending = P
+end
+
+-- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
+-- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
+function G.settle(F, R, t)
+  local P = F.pending
+  if not P then return true end
+  local ev = G.castEvidence(P, R.casts, G.dmg, function(k, lv) return resAmount(F.char, k, lv) end)
+  if ev then
+    F.pending = nil
+    pay(F.char, P.costs, P.before)
+    P.rec.result, P.rec.confirmed, P.rec.ms = "done", ev, t - P.t0
+    local a = P.a
+    R.done[a.done_key or a.group or "free"] = true
+    if a.spell == "Shout_ActionSurge" then R.done.surge = true end
+    if a.per then F.cooldown[a.spell] = a.per end
+    return true
+  end
+  local waited = t - P.t0
+  if waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char)) then return false end
+  F.pending = nil
+  R.cast_misses = (R.cast_misses or 0) + 1
+  P.rec.result = string.format("failed: no cast seen within %.1f s", waited / 1000)
+  if P.a.alt then
+    P.rec.result = P.rec.result .. " -> alt"
+    doAction(F, P.a.alt, R)
+  end
+  return true
 end
 
 -- The shared adaptive rule (identical for both sets of a pair): item actions from plan.item_actions, in their
 -- priority order. A per-rest action spell not used since the last rest replaces the round's core action group; a
 -- bonus-action item spell fills the bonus action when the core plan leaves it free; reactions stay with the engine.
--- Every candidate is logged (used / skipped + reason) in R.item_rule.
+-- An item spell is chosen only when the character can pay for it now (action / bonus action, resources, per-rest
+-- use, engine cooldown); otherwise the next candidate is tried and the core plan keeps its action. A chosen item
+-- action carries the replaced core action as its fallback. Every candidate is logged (used / skipped + reason) in
+-- R.item_rule.
 local function itemRule(F, list, R)
   local out = {}
   for _, a in ipairs(list) do out[#out + 1] = a end
@@ -652,34 +783,90 @@ local function itemRule(F, list, R)
     local log = { spell = it.spell, item = it.item, group = it.group, per = it.per }
     R.item_rule[#R.item_rule + 1] = log
     local entry = { spell = it.spell, group = it.group, target = it.target or "@boss", why = "item: " .. tostring(it.item),
-      item = it.item, per = it.per ~= "none" and it.per or nil, at_target_pos = it.at_target_pos }
+      item = it.item, per = it.per ~= "none" and it.per or nil, at_target_pos = it.at_target_pos, cost = it.cost_override }
+    local okp, why
+    if it.group == "action" or it.group == "bonus" then okp, why = G.afford(F, entry) end
     if it.group == "reaction" then
       log.result = "skipped: reactions are left to the engine"
     elseif it.per ~= "none" and F.cooldown[it.spell] then
       log.result = "skipped: used this rest"
+    elseif (it.group == "action" and replaced) then
+      log.result = "skipped: one item action per round"
+    elseif (it.group == "bonus" and hasBonus) then
+      log.result = "skipped: the core plan uses the bonus action"
+    elseif (it.group == "action" or it.group == "bonus") and not okp then
+      log.result = "skipped: cannot pay (" .. tostring(why) .. ")"
     elseif it.group == "action" then
-      if replaced then
-        log.result = "skipped: one item action per round"
-      else
-        local keep = {}
-        for _, a in ipairs(out) do
-          if a.group ~= "action" and a.requires ~= "action" then keep[#keep + 1] = a end
-        end
-        table.insert(keep, 1, entry)
-        out, replaced = keep, true
-        log.result = "used: replaces the core action"
+      local keep, core = {}, nil
+      for _, a in ipairs(out) do
+        if a.group == "action" and not core then core = a end
+        if a.group ~= "action" then keep[#keep + 1] = a end
       end
+      entry.alt, entry.done_key = core, "item"
+      table.insert(keep, 1, entry)
+      out, replaced = keep, true
+      log.result = "used: replaces the core action"
     elseif it.group == "bonus" then
-      if hasBonus then
-        log.result = "skipped: the core plan uses the bonus action"
-      else
-        out[#out + 1] = entry
-        hasBonus = true
-        log.result = "used: free bonus action"
-      end
+      out[#out + 1] = entry
+      hasBonus = true
+      log.result = "used: free bonus action"
     end
   end
   return out
+end
+
+-- Casts of the test character that no part of its plan asked for (its own racial / tadpole / class reactions,
+-- leftovers of the test character's sheet): they would count as the set's damage. Reactions the plan sets to "auto"
+-- are allowed, matched on the name after its prefix (Interrupt_HellishRebuke ~ Target_HellishRebuke).
+local function core(s) return (baseSpell(s):gsub("^[^_]+_", "")) end
+function G.foreignCasts(rounds, me, plan)
+  local allowed = {}
+  local function allow(a)
+    while a do allowed[core(a.spell)] = true; a = a.alt end
+  end
+  for _, r in ipairs(plan.rounds or {}) do for _, a in ipairs(r) do allow(a) end end
+  for _, a in ipairs(plan.steady or {}) do allow(a) end
+  for _, a in ipairs(plan.defence_opening or {}) do allow(a) end
+  for _, it in ipairs(plan.item_actions or {}) do allowed[core(it.spell)] = true end
+  for k, p in pairs(plan.reactions or {}) do if p == "auto" then allowed[core(k)] = true end end
+  local out = {}
+  for _, R in ipairs(rounds or {}) do
+    for _, c in ipairs(R.casts or {}) do
+      if c.who == me and not allowed[core(c.spell)] then out[#out + 1] = { r = R.r, spell = c.spell } end
+    end
+  end
+  return out
+end
+
+-- Is the run a measurement? { valid, causes }. Invalid: ended early (turn never came, aborted, reset, prep failed,
+-- a reaction prompt), a reaction prompt the policy missed, a test character whose reactions could not be set, casts
+-- outside the plan, or an acting round in which no action was confirmed.
+function G.judge(rounds, why, results, opts)
+  local causes = {}
+  if why and why ~= "rounds done" then causes[#causes + 1] = "ended: " .. why end
+  if results.reaction_misses and #results.reaction_misses > 0 then
+    causes[#causes + 1] = #results.reaction_misses .. " reaction prompt(s) not covered by the policy"
+  end
+  local me = opts and opts.me
+  local rep = me and results.reactions and results.reactions[me]
+  if rep and rep.verified == false then
+    causes[#causes + 1] = "reactions not set: " .. table.concat(rep.uncovered or {}, ", ")
+  end
+  if results.foreign_casts and #results.foreign_casts > 0 then
+    local seen, names = {}, {}
+    for _, c in ipairs(results.foreign_casts) do
+      if not seen[c.spell] then seen[c.spell] = true; names[#names + 1] = c.spell end
+    end
+    causes[#causes + 1] = "the test character cast outside the plan: " .. table.concat(names, ", ")
+  end
+  if not (opts and opts.char_acts == false) then
+    local idle = 0
+    for _, R in ipairs(rounds or {}) do
+      if not (R.done and (R.done.action or R.done.item)) then idle = idle + 1 end
+    end
+    if idle > 0 then causes[#causes + 1] = idle .. " round(s) without a confirmed action" end
+  end
+  return { valid = #causes == 0, causes = causes }
 end
 
 
@@ -806,23 +993,34 @@ local function roundStart(F)
   end
   F.hpChar = try(Osi.GetHitpoints, F.char)
   G.rounds[#G.rounds + 1] = R
-  if F.manual then F.queue, F.qi = {}, 0; return end
-  local plan = F.plan
-  local k = G.round
-  if S.fight_rounds then k = ((G.round - 1) % S.fight_rounds) + 1 end
+  -- the queue is planned on the first act step, once the engine has refilled the turn's resources
+  F.queue, F.qi, F.pending = (F.manual and {} or nil), 0, nil
+end
+
+-- The round's queue from the character's real resources now: each entry of the round plan becomes the first
+-- affordable action of its priority chain (an L6 upcast while an L6 slot is left, then L5 ..., the base spell, the
+-- cantrip; Radiance of the Dawn while Channel Divinity lasts); the ones passed over go to R.plan_skips, not to the
+-- failed actions. Then the shared item rule. Every action is checked again when it is cast.
+function G.planRound(F, R)
+  local S, plan = F.S, F.plan
+  local k = R.r
+  if S.fight_rounds then k = ((R.r - 1) % S.fight_rounds) + 1 end
   local list = (plan.rounds or {})[k] or plan.steady or {}
-  if S.char_acts == false then
-    list = (k == 1) and (plan.defence_opening or {}) or {}
-  else
-    list = itemRule(F, list, R)
+  if S.char_acts == false then list = (k == 1) and (plan.defence_opening or {}) or {} end
+  R.plan_skips = R.plan_skips or {}
+  local out = {}
+  for _, a in ipairs(list) do
+    local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
+    if pick then out[#out + 1] = pick end
   end
-  F.queue, F.qi = list, 0
+  if S.char_acts == false then return out end
+  return itemRule(F, out, R)
 end
 
 -- per-run numbers (the same for scripted and manual runs)
 local function summarize(F)
   local enemies = {}
-  for i, d in ipairs(F.enemies) do enemies[uuid(d)] = i end
+  for i, d in ipairs(F.enemies or {}) do enemies[uuid(d)] = i end
   local me = uuid(F.char)
   local per = {}
   for _, R in ipairs(G.rounds) do per[R.r] = { dealt = 0, taken = 0, hits_taken = 0, rows = 0 } end
@@ -850,12 +1048,13 @@ local function summarize(F)
   end
   local hp = try(Osi.GetMaxHitpoints, F.char) or 0
   local tk = mean(taken)
-  local failed = 0
+  local failed, misses = 0, 0
   for _, R in ipairs(G.rounds) do
     for _, a in ipairs(R.actions) do if a.result ~= "done" then failed = failed + 1 end end
+    misses = misses + (R.cast_misses or 0)
   end
   return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
-    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed }
+    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses }
 end
 
 function G.difficulty()
@@ -875,47 +1074,77 @@ local function finish(F, why)
   if F.manual and G.barSaved and why ~= "reset" then G.results.hotbar_restore = G.hotbarRestore() end
   G.results.summary = summarize(F)
   G.results.ended = why or "rounds done"
+  if not F.manual then
+    G.results.foreign_casts = G.foreignCasts(G.rounds, uuid(F.char), F.plan or {})
+    local j = G.judge(G.rounds, G.results.ended, G.results, { me = uuid(F.char), char_acts = F.S and F.S.char_acts })
+    G.results.valid, G.results.invalid = j.valid, j.causes
+  end
   G.status = "done"
   G.runSeq = (G.runSeq or 0) + 1
+  local spec = F.spec or {}
   local rec = { run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = F.req.haste and true or false,
-    respec = F.spec.respec or "planned", spec_id = { build = F.spec.build, set = F.spec.set_id, act = F.spec.act,
-      set_name = F.spec.set }, expect = F.spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
-    log = G.log }
+    respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
+      set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
+    log = G.log, valid = G.results.valid, invalid = G.results.invalid }
   rec.req.spec = nil
   try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d.json", F.started, G.runSeq),
     Ext.Json.Stringify(rec))
   G.dump()
   G.notify({ kind = "result", run = G.runSeq, mode = rec.mode, spec = rec.spec_id, scenario = rec.scenario,
-    summary = G.results.summary, expect = F.spec.expect })
+    summary = G.results.summary, expect = spec.expect })
 end
 
 -- G.run(req): req = {mode = "scripted" | "manual", char (uuid; default the host), build, set, act, scenario
 -- ("boss" | "pack" | "defence" | "longday"), haste, tuned, rounds, label, spec (a full spec from run.py)}
+-- Returns at once ("started"): the spec is read and the character prepared on timers, so the eval that starts a run
+-- stays small and does not time out. Anything that stops a run before or during the fight (bad request, prep failed
+-- or timed out, arena not clear) still ends in a run record, marked invalid with its cause.
+G.PREP_MS = 120000
 function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
+  local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
+    state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"] }
+  G.F = F
+  G.reset()
+  G.status = "starting"
+  wait(50, function() G.start(F) end)
+  return "started"
+end
+
+local function stop(F, cause)
+  note("FAIL %s", cause)
+  finish(F, cause)
+end
+
+function G.enterCombat(F)
+  pcall(Osi.EnterCombat, F.char, F.enemies[1])
+  for _, d in ipairs(F.enemies) do pcall(Osi.EnterCombat, d, F.char) end
+end
+
+function G.start(F)
+  local req = F.req
   local spec, err = compose(req)
-  if not spec then G.fail(err); return G.status end
+  if not spec then return stop(F, "bad request: " .. tostring(err)) end
   local u = req.char or try(Osi.GetHostCharacter)
   spec.char = u
   local scn = req.scenario or "boss"
   local S = G.SCENARIOS[scn]
-  if not S then G.fail("unknown scenario " .. tostring(scn)); return G.status end
+  if not S then return stop(F, "unknown scenario " .. tostring(scn)) end
   local C = G.catalog() or {}
   local act = tostring(req.act or spec.act)
   local E = req.enemy or (C.enemies and C.enemies[act])
-  if not E then G.fail("no enemy stats for act " .. act); return G.status end
+  if not E then return stop(F, "no enemy stats for act " .. act) end
   local A
   if req.arena then
     A = (C.arenas or {})[req.arena]
-    if not A then G.fail("unknown arena " .. tostring(req.arena)); return G.status end
+    if not A then return stop(F, "unknown arena " .. tostring(req.arena)) end
   end
   G.origin = G.origin or { Osi.GetPosition(u) }
-  local F = { char = u, req = req, spec = spec, plan = spec.plan or {}, S = S, manual = req.mode == "manual",
-    rounds = req.rounds or S.rounds, cooldown = {}, started = math.floor(now() / 1000), state = "prep" }
+  F.char, F.spec, F.plan, F.S, F.rounds = u, spec, spec.plan or {}, S, req.rounds or S.rounds
+  F.prepDeadline = now() + G.PREP_MS
   G.manualPrep = F.manual
   G.prep(spec)
-  G.F = F
   local function waitPrep()
     if G.status == "prepped" then
       local prepRes = G.results
@@ -937,24 +1166,18 @@ function G.run(req)
         G.results.arena = req.arena
         for d in pairs(G.spawned or {}) do pcall(Osi.RequestDelete, d) end
         local intr = G.arenaIntruders(A)
-        if #intr > 0 then
-          G.fail("arena " .. req.arena .. " not clear: " .. table.concat(intr, "; "))
-          F.state = "done"
-          if not F.manual then G.reactionsRestore(); G.unparkOthers() end
-          return
-        end
+        if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
       end
       F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
-      if #F.enemies == 0 then G.fail("no enemies"); F.state = "done"; return end
+      if #F.enemies == 0 then return stop(F, "no enemies") end
       wait(1500, function()
         G.results.enemies = G.enemyReport(F.enemies)
         G.results.enemy_target = E
         G.results.char = G.sheet(u)
         G.round, G.fightOn = 0, true
         F.hpChar = try(Osi.GetHitpoints, u)
-        pcall(Osi.EnterCombat, u, F.enemies[1])
-        for _, d in ipairs(F.enemies) do pcall(Osi.EnterCombat, d, u) end
-        F.state, F.deadline = "wait", now() + 60000
+        G.enterCombat(F)
+        F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
         if F.manual then
           local rows = G.hotbarRows(spec, (G.results.prep or {}).consumables)
           G.hotbarFill(u, rows)
@@ -963,13 +1186,38 @@ function G.run(req)
         G.notify({ kind = "status", text = "fight on: " .. scn .. (F.manual and " - your turns" or "") })
       end)
     elseif tostring(G.status):match("^failed") then
-      F.state = "done"
+      stop(F, "prep " .. tostring(G.status))
+    elseif now() > F.prepDeadline then
+      G.prepGen = (G.prepGen or 0) + 1
+      stop(F, string.format("prep timed out after %d s (status %s)", math.floor(G.PREP_MS / 1000), tostring(G.status)))
     else
       wait(300, waitPrep)
     end
   end
   wait(300, waitPrep)
-  return "started"
+end
+
+-- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
+-- combat if the character left it, else the turn of whoever holds it is ended); after TURN_RECOVERIES tries the run
+-- ends, invalid. Ending the character's own turn is retried until the engine lets go of it.
+G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 45000, 2, 4000, 3, 90000
+function G.recoverTurn(F, inCombat, holders)
+  if not inCombat then
+    G.enterCombat(F)
+    return "the character was out of combat: entered it again"
+  end
+  if #holders > 0 then
+    for _, h in ipairs(holders) do G.endTurn(h) end
+    return "ended the turn of " .. table.concat(holders, ", ")
+  end
+  G.enterCombat(F)
+  return "nobody holds the turn: entered combat again"
+end
+local function turnHolders(F)
+  local out = {}
+  for _, d in ipairs(F.enemies or {}) do if activeTurn(d) then out[#out + 1] = uuid(d) end end
+  for _, m in ipairs(partyMembers()) do if m ~= uuid(F.char) and activeTurn(m) then out[#out + 1] = m end end
+  return out
 end
 
 function G.resetFight()
@@ -982,40 +1230,73 @@ function G.resetFight()
 end
 
 local lastTick = 0
-local function tick()
-  local F = G.F
-  if not F or not F.state or F.state == "done" or F.state == "prep" then return end
-  local t = now()
-  if t - lastTick < 100 then return end
-  lastTick = t
+-- One step of the fight loop at time t (the Tick handler calls it every 100 ms; the tests call it directly).
+function G.step(F, t)
   if F.state ~= "player" then
     local miss = G.reactionGuard(F)
     if miss then return finish(F, "reaction prompt " .. tostring(miss) .. " not covered by the policy") end
   end
   if F.state == "wait" then
     if activeTurn(F.char) then
+      F.recoveries = 0
       if G.round >= F.rounds then return finish(F) end
       roundStart(F)
-      F.state, F.next = F.manual and "player" or "act", t + 400
+      F.state, F.next, F.turnStart = F.manual and "player" or "act", t + 400, t
     elseif t > F.deadline then
-      finish(F, "the character's turn never came (round " .. G.round .. ")")
+      F.recoveries = (F.recoveries or 0) + 1
+      if F.recoveries > G.TURN_RECOVERIES then
+        return finish(F, "the character's turn never came (round " .. G.round .. ")")
+      end
+      local inCombat = try(Osi.IsInCombat, F.char)
+      local what = G.recoverTurn(F, inCombat ~= 0, turnHolders(F))
+      G.results.turn_recoveries = G.results.turn_recoveries or {}
+      G.results.turn_recoveries[#G.results.turn_recoveries + 1] = { r = G.round, what = what }
+      note("turn watchdog (round %d): %s", G.round, what)
+      F.deadline = t + G.TURN_WAIT_MS
     end
   elseif F.state == "player" then
     if not activeTurn(F.char) then F.state, F.deadline = "wait", t + 600000 end
   elseif F.state == "act" and t >= F.next then
+    local R = G.rounds[#G.rounds]
+    if t - (F.turnStart or t) > G.ACT_MAX_MS then
+      note("turn took over %d s: ending it", math.floor(G.ACT_MAX_MS / 1000))
+      if F.pending then F.pending.rec.result = "failed: turn time limit"; F.pending = nil end
+      F.state, F.next = "ending", t
+      return
+    end
+    if F.pending then
+      if not G.settle(F, R, t) or F.pending then F.next = t + 150; return end
+    end
     if casting(F.char) then F.next = t + 200; return end
+    if not F.queue then F.queue, F.qi = G.planRound(F, R), 0 end
     if F.qi < #F.queue then
       F.qi = F.qi + 1
-      doAction(F, F.queue[F.qi], G.rounds[#G.rounds])
-      F.next = t + (F.queue[F.qi].ms or 1800)
+      doAction(F, F.queue[F.qi], R)
+      F.next = t + (F.queue[F.qi].ms or 300)
     else
       F.state, F.next = "ending", t + 300
     end
   elseif F.state == "ending" and t >= F.next then
     if casting(F.char) then F.next = t + 200; return end
     G.endTurn(F.char)
-    F.state, F.deadline = "wait", t + 90000
+    F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
+  elseif F.state == "ended" then
+    if not activeTurn(F.char) then
+      F.state, F.deadline = "wait", t + G.TURN_WAIT_MS
+    elseif t >= F.next then
+      if F.endTries >= G.END_TURN_TRIES then return finish(F, "the character's turn could not be ended") end
+      G.endTurn(F.char)
+      F.endTries, F.next = F.endTries + 1, t + G.END_TURN_MS
+    end
   end
+end
+local function tick()
+  local F = G.F
+  if not F or not F.state or F.state == "done" or F.state == "prep" then return end
+  local t = now()
+  if t - lastTick < 100 then return end
+  lastTick = t
+  G.step(F, t)
 end
 if G._tick then pcall(function() Ext.Events.Tick:Unsubscribe(G._tick) end) end
 G._tick = Ext.Events.Tick:Subscribe(function() pcall(tick) end)
@@ -1166,6 +1447,6 @@ if G._net then pcall(function() Ext.Events.NetMessage:Unsubscribe(G._net) end) e
 G._net = Ext.Events.NetMessage:Subscribe(function(e) pcall(onNet, e) end)
 
 -- pure helpers, exposed for the tests (tests/test_gauntlet.py)
-G._itemRule, G._parseCosts = itemRule, parseCosts
+G._itemRule, G._parseCosts, G._doAction, G._roundStart = itemRule, parseCosts, doAction, roundStart
 
 return "gauntlet v" .. G.VERSION .. " loaded"

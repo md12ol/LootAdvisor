@@ -65,7 +65,7 @@ Two of the files the Rebuild writes are tracked and carry the build time (`Page/
 ```bash
 python tests/run.py [--mutate] [--ci]     # regression suite; --mutate proves every check can fail, --ci = no game data
 python tests/test_optimizer.py [--ci] [--mutate]   # optimizer maths (CI) + checks of its output (run the optimizer first)
-python tests/test_gauntlet.py             # gauntlet harness without the game: Lua compiles, item rule, statistics
+python tests/test_gauntlet.py [--mutate]  # gauntlet harness without the game; --mutate proves each test can fail
 python tools/leak_scan.py                 # no game text in shipped files
 ```
 CI runs the `--ci` parts; the pre-push hook from BG3Tools runs the full suite. How to add a check: CONTRIBUTING in
@@ -97,9 +97,19 @@ python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md repo
 The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
 through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
 Scripted runs park the rest of the party 40 m away and set every party character's reactions so the game never asks
-("Use reaction?" would stop a scripted turn): each fires on its own, or not at all when the plan names it under
-`plan.reactions`. The player's own reaction settings are put back when the run ends; manual runs never change them. A
-prompt that still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record.
+("Use reaction?" would stop a scripted turn): the reactions the build and the set grant (`plan.reactions`, written by
+`plan.py`) fire on their own; every other reaction the character has (racial, tadpole, its own class and items) is
+off. The player's own reaction settings are put back when the run ends; manual runs never change them. A prompt that
+still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record.
+
+Each turn is planned from the resources the character has at that moment (an upcast falls back to a lower slot, then
+the base spell, then the cantrip; an item spell is used only when it can be paid), and a scripted action counts as done
+only when the game shows it (a cast event, damage to its target, or its cost spent); otherwise it is logged as failed
+and its fallback runs. A run is recorded as invalid, with the causes, when it ends early (the character's turn never
+came after the recovery attempts, the prep timed out, ...), a round passes without a confirmed action, or the
+character casts something outside its plan. `run.py --report` leaves invalid runs out, and marks the whole report
+INVALID when a control pair (two sets the model rates within 5%) differs in the game by more than `--control-tol`
+(default 15%).
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository
