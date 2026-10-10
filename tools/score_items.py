@@ -74,6 +74,7 @@ from la_common import (DATA, PLAY_ACTS, RARITY_RANK, SCORES_DIR, NameIndex, buil
                        deaccent, load_builds_lua, load_items, load_levels, load_recipes, load_sources,
                        origin_of_source, short, source_act, split_rarity)
 from la_research import ResearchParser, Scanner, segments  # noqa: E402
+import tooltip_warn as TW  # noqa: E402
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "sets_artifact"))
 import playertext as PT  # noqa: E402  - player-facing wording (same filter as the Sets page)
@@ -2558,7 +2559,8 @@ def write_lua(all_chars, item_info, universe, warning_text, how_text):
     ix = {sid: k for k, sid in enumerate(order, 1)}
     out = ["-- LootAdvisor data (generated, do not edit).",
            "-- LA.Data.items[i] = { id=stats_id, n=name, r=rarity, s=item slot, a=first act, t={root templates},",
-           "--   w=warning (theft / kill / story / missable / Dark Urge only), g=how to get,",
+           "--   w=warning (theft / kill / story / missable / Dark Urge only; full text, shown in the F6 list),",
+           "--   tw=the same warning in at most 3 tooltip lines (item tooltip), g=how to get,",
            "--   d=display per act (3 chars, act 1-3): m marker+frame+text, t marker on the trader, l list window only,",
            "--     - not obtainable in that act; cp={copies per act}; od={best drop chance per act} (list-only odds);",
            "--   o={party owners}: a unique / scarce-material item belongs to these characters; others show 'better on X',",
@@ -2605,7 +2607,8 @@ def write_lua(all_chars, item_info, universe, warning_text, how_text):
                    f"od={{{','.join(str(ii['display']['odds'].get(a, ii['display']['odds'].get(str(a), 0))) for a in (1, 2, 3))}}},"
                    f"o={{{','.join(lua_str(x) for x in ii.get('owners') or [])}}},"
                    f"ot={{{','.join(lua_str(x) for x in ii.get('owner_exact_tie') or [])}}},"
-                   f"w={lua_str(short(warn, 150))},g={lua_str(short(how, 170))},l={{{','.join(locs)}}}}},")
+                   f"w={lua_str(warn)},tw={lua_str(TW.shorten(sid, warn))},g={lua_str(short(how, 170))},"
+                   f"l={{{','.join(locs)}}}}},")
     out.append("  },")
     out.append("  chars = {")
     for cid, c in all_chars.items():

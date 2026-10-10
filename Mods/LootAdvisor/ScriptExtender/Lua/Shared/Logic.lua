@@ -191,7 +191,7 @@ function L.Recommend(charKey, ctx, state, baPick, baOrder)
       local it = LA.Item(idx)
       row = { i = idx, id = it.id, n = it.n, r = it.r, slot = slot, rank = rank, s = st.s, mode = st.mode,
               reason = st.reason, better = st.better, shared = st.shared, notes = st.notes, sets = {},
-              why = b.why and b.why[idx] or "", w = it.w or "", g = it.g or "",
+              why = b.why and b.why[idx] or "", w = it.w or "", tw = it.tw or "", g = it.g or "",
               odds = it.od and it.od[act] or nil, t = it.t or {} }
       rowsByItem[key] = row
       res.rows[#res.rows + 1] = row

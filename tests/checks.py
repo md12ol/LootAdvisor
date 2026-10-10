@@ -642,7 +642,6 @@ def check_first_builds_and_ruled_owners(env):
         fails.append("nothing checked: no origin has a Build Advisor build")
     return fails
 
-
 # ==================================================================== 11. Noesis only from Ext.UI.Defer
 # Noesis renders in parallel with Lua. Before Script Extender v33 (no Ext.UI.Defer) a walk of the UI tree from the
 # game tick can reach an element the UI has just freed and crash the game, so the client must not touch the tree
@@ -775,6 +774,212 @@ def check_noesis_only_through_defer(env):
     return fails
 
 
+# ================================================= 12. tooltip warnings: short, nothing lost, full text kept for F6
+# The tooltip's advice text column, measured on in-game captures: about 520 px at 1080p, about 12 px per average
+# lowercase letter of the tooltip font. Kept here on purpose instead of imported from tools/tooltip_warn.py, so a
+# change to the pipeline's own measure cannot make this check agree with it.
+TIP_LINE_UNITS = 43.0
+TIP_MAX_LINES = 3
+
+
+def _units(ch):
+    if ch in "iljI.,:;!|'":
+        return 0.45
+    if ch in "ftr()[]/-":
+        return 0.62
+    if ch == " ":
+        return 0.5
+    if ch in "mwMW":
+        return 1.45
+    return 1.3 if ch.isupper() else 1.0
+
+
+def tip_lines(text):
+    lines, cur = 0, ""
+    for word in text.split():
+        nxt = word if not cur else cur + " " + word
+        if cur and sum(map(_units, nxt)) > TIP_LINE_UNITS:
+            lines, cur = lines + 1, word
+        else:
+            cur = nxt
+    return lines + (1 if cur else 0)
+
+
+# capitalised words that are not names (sentence starts and stock words of the warnings)
+_NOT_NAMES = {
+    "a", "act", "alternatives", "also", "an", "bug", "buy", "can", "companion", "dc", "freeing", "get", "getting",
+    "guides", "high", "if", "it", "its", "kill", "killing", "looting", "lost", "mind", "missable", "must", "needs",
+    "not", "one", "only", "opening", "pickpocket", "quest", "requires", "reward", "same", "she", "he", "story",
+    "taking", "take", "that", "the", "theft", "they", "this", "under", "you", "yes", "breaking", "isn't", "steps",
+    "vendor", "boss", "dark", "urge", "on", "or", "by", "from", "in", "for", "and", "to", "of", "story-locked",
+    "npc", "win", "become", "else", "also", "then",
+}
+# kinds of cost: a short form has to keep each kind the full text names (any word of the kind will do)
+_KINDS = {
+    "crime": ("theft", "steal", "stole", "crime", "pickpocket"),
+    "pickpocket": ("pickpocket",),
+    "death": ("kill", "die", "dead", "death", "murder"),
+    "loss": ("missable", "lost", "lose", "gone", "removes", "leaves", "closes", "fails", "exclusive", "only one",
+             "get it first", "before"),
+    "hostile": ("hostile", "alarm", "attack", "fight"),
+    "story": ("story", "path"),
+    "bug": ("bug", "breaks"),
+}
+_NUM_WORDS = {"one": "1", "two": "2", "three": "3", "third": "3", "3rd": "3", "six": "6"}
+# names written two ways in the warnings (left = what may stand for the right)
+_SAME_NAME = {"durge": "dark urge", "selune": "selûne"}
+
+
+def warn_facts(text):
+    """The facts a short warning must keep: names (capitalised words that are not stock words), numbers, acts and
+    the kinds of cost. Returned as a set of strings."""
+    t = (text or "").replace("’", "'").replace("Selûne", "Selune")
+    facts = set()
+    for m in re.finditer(r"\bAct (III|II|I)\b", t):
+        facts.add("act " + m.group(1))
+    t2 = re.sub(r"\bAct (III|II|I)\b", " ", t)
+    t2 = re.sub(r"\bDark Urge\b", "Durge", t2)
+    for w in re.findall(r"[A-Za-z][A-Za-z'\-]*", t2):
+        w = re.sub(r"'s$", "", w.split("-")[0]).strip("'")
+        if w[:1].isupper() and w.lower() not in _NOT_NAMES and len(w) > 1:
+            facts.add("name " + w.lower())
+    low = t.lower()
+    for n in re.findall(r"\b\d+", low):
+        facts.add("number " + n)
+    for word, n in _NUM_WORDS.items():
+        if re.search(r"\b" + word + r"\b", low):
+            facts.add("number " + n)
+    for kind, words in _KINDS.items():
+        if any(w in low for w in words):
+            facts.add("kind " + kind)
+    return facts
+
+
+# A fact the short form may leave out because something it keeps stands for the same game event (fact -> pattern
+# the short form must contain instead). Each pair is one story event the game ties together:
+#   Last Light (Inn) falls exactly when Isobel dies or is taken (the pipeline's own condition text pairs them);
+#   the Shar path is Shadowheart killing the Nightsong (the pipeline's condition text names it so; either
+#   one stands for the other);
+#   siding against the Emerald Grove is the goblin side, i.e. not the tiefling side.
+_ISOBEL = r"\bIsobel (dies|is kidnapped)"
+_SHAR = r"\bShadowheart kills the Nightsong"
+IMPLIED = {
+    "name last": _ISOBEL, "name light": _ISOBEL, "name inn": _ISOBEL,
+    "name shar": _SHAR, "kind story": _SHAR + r"|\bShar path",
+    "name shadowheart": r"\bShar path", "name nightsong": r"\bShar path",
+    "name emerald": r"\btiefling side", "name grove": r"\btiefling side",
+}
+
+
+def lost_facts(full, short):
+    lost = warn_facts(full) - warn_facts(short)
+    return sorted(f for f in lost if not (f in IMPLIED and re.search(IMPLIED[f], short or "")))
+
+
+def page_warnings(env):
+    """stats id -> every warning text the Sets page data holds for it (data/scores/*.json), or None when the page
+    data is not built here (CI: tracked files only)."""
+    paths = [p for p in glob.glob(os.path.join(env.root, "data", "scores", "*.json"))
+             if not os.path.basename(p).startswith("_") and os.path.basename(p) not in ("owners.json",
+                                                                                         "name_matches.json")]
+    if not paths:
+        return None
+    out = {}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("sid"), str) and isinstance(o.get("warning"), str) and o["warning"]:
+                out.setdefault(o["sid"], set()).add(o["warning"])
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for v in o:
+                walk(v)
+    for p in paths:
+        with open(p, encoding="utf-8") as f:
+            walk(json.load(f))
+    return out
+
+
+def check_tooltip_warnings(env):
+    """Every item warning has a tooltip form (LootData tw) of at most 3 lines at the tooltip width that keeps every
+    name, number, act and kind of cost of the full warning (LootData w); the full text stays in w (the F6 list) and
+    in the Sets page data; the tooltip shows the short form, the F6 rows carry the full one."""
+    L = env.lua()
+    G = L.globals()
+    items = G.LA.Data["items"]
+    fails, n_warn, n_short = [], 0, 0
+    by_sid = {}
+    for i in range(1, len(items) + 1):
+        it = items[i]
+        w, tw = it.w or "", it.tw or ""
+        if not w:
+            if tw:
+                fails.append(f"{it.id}: tooltip warning without a full warning")
+            continue
+        n_warn += 1
+        by_sid[it.id] = (w, tw)
+        if not tw:
+            fails.append(f"{it.id}: no tooltip warning for '{w[:60]}'")
+            continue
+        if tw != w:
+            n_short += 1
+        lines = tip_lines(tw)
+        if lines > TIP_MAX_LINES:
+            fails.append(f"{it.id}: tooltip warning takes {lines} lines: '{tw}'")
+        lost = lost_facts(w, tw)
+        if lost:
+            fails.append(f"{it.id}: tooltip warning loses {', '.join(lost)}: '{tw}' (full: '{w}')")
+        if w.endswith("..."):
+            fails.append(f"{it.id}: F6 warning is cut: '{w}'")
+        if len(tw) > len(w):
+            fails.append(f"{it.id}: tooltip warning is longer than the full text: '{tw}'")
+    # the page data keeps the full text: no page warning is the shortened tooltip form
+    pw = page_warnings(env)
+    n_page = 0
+    if pw is not None:
+        for sid, (w, tw) in by_sid.items():
+            for text in pw.get(sid, ()):
+                n_page += 1
+                if tw != w and text == tw:
+                    fails.append(f"{sid}: the Sets page data holds the tooltip form '{tw}'")
+                if text.endswith("...") and not w.endswith("..."):
+                    fails.append(f"{sid}: the Sets page warning is cut: '{text}'")
+    # what the mod shows: the tooltip text from the real Tooltip.lua, the F6 row text from Logic.lua
+    chars = lua_dict(G.LA.Data.chars)
+    n_tips = 0
+    for char, cd in chars.items():
+        for b in lua_list(cd.b):
+            for act in ACTS:
+                if b.a is None or b.a[act] is None:
+                    continue
+                res = G.LA.Logic.Recommend(char, ctx_for(L, char, b), state_for(L, chars, act, False), b.id, None)
+                if res is None or res.rows is None:
+                    continue
+                G.LA.Tip.Apply(res)
+                advice = G.LA.Tip.advice
+                for r in lua_list(res.rows):
+                    full = by_sid.get(r.id)
+                    if full and (r.w or "") != full[0]:
+                        fails.append(f"{char}.{b.id} act {act}: F6 row of {r.id} does not carry the full warning")
+                    adv = advice[r.id]
+                    if adv is None or not adv.warn:
+                        continue
+                    n_tips += 1
+                    if full is None or adv.body != full[1]:
+                        fails.append(f"{char}.{b.id} act {act}: tooltip of {r.id} shows '{adv.body}', not its "
+                                     "tooltip warning")
+                    elif tip_lines(adv.body) > TIP_MAX_LINES:
+                        fails.append(f"{char}.{b.id} act {act}: tooltip of {r.id} takes {tip_lines(adv.body)} lines")
+    env.counts["warnings"] = n_warn
+    env.counts["shortened"] = n_short
+    env.counts["tooltip warnings shown"] = n_tips
+    env.counts["page warnings"] = n_page if pw is not None else "not built"
+    if n_warn == 0 or n_tips == 0:
+        fails.append(f"nothing checked: {n_warn} warnings, {n_tips} tooltip warnings shown")
+    return sorted(set(fails))
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -789,4 +994,5 @@ CHECKS = [
     ("first builds follow Build Advisor; Weave kit owned by Gale", check_first_builds_and_ruled_owners, False),
     ("UI tree touched only through Ext.UI.Defer (old Script Extender: not at all)", check_noesis_only_through_defer,
      False),
+    ("tooltip warnings: at most 3 lines, nothing lost, full text in F6 / page", check_tooltip_warnings, False),
 ]

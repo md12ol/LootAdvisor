@@ -404,7 +404,7 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
         <thead><tr><th>Line</th><th>What it says</th></tr></thead>
         <tbody>
           <tr><td class="nw">1</td><td><b>Best</b>, <b>Runner-up</b> or <b>Set</b>, the slot, and the character it is for.</td></tr>
-          <tr><td class="nw">2</td><td>The most important of: "Better on X"; "Path closed: …"; "Shared pick with X"; the key part of a warning (missable first, then a kill or a loss, then a theft); otherwise the status ("You have it", "On your map", "In another area", "No fixed spot (see F6)", "Only if you already have it") and a short reason.</td></tr>
+          <tr><td class="nw">2-4</td><td>The most important of: "Better on X"; "Path closed: …"; "Shared pick with X"; the item's warning (a theft, a kill, a story choice or a missable item) in a short form of up to three lines that keeps every name, act and cost; otherwise the status ("You have it", "On your map", "In another area", "No fixed spot (see F6)", "Only if you already have it") and a short reason.</td></tr>
         </tbody>
       </table></div>
       <p class="prose muted">The full reason, all warnings, the sets and how to get it are in the <kbd>F6</kbd> list and on the Sets page. The row follows the selected character, is never stored in your save, and applies to every copy of the same item. Items shown only in the list get no row. It appears wherever the game shows an item tooltip: your bags, both sides of the trade window, pickpocketing, a corpse's loot and the camp chest. For the Dark Urge it uses your character's own name.</p>
@@ -586,7 +586,7 @@ details.dev .dev-body h5 { font-size: var(--fs-s); margin: 1rem 0 .3rem; font-fa
         <li>Map markers may be stored in a save made while they were shown; removing the mod from a save is not tested yet (see <a href="#la-install">Uninstall</a>).</li>
         <li>Controller mode and the low-resolution interface are not tested.</li>
         <li>Advice texts are English. Item names and game texts on the Sets page follow your game language.</li>
-        <li>A long warning is cut at the end of the tooltip's second line ("…"); the full text is in the <kbd>F6</kbd> list and on the Sets page.</li>
+        <li>The tooltip shows a shortened warning (up to three lines); the full text is in the <kbd>F6</kbd> list and on the Sets page.</li>
         <li>The list window uses <code>*</code> instead of the diamond, because its font has no diamond.</li>
         <li>Item names in the in-game list are English; the Sets page uses your game language.</li>
         <li>The Sets page: Chrome and Edge slow down tabs hidden for more than about 5 minutes (updates then arrive within a minute, and at once when you switch to the tab; Firefox keeps polling). Each page open needs 3–4 seconds to build its images. The area name is approximate ("near …"). In multiplayer only the host writes the page.</li>
