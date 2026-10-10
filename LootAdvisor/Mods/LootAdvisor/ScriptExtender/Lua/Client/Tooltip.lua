@@ -88,14 +88,14 @@ function T.Text(rows, who)
 
   local body, warn
   if r.s == "better" and r.better and r.picked then
-    body = "Equal; " .. (LA.CHAR_NAME[r.better] or r.better) .. " keeps it"   -- a settled exact tie
+    body = "Equal; " .. LA.CharName(r.better) .. " keeps it"   -- a settled exact tie
   elseif r.s == "better" and r.better then
-    body = "Better on " .. (LA.CHAR_NAME[r.better] or r.better)
+    body = "Better on " .. LA.CharName(r.better)
   elseif r.s == "closed" then
     body = fit("Path closed: " .. clean(r.reason or ""), MAXLINE)
   elseif r.shared and #r.shared > 0 then
     local nm = {}
-    for _, c in ipairs(r.shared) do nm[#nm + 1] = LA.CHAR_NAME[c] or c end
+    for _, c in ipairs(r.shared) do nm[#nm + 1] = LA.CharName(c) end
     body = fit("Shared pick with " .. table.concat(nm, ", "), MAXLINE)
   elseif r.tw and r.tw ~= "" and r.s ~= "owned" and r.s ~= "onlyowned" then
     -- the data's tooltip form of the warning (at most 3 lines; the F6 list shows the full text)
@@ -113,9 +113,10 @@ end
 function T.Apply(res)
   local advice, tplId = {}, {}
   if res and res.rows and not res.notCovered then
-    -- the Dark Urge is the player's own character -> the name the player gave it ("Best Ring for <name>")
+    -- the character's name as the game shows it ("Best Ring for <name>"), the same as in F6 and on the map
+    LA.SetLiveNames(res)
     local own = type(res.name) == "string" and res.name ~= "" and res.name or nil
-    local who = (res.char == "darkurge" and own) or LA.CHAR_NAME[res.char] or own or "?"
+    local who = LA.CharName(res.char, own or "?")
     local per = {}
     for _, r in ipairs(res.rows) do
       -- list-only items (generic +1/+2, random loot) get no tooltip text and no frame

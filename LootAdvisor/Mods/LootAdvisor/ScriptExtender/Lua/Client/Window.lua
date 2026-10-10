@@ -20,7 +20,7 @@ local AMBER = { 0.95, 0.64, 0.14, 1.0 }
 local function colored(t, c) if c then try(function() t:SetColor("Text", c) end) end return t end
 local function short(s, n) s = tostring(s or ""); if #s > n then return s:sub(1, n - 3) .. "..." end return s end
 local function tip(el, text) if text and text ~= "" then try(function() el:Tooltip():AddText(text) end) end end
-local function cname(c) return LA.CHAR_NAME[c] or tostring(c) end
+local function cname(c) return LA.CharName(c) end
 
 local COMPASS = { "N", "NE", "E", "SE", "S", "SW", "W", "NW" }
 -- +Z = north, +X = east (verified against the minimap); settings NorthZ/EastX can flip them.
@@ -294,7 +294,8 @@ function W.Render(res)
     return
   end
   local regName = (LA.Mod.regionName or {})[res.region] or "this region"
-  local who = LA.CHAR_NAME[res.char] or res.name or tostring(res.char)
+  LA.SetLiveNames(res)
+  local who = LA.CharName(res.char, res.name)
   colored(h:AddText(("%s  -  Act %s  -  %s"):format(who, tostring(res.act), tostring(res.build and res.build.n))), GOLD)
   local mine = 0
   for _, m in ipairs(res.markers or {}) do if m.sel or not m.who then mine = mine + 1 end end

@@ -571,6 +571,28 @@ def mutations(sc):
         "Window.lua", "    W.window.Open = false\n  elseif W.reopen then", "  elseif W.reopen then"), "red"))
     out.append((names[23], "Window.lua: the window is not reopened after the pause menu", lua_mut(
         "Window.lua", "  elseif W.reopen then", "  elseif false then"), "red"))
+    out.append((names[23], "UiTree.lua: the game's message box (Dialog_box) is not recognised", lua_mut(
+        "UiTree.lua", "Dialog_box = true, MessageBox_c = true }", "MessageBox_c = true }"), "red"))
+    out.append((names[23], "UiTree.lua: the controller message box (MessageBox_c) is not recognised", lua_mut(
+        "UiTree.lua", "Dialog_box = true, MessageBox_c = true }", "Dialog_box = true }"), "red"))
+    # 25a-25f. one name per character: the origin's name used where the game's name is known
+    out.append((names[24], "Common.lua: LA.CharName ignores the game's names", lua_mut(
+        "Common.lua", 'if type(n) == "string" and n ~= "" and n ~= "?" then return n end', ""), "red"))
+    out.append((names[24], "Tooltip.lua: a settled tie names the origin", lua_mut(
+        "Tooltip.lua", 'body = "Equal; " .. LA.CharName(r.better) .. " keeps it"',
+        'body = "Equal; " .. (LA.CHAR_NAME[r.better] or r.better) .. " keeps it"'), "red"))
+    out.append((names[24], "Window.lua: F6 names the origin", lua_mut(
+        "Window.lua", "local function cname(c) return LA.CharName(c) end",
+        "local function cname(c) return LA.CHAR_NAME[c] or tostring(c) end"), "red"))
+    out.append((names[24], "Window.lua: F6 header names the origin for the Dark Urge", lua_mut(
+        "Window.lua", "local who = LA.CharName(res.char, res.name)",
+        "local who = LA.CHAR_NAME[res.char] or res.name or tostring(res.char)"), "red"))
+    out.append((names[24], "app.js: the Sets page names the origin in a live game", file_mut(
+        "app.js", ("tools", "sets_artifact", "app.js"), "function names(ids) { return (ids || []).map(charName)",
+        "function names(ids) { return (ids || []).map(function (o) { return CHAR_NAME[o] || o; })"), "red"))
+    out.append((names[24], "Server/Main.lua: the party's names are not sent with the result", file_mut(
+        "Server/Main.lua", ("LootAdvisor", "Mods", "LootAdvisor", "ScriptExtender", "Lua", "Server", "Main.lua"),
+        "  res.names = names\n", "\n"), "red"))
     return out, by
 
 

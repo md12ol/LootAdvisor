@@ -1828,33 +1828,40 @@ def check_tie_wording(env):
     return fails
 
 
+# game widgets the F6 window steps aside for (x:Name of their XAML page): the pause menu, the message box
+# (MessageBox.xaml: confirmations such as the respec warning) and its controller version
+MENU_WIDGETS = [("GameMenu", "pause menu"), ("Dialog_box", "message box"), ("MessageBox_c", "controller message box")]
+
+
 def check_f6_hides_under_pause_menu(env):
-    """The F6 window steps aside while the game's pause menu (GameMenu widget, or a page it opens) is shown and comes
-    back after; the UI tree is read only inside Ext.UI.Defer; the hotkey during the menu only changes what happens
-    after it. Old Script Extender (no Defer): the tree is not read and the window is never hidden."""
+    """The F6 window steps aside while the game's pause menu (GameMenu widget, or a page it opens) or a message box
+    (a confirmation dialog) is shown and comes back after; the UI tree is read only inside Ext.UI.Defer; the hotkey
+    during the menu only changes what happens after it. Old Script Extender (no Defer): the tree is not read and the
+    window is never hidden."""
     fails = []
-    L = client_lua(env, defer=True)
-    L.execute("""
-      STUB.hidden = {}
-      LA.Win.SetMenuHidden = function(on) STUB.hidden[#STUB.hidden + 1] = on end
-      STUB.menuProps = { Visibility = "Visible" }
-      STUB.menu = STUB.mk("ls.UIWidget", "GameMenu", nil, nil, STUB.menuProps)
-      local layer = STUB.mk("Grid", "PauseLayer", { STUB.menu })
-      STUB.contentKids[#STUB.contentKids + 1] = layer
-    """)
-    S = run_ticks(L, 6)
-    if not S.hidden or S.hidden[len(S.hidden)] is not True:
-        fails.append(f"pause menu shown: SetMenuHidden ended with {S.hidden[len(S.hidden)] if S.hidden else None}")
-    if S.outside != 0:
-        fails.append(f"{S.outside} UI tree reads outside Ext.UI.Defer")
-    L.execute('STUB.menuProps.Visibility = "Collapsed"')
-    S = run_ticks(L, 4, session=False)
-    if S.hidden[len(S.hidden)] is not False:
-        fails.append("pause menu collapsed: the window stays hidden")
-    L.execute('STUB.menuProps.Visibility = "Visible"; STUB.contentKids[#STUB.contentKids] = nil')
-    S = run_ticks(L, 4, session=False)
-    if S.hidden[len(S.hidden)] is not False:
-        fails.append("pause menu widget gone: the window stays hidden")
+    for widget, what in MENU_WIDGETS:
+        L = client_lua(env, defer=True)
+        L.execute("""
+          STUB.hidden = {}
+          LA.Win.SetMenuHidden = function(on) STUB.hidden[#STUB.hidden + 1] = on end
+          STUB.menuProps = { Visibility = "Visible" }
+          STUB.menu = STUB.mk("ls.UIWidget", WIDGET, nil, nil, STUB.menuProps)
+          local layer = STUB.mk("Grid", "PauseLayer", { STUB.menu })
+          STUB.contentKids[#STUB.contentKids + 1] = layer
+        """.replace("WIDGET", json.dumps(widget)))
+        S = run_ticks(L, 6)
+        if not S.hidden or S.hidden[len(S.hidden)] is not True:
+            fails.append(f"{what} shown: SetMenuHidden ended with {S.hidden[len(S.hidden)] if S.hidden else None}")
+        if S.outside != 0:
+            fails.append(f"{what}: {S.outside} UI tree reads outside Ext.UI.Defer")
+        L.execute('STUB.menuProps.Visibility = "Collapsed"')
+        S = run_ticks(L, 4, session=False)
+        if S.hidden[len(S.hidden)] is not False:
+            fails.append(f"{what} collapsed: the window stays hidden")
+        L.execute('STUB.menuProps.Visibility = "Visible"; STUB.contentKids[#STUB.contentKids] = nil')
+        S = run_ticks(L, 4, session=False)
+        if S.hidden[len(S.hidden)] is not False:
+            fails.append(f"{what} widget gone: the window stays hidden")
     L2 = client_lua(env, defer=False)
     L2.execute("""
       STUB.hidden = {}
@@ -1880,7 +1887,75 @@ def check_f6_hides_under_pause_menu(env):
     W.SetMenuHidden(False)
     if W.window.Open:
         fails.append("closed with the hotkey during the pause menu, but reopened after it")
-    env.counts["scenarios"] = 6
+    env.counts["scenarios"] = 3 * len(MENU_WIDGETS) + 3
+    return fails
+
+
+def check_live_names(env):
+    """One name per character everywhere: the name the game shows (the player's own name for the Dark Urge, sent by
+    the server as res.names) in the item tooltip, the F6 window and the Sets page; the origin's name only when the
+    game gives none. The server sends the party's names with every result."""
+    fails = []
+    names = {"darkurge": "Vex", "astarion": "Astarion"}
+    tie_row = {"i": 1, "id": "SID_TIE", "n": "Stalker Gloves", "slot": "Gloves", "rank": 0, "mode": "m",
+               "s": "better", "better": "darkurge", "picked": "pick", "sets": ["Set A"], "t": []}
+    # tooltip: Astarion views a tie Vex keeps; Vex's own best item; no names from the game
+    L = client_lua(env, defer=True)
+    G = L.globals()
+
+    def advice(res, sid):
+        G.LA.Tip.Apply(L.table_from(res, recursive=True))
+        return G.LA.Tip.advice[sid]
+    adv = advice({"char": "astarion", "name": "Astarion", "names": names, "rows": [tie_row]}, "SID_TIE")
+    body = adv.body if adv is not None else None
+    if body != "Equal; Vex keeps it":
+        fails.append(f"tooltip of a settled tie: {body!r}, want 'Equal; Vex keeps it'")
+    own = dict(tie_row, id="SID_OWN", rank=1, s="marker", better=None, picked=None)
+    adv = advice({"char": "darkurge", "name": "Vex", "names": names, "rows": [own]}, "SID_OWN")
+    title = adv.title if adv is not None else ""
+    if "Vex" not in str(title):
+        fails.append(f"tooltip title for Vex's own item: {title!r}")
+    adv = advice({"char": "astarion", "name": "Astarion", "rows": [tie_row]}, "SID_TIE")
+    if (adv.body if adv is not None else None) != "Equal; The Dark Urge keeps it":
+        fails.append("tooltip without names from the game: not the origin's name 'The Dark Urge'")
+    # F6: the same tie in Astarion's list, and the header when Vex is selected
+    for viewer, want in (("astarion", "Vex keeps it"), ("darkurge", "Vex  -  Act")):
+        W = window_lua(env)
+        WG = W.globals()
+        res = W.table_from({"char": viewer, "name": names[viewer], "names": names, "act": 1, "build": {"n": "x"},
+                            "markers": [], "roster": [], "ties": [], "rows": [tie_row]}, recursive=True)
+        WG.LA.Settings.SpoilerNoticeSeen = True
+        WG.LA.Win.Toggle()
+        WG.LA.Win.Render(res)
+        texts = []
+
+        def walk(el):
+            for c in lua_list(el.children):
+                texts.append(str(c.Label or ""))
+                walk(c)
+        walk(WG.LA.Win.header)
+        walk(WG.LA.Win.content)
+        if not any(want in t for t in texts):
+            fails.append(f"F6 ({viewer} selected): no {want!r}")
+        if any("The Dark Urge" in t for t in texts):
+            fails.append(f"F6 ({viewer} selected): still names 'The Dark Urge'")
+    # Sets page: names and tie wording through the live name
+    app = getattr(env, "file_overrides", {}).get("app.js") or _read(REPO, "tools", "sets_artifact", "app.js")
+    if "function charName(c) { var ch = LIVE && (LIVE.chars || {})[c]; return (ch && ch.name) || CHAR_NAME[c]" not in app:
+        fails.append("app.js: no charName() preferring the live game's name")
+    for what, frag in (("names()", "function names(ids) { return (ids || []).map(charName)"),
+                       ("tie wording", "T.say(it, lc || null, charName)")):
+        if frag not in app:
+            fails.append(f"app.js: {what} does not use the live name")
+    rest = app.replace("CHAR_NAME[c.id] = c.n", "").replace("|| CHAR_NAME[c] ||", "")
+    if "CHAR_NAME[" in rest:
+        fails.append("app.js: a name still read straight from the origin names")
+    # server: the party's names go out with the result
+    main = (getattr(env, "file_overrides", {}).get("Server/Main.lua")
+            or open(os.path.join(env.mods_lua, "Server", "Main.lua"), encoding="utf-8").read())
+    if "res.names = names" not in main or "names[p.key] = p.name" not in main:
+        fails.append("Server/Main.lua: the party's names are not sent with the result (res.names)")
+    env.counts["places"] = 5
     return fails
 
 
@@ -1993,5 +2068,7 @@ CHECKS = [
     ("exact ties: the owner's set swaps to it when the tie goes elsewhere (F6 + Sets page)",
      check_tie_owner_alternative_swap, False),
     ("exact ties worded 'Equal for X and Y; X keeps it' (Sets page + F6)", check_tie_wording, False),
-    ("F6 window hidden while the game's pause menu is open", check_f6_hides_under_pause_menu, False),
+    ("F6 window hidden while the game's pause menu or a message box is open", check_f6_hides_under_pause_menu,
+     False),
+    ("one name per character: the game's name in tooltip, F6 and Sets page", check_live_names, False),
 ]
