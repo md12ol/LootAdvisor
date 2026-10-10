@@ -511,6 +511,19 @@ def mutations(sc):
         "Selected.lua", ", tostring(ctx.filter) }", " }"), "red"))
     out.append((names[18], "Window.lua: a tie the wearer keeps offers 'Give it to' buttons", lua_mut(
         "Window.lua", '    if t.by ~= "wear" then', "    if true then"), "red"))
+
+    def meta_mut(text):
+        def make():
+            sc.reset()
+            env = sc.env()
+            env.file_overrides = {"meta.lsx Description": text}
+            return env
+        return make
+    desc = C.meta_description()
+    out.append((names[19], "meta.lsx: a description over the Toolkit's 250 characters", meta_mut(
+        desc + " " + "x" * C.META_DESCRIPTION_MAX), "red"))
+    out.append((names[19], "meta.lsx: the Script Extender line dropped from the description", meta_mut(
+        desc.replace("Script Extender", "")), "red"))
     return out, by
 
 
