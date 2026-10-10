@@ -726,9 +726,9 @@ end
 
 -- ------------------------------------------------------------------------------------------------ setup check
 -- The character's setup must be the spec's, exactly: one mismatch fails the run with the field named. Checked by
--- engine at the fight's start (and the gear, passives and buffs again at its end). The sheet's numbers (abilities,
--- max HP, proficiency, spell slots, class resources) are read from the bare sheet prep recorded before the items
--- went on, so an item's own boosts are not a mismatch. -> { checked = n, mismatches = { {field, want, got} } }
+-- engine at the fight's start (and the gear, passives and buffs again at its end). Abilities, max HP and proficiency
+-- are read from the bare sheet prep recorded before the items went on, so an item's own boosts are not a mismatch;
+-- spell slots and class resources as the fight starts. -> { checked = n, mismatches = { {field, want, got} } }
 G.ABIL_FULL = { STR = "Strength", DEX = "Dexterity", CON = "Constitution", INT = "Intelligence", WIS = "Wisdom",
   CHA = "Charisma" }
 function G.setupCheck(F, spec, phase, extra)
@@ -770,13 +770,15 @@ function G.setupCheck(F, spec, phase, extra)
   end
   if sh.hp then cmp("max HP", sh.hp, bare.hp) end
   if sh.prof then cmp("proficiency bonus", sh.prof, bare.prof) end
+  -- slots and class resources as the fight starts (their boosts can land after the bare sheet was read)
+  local now_ = G.sheet(u)
   for lv = 1, 9 do
     local want = spec.slots and spec.slots[tostring(lv)] or 0
-    local got = (bare.slots or {})[tostring(lv)] or 0
+    local got = (now_.slots or {})[tostring(lv)] or 0
     if want ~= 0 or got ~= 0 then cmp("spell slots L" .. lv, want, got) end
   end
   for _, r in ipairs(spec.resources or {}) do
-    cmp("resource " .. r.kind, r.n, (bare.resources or {})[r.kind .. ":" .. tostring(r.level or 0)])
+    cmp("resource " .. r.kind, r.n, (now_.resources or {})[r.kind .. ":" .. tostring(r.level or 0)])
   end
   if extra then
     cmp("not encumbered", 0, #(extra.encumbered or {}))

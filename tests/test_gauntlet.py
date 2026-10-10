@@ -835,6 +835,8 @@ def setup_tests(L):
         passives_add = { "P1" }, statuses = { "S1" }, sheet = { abilities = { STR = 10 }, hp = 50, prof = 4 },
         slots = { ["1"] = 2 }, resources = { { kind = "ChannelDivinity", level = 0, n = 1 } } }
       local F = { char = "c1" }
+      local sheet = G.sheet
+      G.sheet = function() return { slots = { ["1"] = 2 }, resources = { ["ChannelDivinity:0"] = 1 } } end
       T_ok = G.setupCheck(F, spec, "start", { buffs = { "BLESS" }, encumbered = {}, reactions = true })
       G.results.prep.bare.hp = 49
       Osi.HasActiveStatus = function(_, st) return st == "BLESS" and 0 or 1 end
@@ -842,6 +844,7 @@ def setup_tests(L):
       G.results.setup = { start = T_bad }
       G.results.summary = { cast_misses = 1 }
       T_j = G.judge({ { r = 1, done = { action = true } } }, "rounds done", G.results, { me = "c1" })
+      G.sheet = sheet
       Osi.GetEquippedItem, Osi.GetStatString, Osi.HasPassive, Osi.HasActiveStatus = nil, nil, nil, nil
     """)
     g = L.globals()
