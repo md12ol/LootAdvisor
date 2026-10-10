@@ -11,7 +11,7 @@ data/items_all/*
 !data/items_all/SCHEMA.md
 data/scores/
 
-# generated pages that embed game icons/texts (sets.html, 3d_test.html, previews), 3D models, captures, audit shots
+# generated pages that embed game icons/texts (sets.html, previews), captures, audit shots
 artifact/
 
 # extracted game textures/icons (frames_game, icons, mapicons, minimapicons, sheets) and outputs made from them;
@@ -19,9 +19,8 @@ artifact/
 design/*
 !design/make_rainbow.py
 
-# third-party binaries (downloaded LSLib); the provenance note stays
-third_party/*
-!third_party/README.md
+# downloaded third-party tools, never committed
+third_party/
 
 # save/profile snapshots, in-game screenshots (incl. stray shot.sh files at the root)
 backups/

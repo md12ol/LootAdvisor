@@ -152,7 +152,7 @@ class Scratch:
             shutil.rmtree(self.root)
         os.makedirs(os.path.join(self.root, "data", "cache"))
         shutil.copytree(os.path.join(LA, "tools"), os.path.join(self.root, "tools"),
-                        ignore=shutil.ignore_patterns("__pycache__", "model3d", "rosters"))
+                        ignore=shutil.ignore_patterns("__pycache__", "rosters"))
         for d in ("research", "items_all", "scores"):
             shutil.copytree(os.path.join(LA, "data", d), os.path.join(self.root, "data", d))
         for fn in os.listdir(os.path.join(LA, "data", "cache")):

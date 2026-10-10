@@ -1767,14 +1767,6 @@ def build(args):
             "content=\"width=device-width, initial-scale=1, viewport-fit=cover\"></head><body>" + html + "</body></html>")
     with open(os.path.join(OUT_DIR, "_preview.html"), "w", encoding="utf-8", newline="\n") as f:
         f.write(prev)
-    # 3D models are game meshes/textures built from the local game install: they stay on this PC and are only
-    # mounted in a LOCAL viewer copy (sets_local.html, opened from disk), never in the published sets.html
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from model3d.sets_adapter import inject_3d  # artifact/3d/, built by model3d/build_parts.py
-    local = inject_3d(prev)
-    if local != prev:
-        with open(os.path.join(OUT_DIR, "sets_local.html"), "w", encoding="utf-8", newline="\n") as f:
-            f.write(local)
     size = os.path.getsize(out)
     print("  %d characters, %d sets, %d items, %d images (%.0f KB webp), %d captures" % (
         len(chars), n_sets, len(items), len(A.uris), A.bytes / 1024, n_caps))
