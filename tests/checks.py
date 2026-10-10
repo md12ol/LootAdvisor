@@ -1428,7 +1428,7 @@ def _ties_from_data(env):
 
 def check_tie_picks(env):
     """Two tie members in the party -> an open tie (both see a shared pick); a saved pick gives it to that one (the
-    other sees 'better on'); the one wearing it keeps it whatever the pick; a pick outlives a party swap and is not
+    other sees 'better on', also when the party already owns it); the one wearing it keeps it whatever the pick; a pick outlives a party swap and is not
     asked again; a tie among others while the picked one is away is a new tie; camp members never make a tie."""
     L = env.lua()
     G = L.globals()
@@ -1506,6 +1506,13 @@ def check_tie_picks(env):
             r = row(st1)
             if r is not None and not (r.s == "better" and r.better == other):
                 fails.append(f"{sid}: picked {other}, {viewer} sees {r.s} (better {r.better})")
+            # the party already owns it: a settled tie still sends the other one to their next best
+            st1o = state({a, b}, picks={sid: other})
+            st1o.act = act
+            st1o.owned = L.table_from({sid: 1})
+            r = row(st1o)
+            if r is not None and not (r.s == "better" and r.better == other):
+                fails.append(f"{sid}: owned, picked {other}, {viewer} sees {r.s} (better {r.better})")
             st2 = state({a, b}, picks={sid: viewer})
             st2.act = act
             r = row(st2)

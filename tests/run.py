@@ -479,6 +479,8 @@ def mutations(sc):
         "Logic.lua", "for _, c in ipairs(mem) do if ownerAvailable(c, state) then present[#present + 1] = c end end",
         "for _, c in ipairs(mem) do if state.comp[c] and state.comp[c].team then present[#present + 1] = c end end"),
         "red"))
+    out.append((names[16], "Logic.lua Recommend: an owned item tied to someone else stays the viewer's pick", lua_mut(
+        "Logic.lua", 'if better and picked then st.s = "better"', 'if false then st.s = "better"'), "red"))
     out.append((names[16], "Logic.lua Recommend: a settled tie still shown as a shared pick", lua_mut(
         "Logic.lua", "if t and t.pick then", "if false then"), "red"))
     out.append((names[16], "LootData: no ties in the data (nothing to check)", lua_mut(
