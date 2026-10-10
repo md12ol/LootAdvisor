@@ -432,6 +432,33 @@ def item_actions(st, stats, mech):
     return out, skipped
 
 
+def spell_requirements(stats, spid):
+    """What a spell needs besides its cost, read from its RequirementConditions: a melee weapon (weapon actions such as
+    Topple), proficiency with the wielded weapon, not being encumbered."""
+    req = (stats.get(spid) or {}).get("RequirementConditions") or ""
+    out = []
+    if "CanUseWeaponActions" in req:
+        out.append("melee weapon")
+    if "IsProficientWithEquippedWeapon" in req:
+        out.append("proficient weapon")
+    if "ENCUMBERED" in req:
+        out.append("not encumbered")
+    return out
+
+
+def unusable_reason(stats, spid, main_hand, proficiencies):
+    """Why the character could never cast this spell with the set (None when it can): a weapon action without a melee
+    weapon in the main hand, or with a weapon the build is not proficient with. The game refuses such a cast."""
+    reqs = spell_requirements(stats, spid)
+    if "melee weapon" in reqs and not main_hand:
+        return "needs a melee weapon in the main hand"
+    if "proficient weapon" in reqs and main_hand:
+        groups = [g for g in re.split(r"[;,]\s*", (stats.get(main_hand) or {}).get("Proficiency Group") or "") if g]
+        if groups and not set(groups) & set(proficiencies):
+            return f"not proficient with {main_hand}"
+    return None
+
+
 def model_avg(expr):
     tot = 0.0
     for n, d in re.findall(r"(\d+)d(\d+)", expr):
@@ -464,6 +491,16 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates):
                                                                         (sp.get("targets") or 1), 1),
                              "target": "@boss", "at_target_pos": spid.startswith("Zone_") or None})
     acts.sort(key=lambda r: (r["per"] == "none", -r["value"]))
+    # requirements checked before the run: an item spell the character could never cast with this set is not planned
+    profs = re.findall(r"Proficiency\((\w+)\)", ";".join(g["boosts"]))
+    keep = []
+    for rec in acts:
+        why = unusable_reason(stats, rec["spell"], lo.get("MainHand"), profs)
+        if why:
+            skipped.append(dict(rec, reason="unusable: " + why))
+        else:
+            keep.append(rec)
+    acts = keep
     used = plan_spells(core)
     items = []
     for slot in EQUIP_ORDER:

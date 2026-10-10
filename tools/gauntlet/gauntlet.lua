@@ -56,6 +56,12 @@ local function wait(ms, fn)
   end)
 end
 local function pos(u) return try(Osi.GetPosition, u) end
+-- x, y, z (nil when unknown)
+local function xyz(u)
+  local ok, x, y, z = pcall(Osi.GetPosition, u)
+  if ok and x then return x, y, z end
+  return nil
+end
 local function dist(a, b)
   local ax, ay, az = Osi.GetPosition(a)
   local bx, by, bz = Osi.GetPosition(b)
@@ -149,6 +155,7 @@ end
 -- Can the character pay for this action right now: action / bonus action / spell slot / class resource from the
 -- action's costs, the harness's own per-rest record, and the engine's cooldown. Returns ok, reason.
 function G.afford(F, a)
+  if F.unusable and F.unusable[a.spell] then return false, "unusable: " .. F.unusable[a.spell] end
   if F.afford then return F.afford(a) end
   local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
   local ok, why = canPay(F.char, costs)
@@ -203,11 +210,18 @@ local function abilities(u)
 end
 local SLOTS = { "Helmet", "Breast", "Cloak", "MeleeMainHand", "MeleeOffHand", "RangedMainHand", "RangedOffHand",
   "Ring", "Ring2", "Amulet", "Boots", "Gloves" }
+-- Osiris names the weapon slots as the item data does ("Melee Main Weapon"); asking for "MeleeMainHand" finds nothing,
+-- so the pilot's run records never showed a weapon as equipped and prep never took the test character's own off.
+G.SLOT_NAMES = { MeleeMainHand = { "Melee Main Weapon", "MeleeMainHand" },
+  MeleeOffHand = { "Melee Offhand Weapon", "MeleeOffHand" }, RangedMainHand = { "Ranged Main Weapon", "RangedMainHand" },
+  RangedOffHand = { "Ranged Offhand Weapon", "RangedOffHand" } }
 function G.equipped(u)
   local out = {}
   for _, s in ipairs(SLOTS) do
-    local it = try(Osi.GetEquippedItem, u, s)
-    if it then out[s] = it end
+    for _, n in ipairs(G.SLOT_NAMES[s] or { s }) do
+      local it = try(Osi.GetEquippedItem, u, n)
+      if it then out[s] = it; break end
+    end
   end
   return out
 end
@@ -279,6 +293,8 @@ local function equipAll(u, items, i, cb)
     G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, err = "CreateAt failed" }
     return equipAll(u, items, i + 1, cb)
   end
+  G.spawnedItems = G.spawnedItems or {}
+  G.spawnedItems[#G.spawnedItems + 1] = it
   pcall(Osi.ToInventory, it, u, 1, 0, 0)
   wait(200, function()
     if spec.use and G.manualPrep then
@@ -296,11 +312,44 @@ local function equipAll(u, items, i, cb)
     wait(350, function()
       local where
       for s, e in pairs(G.equipped(u)) do if uuid(e) == uuid(it) then where = s end end
+      -- the slot query can miss a slot name; the item itself knows whether it is worn
+      if not where and try(Osi.IsEquipped, it) == 1 then where = spec.slot end
       G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = where, uuid = it }
       note("item %s want %s got %s", spec.stats, spec.slot, tostring(where))
       equipAll(u, items, i + 1, cb)
     end)
   end)
+end
+
+-- ------------------------------------------------------------------------------------------------ encumbrance
+-- The pilot's test character carried ENCUMBERED_MAX (Heavily Encumbered) in every run: its own pack plus the items
+-- each run spawned. That status gives Disadvantage on attack rolls and on Strength / Dexterity / Constitution saves and
+-- limits movement to a stroll at three times the cost, so spell attacks missed more and a cast that needs a step
+-- could not be made. Prep therefore deletes the items earlier runs spawned and raises the carry limit for the run
+-- (a boost with the harness's cause, taken off when the run ends); a character still encumbered at the start of the
+-- fight makes the run invalid.
+G.ENCUMBRANCE = { "ENCUMBERED_LIGHT", "ENCUMBERED_HEAVY", "ENCUMBERED_MAX", "ENCUMBERED" }
+G.CARRY_BOOST = "CarryCapacityMultiplier(50)"
+function G.encumbrance(u)
+  local out = {}
+  for _, st in ipairs(G.ENCUMBRANCE) do
+    if try(Osi.HasActiveStatus, u, st) == 1 then out[#out + 1] = st end
+  end
+  return out
+end
+-- deletes the items earlier runs spawned (worn ones are taken off first by G.strip); returns how many
+function G.dropSpawnedItems(u)
+  local n = 0
+  for _, it in ipairs(G.spawnedItems or {}) do
+    if try(Osi.IsEquipped, it) == 1 then pcall(Osi.Unequip, u, it) end
+    if pcall(Osi.RequestDelete, it) then n = n + 1 end
+  end
+  G.spawnedItems = {}
+  return n
+end
+function G.unencumber(u, addBoost)
+  if addBoost then boost(u, G.CARRY_BOOST) end
+  for _, st in ipairs(G.encumbrance(u)) do pcall(Osi.RemoveStatus, u, st, "") end
 end
 
 -- ------------------------------------------------------------------------------------------------ prep
@@ -322,8 +371,11 @@ function G.prep(spec)
     end
   end
   pcall(Osi.RemoveBoosts, u, "", 0, CAUSE, u)
+  G.dropRunBoosts(u, G.HP_BUFFER)
   G.strip(u)
   wait(600, function()
+    G.results.items_deleted = G.dropSpawnedItems(u)
+    G.unencumber(u, true)
     for _, p in ipairs(spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -372,6 +424,7 @@ function G.prep(spec)
               if G.prepGen ~= gen then return end
               G.refill(u, "long")
               pcall(Osi.SetHitpointsPercentage, u, 100)
+              G.unencumber(u, false)
               G.results.after = G.sheet(u)
               G.status = "prepped"
               G.dump()
@@ -591,6 +644,61 @@ function G.spawnEnemies(list, E, faction)
   return out
 end
 
+-- ------------------------------------------------------------------------------------------------ cleanup
+-- In the pilot re-run the enemies of earlier runs outlived their delete request (RequestDelete did nothing to a
+-- creature made by CreateAt): they stayed in the fight, hit the next run's character (it went down, and its damage
+-- taken doubled) and soaked its area spells, while the arena check skipped them as already deleted. A summon the
+-- character left behind (Spiritual Weapon) failed the next run's arena check. Removal now asks for the delete of a
+-- temporary creature and the plain delete, then kills whatever still stands; the arena check counts every living
+-- creature outside the party again.
+local NULL_GUID = "NULL_00000000-0000-0000-0000-000000000000"
+G.CLEANUP_MS = 1500
+function G.removeCreature(d)
+  pcall(Osi.RequestDeleteTemporary, d)
+  pcall(Osi.RequestDelete, d)
+end
+local function standing(u) return try(Osi.IsDead, u) == 0 end
+function G.summonOwner(u)
+  local e = ent(u)
+  return e and (try(function() return e.IsSummon.Owner.Uuid.EntityUuid end)
+    or try(function() return e.IsSummon.Summoner.Uuid.EntityUuid end))
+end
+local function inArena(u, A)
+  if not A then return false end
+  local x, _, z = Osi.GetPosition(u)
+  return x ~= nil and math.sqrt((x - A.center[1]) ^ 2 + (z - A.center[3]) ^ 2) <= A.radius
+end
+-- living summons of the test character, and any living summon inside the arena
+function G.leftoverSummons(me, A)
+  local out = {}
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local u = try(function() return e.Uuid.EntityUuid end)
+    if u and u ~= me and try(Osi.IsSummon, u) == 1 and standing(u) and (G.summonOwner(u) == me or inArena(u, A)) then
+      out[#out + 1] = u
+    end
+  end
+  return out
+end
+-- Removes the enemies earlier runs spawned and the character's leftover summons; after CLEANUP_MS kills any of them
+-- still standing. cb(report): { removed = n, killed = { names } }.
+function G.clearLeftovers(me, A, cb)
+  local list = {}
+  for d in pairs(G.spawned or {}) do if try(Osi.IsDead, d) ~= nil then list[#list + 1] = d end end
+  for _, d in ipairs(G.leftoverSummons(me, A)) do list[#list + 1] = d end
+  for _, d in ipairs(list) do G.removeCreature(d) end
+  wait(G.CLEANUP_MS, function()
+    local killed = {}
+    for _, d in ipairs(list) do
+      if standing(d) then
+        pcall(Osi.Die, d, 0, NULL_GUID, 0, 0)
+        killed[#killed + 1] = name(d)
+      end
+    end
+    for d in pairs(G.spawned or {}) do if try(Osi.IsDead, d) == nil then G.spawned[d] = nil end end
+    if cb then cb({ removed = #list, killed = killed }) end
+  end)
+end
+
 function G.enemyReport(list)
   local out = {}
   for _, d in ipairs(list) do
@@ -616,11 +724,37 @@ local function onCast(caster, spell)
   local R = G.rounds[#G.rounds]
   if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell } end
 end
+-- The engine's refusals: CastSpellFailed names the caster and the spell (no reason), ReactionInterruptUsed the
+-- creature that reacted. In the pilot re-run 39 of the character's 40 refused casts came right after an enemy's
+-- Attack of Opportunity: the scripted cast walked the character to a new spot, the reaction interrupted the walk and
+-- the engine dropped the cast.
+local function onCastFailed(caster, spell)
+  if not G.fightOn then return end
+  local R = G.rounds[#G.rounds]
+  if R then
+    R.cast_fails = R.cast_fails or {}
+    R.cast_fails[#R.cast_fails + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+  end
+end
+local function onReaction(who, interrupt)
+  if not G.fightOn then return end
+  local R = G.rounds[#G.rounds]
+  if R then
+    R.reactions_seen = R.reactions_seen or {}
+    R.reactions_seen[#R.reactions_seen + 1] = { who = uuid(who), interrupt = interrupt, t = now() - G.t0 }
+  end
+end
 if not G._listeners then
   G._listeners = {
     attacked = pcall(Ext.Osiris.RegisterListener, "AttackedBy", 7, "after", function(...) pcall(onAttacked, ...) end),
     cast = pcall(Ext.Osiris.RegisterListener, "CastedSpell", 5, "after", function(...) pcall(onCast, ...) end),
   }
+end
+if not G._listeners.failed then
+  G._listeners.failed = pcall(Ext.Osiris.RegisterListener, "CastSpellFailed", 5, "after",
+    function(...) pcall(onCastFailed, ...) end)
+  G._listeners.reaction = pcall(Ext.Osiris.RegisterListener, "ReactionInterruptUsed", 3, "after",
+    function(...) pcall(onReaction, ...) end)
 end
 
 -- ------------------------------------------------------------------------------------------------ fight
@@ -668,13 +802,91 @@ local function spellRange(spell)
   return nil
 end
 
+-- ------------------------------------------------------------------------------------------------ requirements
+-- What would stop the engine from casting a spell, read from the spell's data and the character now. The engine
+-- gives no reason when it refuses, so the same list is written next to every refused cast.
+local function baseSpell(s) return (tostring(s or ""):gsub("_%d+$", "")) end
+local function hasFlag(flags, f)
+  if type(flags) == "table" then
+    for _, x in pairs(flags) do if x == f then return true end end
+    return false
+  end
+  return tostring(flags or ""):find(f, 1, true) ~= nil
+end
+-- the character's spell book as a set; nil when it cannot be read (then nothing is judged from it)
+function G.spellBook(u)
+  local e = ent(u)
+  local spells = e and try(function() return e.SpellBook.Spells end)
+  if not spells then return nil end
+  local out, n = {}, 0
+  for _, sp in ipairs(spells) do
+    local id = try(function() return sp.Id.Prototype end)
+    if id then out[id] = true; n = n + 1 end
+  end
+  return n > 0 and out or nil
+end
+-- Hard blockers (the cast cannot happen) come first in the list; "encumbered" is soft (the cast is worse, and a cast
+-- that needs a step may fail).
+G.HARD_BLOCKERS = { ["not in the spell book"] = true, ["needs a melee weapon in the main hand"] = true,
+  ["silenced (verbal component)"] = true }
+function G.spellBlockers(F, spell, tgt)
+  local u, out = F.char, {}
+  local book = G.spellBook(u)
+  if book and not book[spell] and not book[baseSpell(spell)] then out[#out + 1] = "not in the spell book" end
+  local st = try(Ext.Stats.Get, spell)
+  local flags = st and try(function() return st.SpellFlags end)
+  local req = st and tostring(try(function() return st.RequirementConditions end) or "") or ""
+  if hasFlag(flags, "HasVerbalComponent") and try(Osi.HasActiveStatus, u, "SILENCED") == 1 then
+    out[#out + 1] = "silenced (verbal component)"
+  end
+  if req:find("CanUseWeaponActions", 1, true) and not G.equipped(u).MeleeMainHand then
+    out[#out + 1] = "needs a melee weapon in the main hand"
+  end
+  if onCooldown(u, spell) then out[#out + 1] = "on cooldown" end
+  local enc = G.encumbrance(u)
+  if #enc > 0 then out[#out + 1] = "encumbered (" .. table.concat(enc, ", ") .. ")" end
+  if tgt and tgt ~= u then
+    if try(Osi.IsDead, tgt) == 1 then out[#out + 1] = "target dead" end
+    if try(Osi.CanSee, u, tgt) == 0 then out[#out + 1] = "no line of sight" end
+    local range = spellRange(spell)
+    local d = dist(u, tgt)
+    if range and d > range + 1.0 then out[#out + 1] = string.format("out of range %.1f > %.1f", d, range) end
+  end
+  return out
+end
+-- Before the fight: every spell the plan may cast (each chain, the item actions) is checked once. A hard blocker makes
+-- it unusable for the run (logged in results.precheck; the planner passes it over as it does an unaffordable one).
+-- "Not in the spell book" counts only for item actions: those come from worn items, and an item that did not go on
+-- leaves its spell out of the book; the build's own spells are added in prep.
+function G.precheck(F)
+  local plan, seen, out = F.plan or {}, {}, {}
+  F.unusable = F.unusable or {}
+  local function check(spell, isItem)
+    if not spell or seen[spell] then return end
+    seen[spell] = true
+    local hard = {}
+    for _, b in ipairs(G.spellBlockers(F, spell, nil)) do
+      if G.HARD_BLOCKERS[b] and (isItem or b ~= "not in the spell book") then hard[#hard + 1] = b end
+    end
+    if #hard > 0 then
+      F.unusable[spell] = table.concat(hard, ", ")
+      out[#out + 1] = { spell = spell, unusable = F.unusable[spell] }
+      note("precheck: %s unusable (%s)", spell, F.unusable[spell])
+    end
+  end
+  local function chainOf(a) while a do check(a.spell, false); a = a.alt end end
+  for _, r in ipairs(plan.rounds or {}) do for _, a in ipairs(r) do chainOf(a) end end
+  for _, a in ipairs(plan.steady or {}) do chainOf(a) end
+  for _, it in ipairs(plan.item_actions or {}) do check(it.spell, true) end
+  return out
+end
+
 -- Cast confirmation. Osi.UseSpell returning is no proof of a cast (the pilot logged Fire Bolts as done that never
 -- happened: no line of sight, facing, an enemy in melee). An action counts as done only when the engine shows it:
 -- a CastedSpell event of the character for that spell (an upcast variant counts for its base spell), damage from the
 -- character to the action's target, or one of the action's resources going down. No evidence within the timeout =
 -- a failed action, logged as such, and the fallback runs.
 G.CONFIRM_MS, G.CONFIRM_MAX_MS = 6000, 15000
-local function baseSpell(s) return (tostring(s or ""):gsub("_%d+$", "")) end
 -- P = { who, spell, target, casts0, dmg0, res = { { kind, level, before } } }; resNow(kind, level) -> amount now
 function G.castEvidence(P, casts, dmg, resNow)
   for i = (P.casts0 or 0) + 1, #(casts or {}) do
@@ -693,6 +905,36 @@ function G.castEvidence(P, casts, dmg, resNow)
     if v and r.before and v < r.before then return "resource" end
   end
   return nil
+end
+-- The engine's CastSpellFailed for the pending cast (its base spell), if one came since the cast was asked for.
+function G.castRefused(P, fails)
+  for i = (P.fails0 or 0) + 1, #(fails or {}) do
+    local f = fails[i]
+    if f.who == P.who and baseSpell(f.spell) == baseSpell(P.spell) then return f end
+  end
+  return nil
+end
+-- Why a cast did not happen, as far as the engine shows it: reactions of other creatures since the cast was asked for
+-- (an Attack of Opportunity means the cast walked the character out of an enemy's reach and was interrupted), how
+-- far the character moved, and the spell's blockers now. -> { why, reactions, moved, blockers }
+function G.refusalReason(P, R, blockers, moved)
+  local reacts, aoo = {}, false
+  for i = (P.reacts0 or 0) + 1, #(R.reactions_seen or {}) do
+    local x = R.reactions_seen[i]
+    if x.who ~= P.who then
+      reacts[#reacts + 1] = tostring(x.interrupt) .. " by " .. tostring(x.who)
+      if tostring(x.interrupt):find("AttackOfOpportunity", 1, true) then aoo = true end
+    end
+  end
+  local why
+  if aoo then
+    why = string.format("interrupted by an Attack of Opportunity while moving to cast (moved %.1f m)", moved or 0)
+  elseif blockers and #blockers > 0 then
+    why = table.concat(blockers, ", ")
+  else
+    why = "no reason shown by the engine"
+  end
+  return { why = why, reactions = reacts, moved = moved, blockers = blockers }
 end
 
 -- one scripted action: {spell, target, group ("action" | "bonus" | "free"), cost (override; "free" = granted, e.g.
@@ -725,7 +967,8 @@ local function doAction(F, a, R)
     res[#res + 1] = { kind = c.kind, level = c.level, before = before[i] }
   end
   local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
-    target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now() }
+    target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now(), fails0 = #(R.cast_fails or {}),
+    reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
   local okc, err
   if a.at_target_pos then
     local x, y, z = Osi.GetPosition(tgt)
@@ -755,14 +998,24 @@ function G.settle(F, R, t)
     return true
   end
   local waited = t - P.t0
-  if waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char)) then return false end
+  -- the engine's own refusal ends the wait at once
+  local refused = G.castRefused(P, R.cast_fails)
+  if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char))) then return false end
   F.pending = nil
   R.cast_misses = (R.cast_misses or 0) + 1
-  P.rec.result = string.format("failed: no cast seen within %.1f s", waited / 1000)
   -- a per-rest item spell the engine would not cast is not tried again before the next rest
   if P.a.per then F.cooldown[P.a.spell] = P.a.per end
-  -- what the engine saw at the miss (range, line of sight, the caster's statuses), to find why it refused
-  P.rec.miss = { dist = try(dist, F.char, P.target), sees = try(Osi.CanSee, F.char, P.target),
+  -- what the engine saw at the miss (range, line of sight, the caster's statuses, reactions, movement), and why
+  local moved
+  if P.pos0 and P.pos0[1] then
+    local x, y, z = xyz(F.char)
+    if x then moved = math.sqrt((x - P.pos0[1]) ^ 2 + (y - P.pos0[2]) ^ 2 + (z - P.pos0[3]) ^ 2) end
+  end
+  local reason = G.refusalReason(P, R, try(G.spellBlockers, F, P.spell, P.target) or {}, moved)
+  P.rec.result = refused and ("failed: refused by the engine: " .. reason.why)
+    or string.format("failed: no cast seen within %.1f s (%s)", waited / 1000, reason.why)
+  P.rec.miss = { dist = try(dist, F.char, P.target), sees = try(Osi.CanSee, F.char, P.target), refused = refused ~= nil,
+    why = reason.why, reactions = reason.reactions, moved = moved, blockers = reason.blockers,
     statuses = try(function()
       local out = {}
       for _, v in pairs(ent(F.char).StatusContainer.Statuses) do out[#out + 1] = tostring(v) end
@@ -850,12 +1103,46 @@ function G.foreignCasts(rounds, me, plan)
   return out
 end
 
+-- Set items that did not go on in prep (the item's spells and boosts were then never part of the run).
+function G.unworn(prep)
+  local out = {}
+  for _, it in ipairs(prep and prep.items or {}) do
+    if it.want ~= "Elixir" and not it.got then out[#out + 1] = tostring(it.stats) .. " (" .. tostring(it.want) .. ")" end
+  end
+  return out
+end
+-- Damage rows on the character from creatures that are not this run's enemies (an earlier run's enemy still in the
+-- fight): { [source] = hits }, and the number of hits.
+function G.outsideAttackers(dmg, me, enemies)
+  local mine, out, n = {}, {}, 0
+  for _, d in ipairs(enemies or {}) do mine[uuid(d)] = true end
+  for _, row in ipairs(dmg or {}) do
+    local src = row.owner or row.source
+    if row.target == me and src and src ~= "" and src ~= me and not mine[src] and not mine[row.source or ""]
+      and not tostring(row.cause or ""):match("Surface") then
+      out[src] = (out[src] or 0) + 1
+      n = n + 1
+    end
+  end
+  return out, n
+end
+
 -- Is the run a measurement? { valid, causes }. Invalid: ended early (turn never came, aborted, reset, prep failed,
 -- a reaction prompt), a reaction prompt the policy missed, a test character whose reactions could not be set, casts
--- outside the plan, or an acting round in which no action was confirmed.
+-- outside the plan, an acting round in which no action was confirmed, set items that did not go on, a character
+-- still encumbered when the fight started, or hits from creatures outside the run. A round in which the character
+-- was down is no idle round: it is counted in results.downed and the summary instead.
 function G.judge(rounds, why, results, opts)
   local causes = {}
   if why and why ~= "rounds done" then causes[#causes + 1] = "ended: " .. why end
+  local unworn = G.unworn(results.prep)
+  if #unworn > 0 then causes[#causes + 1] = "set items not worn: " .. table.concat(unworn, ", ") end
+  if results.encumbered and #results.encumbered > 0 then
+    causes[#causes + 1] = "the test character was encumbered: " .. table.concat(results.encumbered, ", ")
+  end
+  if (results.outside_hits or 0) > 0 then
+    causes[#causes + 1] = results.outside_hits .. " hit(s) on the character from creatures outside the run"
+  end
   if results.reaction_misses and #results.reaction_misses > 0 then
     causes[#causes + 1] = #results.reaction_misses .. " reaction prompt(s) not covered by the policy"
   end
@@ -874,7 +1161,7 @@ function G.judge(rounds, why, results, opts)
   if not (opts and opts.char_acts == false) then
     local idle = 0
     for _, R in ipairs(rounds or {}) do
-      if not (R.done and (R.done.action or R.done.item)) then idle = idle + 1 end
+      if not R.downed and not (R.done and (R.done.action or R.done.item)) then idle = idle + 1 end
     end
     if idle > 0 then causes[#causes + 1] = idle .. " round(s) without a confirmed action" end
   end
@@ -934,19 +1221,17 @@ function G.arena(scn, mode, selfaoe, origin, A)
   return { x0, y0, z0 }, pts
 end
 
--- Living characters inside the arena that are not the party: an arena must be empty before a run starts. Enemies a
--- previous run spawned can outlive their delete request by a moment; they are deleted again and not counted.
+-- Living characters inside the arena that are not the party: an arena must be empty before a run starts. Runs
+-- G.clearLeftovers first; whatever it could not remove (an earlier run's enemy, a summon) is an intruder.
 function G.arenaIntruders(A)
   local out = {}
   local party = {}
   for _, m in ipairs(partyMembers()) do party[m] = true end
   for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
     local u = try(function() return e.Uuid.EntityUuid end)
-    if u and not party[u] and not (G.spawned or {})[u] and try(Osi.IsDead, u) == 0 then
+    if u and not party[u] and standing(u) and inArena(u, A) then
       local x, _, z = Osi.GetPosition(u)
-      if x and math.sqrt((x - A.center[1]) ^ 2 + (z - A.center[3]) ^ 2) <= A.radius then
-        out[#out + 1] = string.format("%s at %.0f,%.0f", name(u), x, z)
-      end
+      out[#out + 1] = string.format("%s at %.0f,%.0f", name(u), x, z)
     end
   end
   return out
@@ -993,9 +1278,12 @@ end
 -- ------------------------------------------------------------------------------------------------ fight
 local function roundStart(F)
   G.round = G.round + 1
-  local R = { r = G.round, actions = {}, casts = {}, done = {}, char_hp_before = try(Osi.GetHitpoints, F.char) }
+  local R = { r = G.round, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {},
+    char_hp_before = try(Osi.GetHitpoints, F.char) }
   R.char_hp_lost_enemy_turns = math.max(0, (F.hpChar or 0) - (R.char_hp_before or 0))
-  -- downed in the enemies' turn: the turn has no action, so the round is idle (marked for the report)
+  -- downed in the enemies' turn: the engine gives the turn no action (healing does not bring it back), so the round
+  -- is recorded as downed, not as an idle round of the harness. The HP buffer (G.HP_BUFFER) is there so that this
+  -- does not happen in a normal run.
   if R.char_hp_before and R.char_hp_before <= 0 then R.downed = true end
   pcall(Osi.SetHitpointsPercentage, F.char, 100)
   for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, 100) end
@@ -1060,19 +1348,28 @@ local function summarize(F)
     for _, v in ipairs(t) do s = s + v end
     return #t > 0 and s / #t or 0
   end
-  local hp = try(Osi.GetMaxHitpoints, F.char) or 0
+  -- the sheet's hit points, without the run's HP buffer
+  local hp = math.max(0, (try(Osi.GetMaxHitpoints, F.char) or 0) - (F.hpBuffer or 0))
   local tk = mean(taken)
-  local failed, misses = 0, 0
+  local failed, misses, downed = 0, 0, 0
   for _, R in ipairs(G.rounds) do
     for _, a in ipairs(R.actions) do if a.result ~= "done" then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
+    if R.downed then downed = downed + 1 end
   end
   return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
-    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses }
+    turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed }
 end
 
 function G.difficulty()
   return { osi = try(Osi.GetDifficulty), note = G.difficultyNote }
+end
+
+-- The run's own boosts on the test character (carry limit, no Attack of Opportunity, HP buffer), taken off when it ends.
+function G.dropRunBoosts(u, hpBuffer)
+  local list = { G.CARRY_BOOST, G.AOO_BOOST }
+  if hpBuffer and hpBuffer > 0 then list[#list + 1] = string.format("IncreaseMaxHP(%d)", hpBuffer) end
+  for _, b in ipairs(list) do pcall(Osi.RemoveBoosts, u, b, 0, CAUSE, u) end
 end
 
 local function finish(F, why)
@@ -1082,12 +1379,24 @@ local function finish(F, why)
     G.results.reactions_restored = G.reactionsRestore()
     G.unparkOthers()
   end
-  for _, d in ipairs(F.enemies or {}) do
-    if not pcall(Osi.RequestDelete, d) then pcall(Osi.Die, d, 0, "NULL_00000000-0000-0000-0000-000000000000", 0, 0) end
-  end
+  -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
+  local gone = {}
+  for _, d in ipairs(F.enemies or {}) do gone[#gone + 1] = d end
+  if F.char then for _, d in ipairs(G.leftoverSummons(uuid(F.char), F.A)) do gone[#gone + 1] = d end end
+  for _, d in ipairs(gone) do G.removeCreature(d) end
+  wait(G.CLEANUP_MS, function()
+    for _, d in ipairs(gone) do if standing(d) then pcall(Osi.Die, d, 0, NULL_GUID, 0, 0) end end
+  end)
   if F.manual and G.barSaved and why ~= "reset" then G.results.hotbar_restore = G.hotbarRestore() end
   G.results.summary = summarize(F)
   G.results.ended = why or "rounds done"
+  local downed = {}
+  for _, R in ipairs(G.rounds) do if R.downed then downed[#downed + 1] = R.r end end
+  G.results.downed = downed
+  if F.char and F.enemies then
+    G.results.outside_attackers, G.results.outside_hits = G.outsideAttackers(G.dmg, uuid(F.char), F.enemies)
+  end
+  if F.char and not F.manual then G.dropRunBoosts(F.char, F.hpBuffer) end
   if not F.manual then
     G.results.foreign_casts = G.foreignCasts(G.rounds, uuid(F.char), F.plan or {})
     local j = G.judge(G.rounds, G.results.ended, G.results, { me = uuid(F.char), char_acts = F.S and F.S.char_acts })
@@ -1108,6 +1417,9 @@ local function finish(F, why)
   G.notify({ kind = "result", run = G.runSeq, mode = rec.mode, spec = rec.spec_id, scenario = rec.scenario,
     summary = G.results.summary, expect = spec.expect })
 end
+
+G.AOO_BOOST = "IgnoreLeaveAttackRange()"
+G.HP_BUFFER = 200
 
 -- G.run(req): req = {mode = "scripted" | "manual", char (uuid; default the host), build, set, act, scenario
 -- ("boss" | "pack" | "defence" | "longday"), haste, tuned, rounds, label, spec (a full spec from run.py)}
@@ -1155,7 +1467,7 @@ function G.start(F)
     if not A then return stop(F, "unknown arena " .. tostring(req.arena)) end
   end
   G.origin = G.origin or { Osi.GetPosition(u) }
-  F.char, F.spec, F.plan, F.S, F.rounds = u, spec, spec.plan or {}, S, req.rounds or S.rounds
+  F.char, F.spec, F.plan, F.S, F.rounds, F.A = u, spec, spec.plan or {}, S, req.rounds or S.rounds, A
   F.prepDeadline = now() + G.PREP_MS
   G.manualPrep = F.manual
   G.prep(spec)
@@ -1170,34 +1482,49 @@ function G.start(F)
       if not F.manual then
         G.results.parked = G.parkOthers(u, A and A.park)
         G.results.reactions = G.reactionsApply(F.plan)
+        -- The same setup for both sets of a pair. No Attack of Opportunity on the character: a scripted cast that
+        -- needs a step (the engine walks the character first) was dropped whenever the step drew one. A fixed HP
+        -- buffer, so that a round never starts with the character down (damage taken is measured from the hits).
+        if not F.plan.allow_aoo then boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = true end
+        F.hpBuffer = G.HP_BUFFER
+        if F.hpBuffer > 0 then boost(u, string.format("IncreaseMaxHP(%d)", F.hpBuffer)) end
+        G.results.hp_buffer = F.hpBuffer
       end
       local buffs = {}
       for _, s in ipairs((C.buffs or {})[act] or {}) do buffs[#buffs + 1] = s end
       if req.haste then buffs[#buffs + 1] = C.haste or "HASTE" end
       for _, s in ipairs(buffs) do pcall(Osi.ApplyStatus, u, s, -1, 1, u) end
       G.results.buffs = buffs
-      if A then
-        G.results.arena = req.arena
-        for d in pairs(G.spawned or {}) do pcall(Osi.RequestDelete, d) end
-        local intr = G.arenaIntruders(A)
-        if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
-      end
-      F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
-      if #F.enemies == 0 then return stop(F, "no enemies") end
-      wait(1500, function()
-        G.results.enemies = G.enemyReport(F.enemies)
-        G.results.enemy_target = E
-        G.results.char = G.sheet(u)
-        G.round, G.fightOn = 0, true
-        F.hpChar = try(Osi.GetHitpoints, u)
-        G.enterCombat(F)
-        F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
-        if F.manual then
-          local rows = G.hotbarRows(spec, (G.results.prep or {}).consumables)
-          G.hotbarFill(u, rows)
-          G.notify({ kind = "checklist", rows = rows, hotbar = G.results.hotbar })
+      G.clearLeftovers(uuid(u), A, function(left)
+        G.results.leftovers = left
+        if A then
+          G.results.arena = req.arena
+          local intr = G.arenaIntruders(A)
+          if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
         end
-        G.notify({ kind = "status", text = "fight on: " .. scn .. (F.manual and " - your turns" or "") })
+        F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
+        if #F.enemies == 0 then return stop(F, "no enemies") end
+        wait(1500, function()
+          G.results.enemies = G.enemyReport(F.enemies)
+          G.results.enemy_target = E
+          pcall(Osi.SetHitpointsPercentage, u, 100)
+          G.results.char = G.sheet(u)
+          if not F.manual then
+            G.unencumber(u, false)
+            G.results.encumbered = G.encumbrance(u)
+            G.results.precheck = G.precheck(F)
+          end
+          G.round, G.fightOn = 0, true
+          F.hpChar = try(Osi.GetHitpoints, u)
+          G.enterCombat(F)
+          F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
+          if F.manual then
+            local rows = G.hotbarRows(spec, (G.results.prep or {}).consumables)
+            G.hotbarFill(u, rows)
+            G.notify({ kind = "checklist", rows = rows, hotbar = G.results.hotbar })
+          end
+          G.notify({ kind = "status", text = "fight on: " .. scn .. (F.manual and " - your turns" or "") })
+        end)
       end)
     elseif tostring(G.status):match("^failed") then
       stop(F, "prep " .. tostring(G.status))
@@ -1462,5 +1789,6 @@ G._net = Ext.Events.NetMessage:Subscribe(function(e) pcall(onNet, e) end)
 
 -- pure helpers, exposed for the tests (tests/test_gauntlet.py)
 G._itemRule, G._parseCosts, G._doAction, G._roundStart = itemRule, parseCosts, doAction, roundStart
+G._onCastFailed, G._onReaction, G._finish, G._summarize = onCastFailed, onReaction, finish, summarize
 
 return "gauntlet v" .. G.VERSION .. " loaded"

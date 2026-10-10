@@ -3,6 +3,7 @@
     python tools/gauntlet/run.py specs.json --results results.jsonl [--scenarios boss,pack,defence,longday]
                                  [--haste] [--only 0,3] [--rounds 16] [--arena undercity_cistern] [--sides a]
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
+    python tools/gauntlet/run.py --rescore results.jsonl[,more.jsonl] --specs specs.json
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
 the same script, enemies and buffs; every run appends one record to results.jsonl. Manual runs from the in-game
@@ -12,13 +13,22 @@ to a results file by hand to include them in a report.
 Validity: a run the game marks invalid (ended early, a cast never confirmed in a round, a reaction outside the plan,
 ...) or that never finished is kept in results.jsonl with its causes and left out of the report. Control gate: a
 control pair (two sets the model rates alike) must measure alike in the game too; when its two sets differ by more
-than --control-tol the whole report is marked INVALID, because the gap comes from the harness, not the gear.
+than twice --control-tol, or by more than --control-tol with the difference beyond the dice (the 95% bootstrap
+interval of the ratio of the two means excludes 1), the whole report is marked INVALID, because the gap comes from
+the harness, not the gear. Sixteen rounds of dice cannot resolve 15% on their own: two sets the model rates alike
+differed by 17% over 12 rounds in the pilot, with an interval that holds 1.
+Rounds are compared pairwise when both runs carry a per-round mask of fair rounds (--rescore).
+
+--rescore re-judges older run records under the current rules where the record allows it: a round in which the
+character was down or no action was confirmed is masked out instead of voiding the run, and a cast of an item spell
+is not a cast outside the plan; every other cause (ended early, arena not clear, ...) still voids the run.
 """
 import argparse
 import json
 import math
 import os
 import random
+import re
 import sys
 import time
 
@@ -29,6 +39,7 @@ import engine  # noqa: E402
 R_SAT = 12.0
 CONTROL_MODEL_EQ = 0.05   # a pair whose two sets the model rates within 5% (DPR) is a control
 CONTROL_TOL = 0.15        # the control's two sets may differ in the game by at most this share of the larger mean
+CONTROL_MIN_ROUNDS = 8    # fewer fair rounds on both sides: the control is not measured
 
 
 def sat(r):
@@ -121,10 +132,20 @@ def is_control(p):
     return bool(da and db) and abs(da / db - 1) <= CONTROL_MODEL_EQ
 
 
+def paired(ea, eb):
+    """The two sides' per-round damage on the rounds fair in both (masks from --rescore), else every round."""
+    da, db = ea["dealt"], eb["dealt"]
+    ca, cb = ea.get("clean"), eb.get("clean")
+    if ca is not None and cb is not None and len(ca) == len(da) == len(cb) == len(db):
+        idx = [i for i in range(len(da)) if ca[i] and cb[i]]
+        return [da[i] for i in idx], [db[i] for i in idx]
+    return da, db
+
+
 def control_gate(pairs, by, tol=CONTROL_TOL):
     """The pilot is a measurement only if every control pair measures alike: per scenario its two sets' mean damage
-    per round may differ by at most tol (share of the larger mean). -> {valid: True | False | None, causes, controls};
-    None = no control pair in the pilot."""
+    per round may differ by at most tol (share of the larger mean), or by up to twice tol when the dice explain the gap
+    (the 95% interval of the ratio of the means contains 1). -> {valid: True | False | None, causes, controls}; None = no control pair."""
     causes, controls = [], []
     for i, p in enumerate(pairs):
         if not is_control(p):
@@ -136,15 +157,88 @@ def control_gate(pairs, by, tol=CONTROL_TOL):
             causes.append(f"control pair {i} ({p['char']} {p['build']}) not measured on both sides")
             continue
         for sc, h in both:
-            ma, mb = mean(by[(i, "a", sc, h)]["dealt"]), mean(by[(i, "b", sc, h)]["dealt"])
+            xa, xb = paired(by[(i, "a", sc, h)], by[(i, "b", sc, h)])
+            name = f"control pair {i} ({p['char']} {p['build']}) {sc}{' haste' if h else ''}"
+            if min(len(xa), len(xb)) < CONTROL_MIN_ROUNDS:
+                causes.append(f"{name}: only {min(len(xa), len(xb))} fair rounds on both sides "
+                              f"(needs {CONTROL_MIN_ROUNDS})")
+                continue
+            ma, mb = mean(xa), mean(xb)
             diff = abs(ma - mb) / max(ma, mb) if max(ma, mb) > 0 else 0.0
+            ci = boot_ratio(xa, xb)
+            beyond_dice = ci is None or not (ci[0] <= 1.0 <= ci[1])
             controls.append({"pair": i, "scenario": sc, "haste": h, "a": round(ma, 1), "b": round(mb, 1),
-                             "diff": round(diff, 3)})
-            if diff > tol:
-                causes.append(f"control pair {i} ({p['char']} {p['build']}) {sc}{' haste' if h else ''}: "
-                              f"a {ma:.1f} vs b {mb:.1f} damage per round differ by {diff:.0%} (tolerance {tol:.0%})")
+                             "diff": round(diff, 3), "rounds": len(xa), "ratio_ci": ci and [round(x, 2) for x in ci]})
+            if diff > 2 * tol or (diff > tol and beyond_dice):
+                causes.append(f"{name}: a {ma:.1f} vs b {mb:.1f} damage per round differ by {diff:.0%} (tolerance "
+                              f"{tol:.0%}; ratio 95% interval {ci and '%.2f-%.2f' % ci or '-'})")
     valid = None if not controls and not causes else not causes
     return {"valid": valid, "causes": causes, "controls": controls}
+
+
+def fair_rounds(rec):
+    """Per round of a run record: a fair measurement round? Not when the character was down at the start of its turn
+    or no action was confirmed in it."""
+    out = []
+    for R in rec.get("rounds") or []:
+        hp = R.get("char_hp_before")
+        down = bool(R.get("downed")) or (hp is not None and hp <= 0)
+        done = R.get("done") if isinstance(R.get("done"), dict) else {}
+        out.append(not down and bool(done.get("action") or done.get("item")))
+    return out
+
+
+ROUND_CAUSE = re.compile(r"round\(s\) without a confirmed action")
+ITEM_SPELL = re.compile(r"_MAG_|_Legendary_")
+
+
+def rescore(rec):
+    """Re-judges one run record under the current rules. -> (valid, causes, fair-round mask): round-level faults (down,
+    idle) are masked out, casts of item spells are not foreign; any other cause still voids the run."""
+    _ok, causes = run_validity(rec)
+    clean = fair_rounds(rec)
+    left = []
+    for c in causes:
+        if ROUND_CAUSE.search(c):
+            continue
+        if c.startswith("the test character cast outside the plan: "):
+            spells = [x.strip() for x in c.split(": ", 1)[1].split(",")]
+            if all(ITEM_SPELL.search(x) for x in spells):
+                continue
+        left.append(c)
+    if not left and sum(clean) < CONTROL_MIN_ROUNDS:
+        left.append(f"only {sum(clean)} fair rounds")
+    return not left, left, clean
+
+
+def rescore_report(files, pairs, tol=CONTROL_TOL, out=print):
+    """The control gate over older run records, per file and over all files together. -> the gates in that order."""
+    groups = [[f] for f in files] + ([files] if len(files) > 1 else [])
+    gates = []
+    for grp in groups:
+        by = {}
+        for fn in grp:
+            with open(fn, encoding="utf-8") as f:
+                recs = [json.loads(x) for x in f if x.strip()]
+            for r in recs:
+                ok, causes, clean = rescore(r)
+                dealt = ((r.get("results") or {}).get("summary") or {}).get("dealt") or []
+                if len(groups) == 1 or len(grp) == 1:
+                    out(f"{os.path.basename(fn)} pair {r.get('pair')} {r.get('side')}: "
+                        f"{'usable' if ok else 'void'}, {sum(clean)}/{len(clean)} fair rounds"
+                        + (f" ({'; '.join(causes)})" if causes else ""))
+                if not ok or len(dealt) != len(clean):
+                    continue
+                k = (r["pair"], r["side"], r.get("scenario"), bool(r.get("haste")))
+                e = by.setdefault(k, {"dealt": [], "clean": []})
+                e["dealt"] += dealt
+                e["clean"] += clean
+        g = control_gate(pairs, by, tol)
+        verdict = {True: "PASS", False: "FAIL", None: "no control measured"}[g["valid"]]
+        out(f"control gate over {', '.join(os.path.basename(f) for f in grp)}: {verdict} "
+            f"{json.dumps(g['controls'])} {'; '.join(g['causes'])}")
+        gates.append(g)
+    return gates
 
 
 def report(a):
@@ -162,13 +256,18 @@ def report(a):
             continue
         k = (r["pair"], r["side"], r.get("scenario"), bool(r.get("haste")))
         s = r["results"]["summary"]
-        e = by.setdefault(k, {"dealt": [], "taken": [], "hp": s.get("max_hp"), "notdone": 0, "secs": 0})
+        e = by.setdefault(k, {"dealt": [], "taken": [], "hp": s.get("max_hp"), "notdone": 0, "secs": 0, "clean": [],
+                              "downed": 0})
+        fair = fair_rounds(r)
+        # rounds the character spent down stay in the numbers but are left out of the control comparison
+        e["clean"] += fair if len(fair) == len(s.get("dealt") or []) else [True] * len(s.get("dealt") or [])
+        e["downed"] += s.get("downed") or 0
         e["dealt"] += s.get("dealt") or []
         e["taken"] += s.get("taken") or []
         e["notdone"] += s.get("actions_not_done") or 0
         e["secs"] += r.get("secs") or 0
     L = ["| Pair | Set | Boss DPR | Pack DPR | Long-day DPR | Taken / round | Turns survived | In-game score | "
-         "Model score | Script misses |", "|---|---|---|---|---|---|---|---|---|---|"]
+         "Model score | Script misses / rounds down |", "|---|---|---|---|---|---|---|---|---|---|"]
     summary = []
     for i, p in enumerate(pairs):
         row = {}
@@ -190,9 +289,10 @@ def report(a):
                 lo, hi = boot_ci(x[key])
                 return f"{mean(x[key]):.1f} ({lo:.0f}-{hi:.0f})"
             nd = sum((x or {}).get("notdone", 0) for x in (boss, pack, day, dfn))
+            dn = sum((x or {}).get("downed", 0) for x in (boss, pack, day, dfn))
             L.append(f"| {p['char']} {p['build']} A{p['act']} | {side}: {spec['set']} | {f(boss)} | {f(pack)} | "
                      f"{f(day)} | {f(dfn, 'taken')} | {R and f'{R:.1f}' or '-'} | {score and f'{score:.1f}' or '-'} | "
-                     f"{spec['expect']['score']} (DPR {spec['expect']['dpr']}, R {spec['expect']['R']}) | {nd} |")
+                     f"{spec['expect']['score']} (DPR {spec['expect']['dpr']}, R {spec['expect']['R']}) | {nd} / {dn} |")
         A_, B_ = row["a"], row["b"]
         ratio = A_["score"] / B_["score"] if A_["score"] and B_["score"] else None
         ci = None
@@ -234,11 +334,15 @@ def main(argv=None):
     ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")
     ap.add_argument("--char", help="uuid of the test character (default: the host)")
     ap.add_argument("--report")
+    ap.add_argument("--rescore", help="older run records (comma-separated files): re-judge them and run the gate")
     ap.add_argument("--md")
     ap.add_argument("--control-tol", type=float, default=CONTROL_TOL,
                     help="largest difference allowed between a control pair's two sets (share, default 0.15)")
     a = ap.parse_args(argv)
     a.specs = a.specs or a.specs2
+    if a.rescore:
+        with open(a.specs, encoding="utf-8") as f:
+            return rescore_report(a.rescore.split(","), json.load(f), a.control_tol)
     if a.report:
         return report(a)
     else:
