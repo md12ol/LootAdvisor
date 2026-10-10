@@ -4,6 +4,16 @@
                                  [--haste] [--only 0,3] [--rounds 16] [--arena undercity_cistern] [--sides a]
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
     python tools/gauntlet/run.py --rescore results.jsonl[,more.jsonl] --specs specs.json
+    python tools/gauntlet/run.py specs.json --lanes undercity_lanes --char A_UUID --char-b B_UUID --repeats 3
+
+Two lanes (--lanes, a "lanes" entry of arenas.json): both sets of a pair fight at once, each with its own character,
+enemies and arena spot, in two separate combats. Both characters have the same build (two party members respecced to
+it in the same test save). The lanes must lie farther apart than the farthest reach of any spell in either set plus
+both lanes' radii and a margin; the sides swap lanes and the first lane alternates from one repeat to the next, so
+neither set keeps the better spot or the head start. With one character (no --char-b) or lanes too close for the
+pair's spells the sides run one after the other in lane A's spot, the first side alternating per repeat.
+--respec real (the default) expects the character's own levels, as a real respec in a test save made them; emulated
+rebuilds the sheet with boosts on whatever character runs.
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
 the same script, enemies and buffs; every run appends one record to results.jsonl. Manual runs from the in-game
@@ -74,19 +84,78 @@ def boot_ratio(a, b, n=2000, seed=11):
     return (rs[int(0.025 * len(rs))], rs[int(0.975 * len(rs)) - 1]) if rs else None
 
 
+def load_arenas():
+    with open(os.path.join(HERE, "arenas.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def lane_gap(arenas, lanes, reaches):
+    """Are a lanes entry's spots far enough apart for these sets? The farthest a spell of either set reaches, from
+    anywhere inside its lane, must stay short of anything inside the other lane: centre distance > radius + reach +
+    radius + margin. -> (ok, need, have) in metres."""
+    LS = arenas.get(lanes) or {}
+    spots = [arenas.get(x["arena"]) or {} for x in (LS.get("lanes") or {}).values()]
+    if len(spots) < 2 or not all(sp.get("center") for sp in spots):
+        return False, None, None
+    reach = max([float(r or 0) for r in reaches] + [0.0])
+    need, have = 0.0, None
+    for x, y in [(x, y) for i, x in enumerate(spots) for y in spots[i + 1:]]:
+        d = math.hypot(x["center"][0] - y["center"][0], x["center"][2] - y["center"][2])
+        have = d if have is None else min(have, d)
+        need = max(need, x["radius"] + reach + y["radius"] + float(LS.get("margin") or 0))
+    return have > need, round(need, 1), round(have, 1)
+
+
+def lane_schedule(k, lane_ids=("A", "B")):
+    """Repeat k (from 0): which side fights in which lane and which lane starts first. The sides swap lanes and the
+    first lane alternates every repeat. -> {"first": lane, "sides": {lane: side}}."""
+    first = lane_ids[k % 2]
+    sides = {lane_ids[0]: "a", lane_ids[1]: "b"} if k % 2 == 0 else {lane_ids[0]: "b", lane_ids[1]: "a"}
+    return {"first": first, "sides": sides}
+
+
+def sequential_order(k, sides=("a", "b")):
+    """One lane only: the sides one after the other, the first side alternating per repeat."""
+    return list(sides) if k % 2 == 0 else list(reversed(sides))
+
+
+def lanes_possible(a, p, arenas):
+    """-> (True, gap) when the pair can run in two lanes at once, else (False, why)."""
+    if not getattr(a, "lanes", None):
+        return False, "no lanes asked for"
+    if not a.char or not a.char_b:
+        return False, "only one character with the build (two lanes need --char and --char-b)"
+    if a.char == a.char_b:
+        return False, "the two lanes need two different characters"
+    ok, need, have = lane_gap(arenas, a.lanes, [(p["specs"][s].get("reach") or {}).get("m") for s in ("a", "b")])
+    if not ok:
+        return False, f"lanes {have} m apart, the pair's spells need {need} m"
+    return True, need
+
+
 def do_runs(a):
     with open(a.specs, encoding="utf-8") as f:
         pairs = json.load(f)
     only = {int(x) for x in a.only.split(",")} if a.only else None
     scen = a.scenarios.split(",")
+    arenas = load_arenas()
     print(engine.load())
     for i, p in enumerate(pairs):
         if only is not None and i not in only:
             continue
         got = {"a": [], "b": []}
+        both, gap = lanes_possible(a, p, arenas)
+        if a.lanes and not both:
+            print(f"pair {i}: lanes one after the other: {gap}")
         for k in range(min(3, max(1, a.repeats))):
-            for side in a.sides.split(","):
-                got[side] += run_side(a, i, p, side, scen)
+            if both:
+                for side, dealt in run_lanes(a, i, p, scen, k, gap).items():
+                    got[side] += dealt
+            else:
+                order = sequential_order(k, tuple(a.sides.split(",")))
+                for side in order:
+                    got[side] += run_side(a, i, p, side, scen, extra={"repeat": k, "order": order,
+                                                                       "lanes_fallback": gap if a.lanes else None})
             stop, why = decisive(got["a"], got["b"], a.control_tol)
             print(f"  pair {i} after {k + 1} repeat(s): {why}")
             if stop:
@@ -109,15 +178,70 @@ def decisive(xa, xb, tol=None):
     return False, f"ratio 95% interval {ci[0]:.2f}-{ci[1]:.2f}, not decisive"
 
 
-def run_side(a, i, p, side, scen):
+def _req(a, i, p, side, sc, haste, char):
+    spec = p["specs"][side]
+    arena = a.arena
+    if not arena and getattr(a, "lanes", None):
+        arena = ((load_arenas().get(a.lanes) or {}).get("lanes") or {}).get("A", {}).get("arena")
+    return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds, "arena": arena,
+            "char": char, "label": f"pair{i}:{side}", "respec": getattr(a, "respec", "real")}
+
+
+def _record(a, rec, i, side, t0, extra=None):
+    rec["pair"], rec["side"], rec["secs"] = i, side, round(time.time() - t0, 1)
+    rec.update({k: v for k, v in (extra or {}).items() if v is not None})
+    rec["valid"], rec["invalid"] = run_validity(rec)
+    if not rec["valid"]:
+        print(f"  {side}: INVALID: " + "; ".join(rec["invalid"]))
+    with open(a.results, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, default=str) + "\n")
+    s = (rec.get("results") or {}).get("summary") or {}
+    tm = (rec.get("results") or {}).get("timing") or {}
+    print(f"  {side}: dpr {s.get('dpr', 0):.1f} taken/round {s.get('taken_per_round', 0):.1f} "
+          f"not done {s.get('actions_not_done')} survived {s.get('rounds_survived')} ({rec['secs']} s; "
+          f"prep {tm.get('prep_ms', 0) / 1000:.1f} s, fight {tm.get('fight_ms', 0) / 1000:.1f} s)")
+    if rec.get("scenario") == "defence" or (rec.get("req") or {}).get("scenario") == "defence":
+        return []
+    ok, _causes, clean = rescore(rec)
+    d = s.get("dealt") or []
+    return [x for x, c in zip(d, clean) if c] if ok and len(d) == len(clean) else []
+
+
+def run_lanes(a, i, p, scen, k, gap):
+    """Repeat k of a pair in two lanes at once, per scenario. -> {side: damage per fair round}."""
+    plan = lane_schedule(k)
+    chars = {"A": a.char, "B": a.char_b}
+    dealt = {"a": [], "b": []}
+    for sc in scen:
+        for haste in ([False, True] if a.haste else [False]):
+            entries = [(lane, dict(_req(a, i, p, side, sc, haste, chars[lane]), arena=None), p["specs"][side])
+                       for lane, side in sorted(plan["sides"].items())]
+            print(f"pair {i} {p['char']} {p['build']} A{p['act']} {sc}{' haste' if haste else ''} in lanes: "
+                  + ", ".join(f"{lane} = {side}" for lane, side in sorted(plan["sides"].items()))
+                  + f", lane {plan['first']} first")
+            t0 = time.time()
+            try:
+                recs = engine.run_lanes(a.lanes, entries, plan["first"], gap_need=gap)
+            except Exception as e:
+                recs = {lane: {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
+                        for lane, req, _s in entries}
+                print("  ERROR", e)
+            for lane, side in sorted(plan["sides"].items()):
+                rec = recs.get(lane) or {"error": "no record from the lane", "valid": False,
+                                         "invalid": ["no record from the lane"], "req": {"scenario": sc}}
+                rec.setdefault("scenario", sc)
+                dealt[side] += _record(a, rec, i, side, t0, {"repeat": k, "lane": lane, "first_lane": plan["first"],
+                                                             "concurrent": True})
+    return dealt
+
+
+def run_side(a, i, p, side, scen, extra=None):
     """One side of a pair over the scenarios -> the damage per round of its usable runs, fair rounds only."""
     spec = p["specs"][side]
     dealt = []
     for sc in scen:
         for haste in ([False, True] if a.haste else [False]):
-            req = {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds,
-                   "arena": a.arena,
-                   "char": a.char, "label": f"pair{i}:{side}"}
+            req = _req(a, i, p, side, sc, haste, a.char)
             t0 = time.time()
             print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
                   f"{' haste' if haste else ''}")
@@ -126,23 +250,8 @@ def run_side(a, i, p, side, scen):
             except Exception as e:
                 rec = {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
                 print("  ERROR", e)
-            rec["pair"], rec["side"], rec["secs"] = i, side, round(time.time() - t0, 1)
-            rec["valid"], rec["invalid"] = run_validity(rec)
-            if not rec["valid"]:
-                print("  INVALID: " + "; ".join(rec["invalid"]))
-            with open(a.results, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, default=str) + "\n")
-            s = (rec.get("results") or {}).get("summary") or {}
-            tm = (rec.get("results") or {}).get("timing") or {}
-            print(f"  dpr {s.get('dpr', 0):.1f} taken/round {s.get('taken_per_round', 0):.1f} "
-                  f"not done {s.get('actions_not_done')} survived {s.get('rounds_survived')} ({rec['secs']} s; "
-                  f"prep {tm.get('prep_ms', 0) / 1000:.1f} s, fight {tm.get('fight_ms', 0) / 1000:.1f} s)")
-            if sc == "defence":
-                continue
-            ok, _causes, clean = rescore(rec)
-            d = s.get("dealt") or []
-            if ok and len(d) == len(clean):
-                dealt += [x for x, c in zip(d, clean) if c]
+            rec.setdefault("scenario", sc)
+            dealt += _record(a, rec, i, side, t0, extra)
     return dealt
 
 
@@ -159,14 +268,21 @@ def run_validity(rec):
 
 
 def is_control(p):
-    """A control pair: marked so, or the model rates its two sets within CONTROL_MODEL_EQ of each other."""
+    """A control pair: marked so, or the model rates its two sets within CONTROL_MODEL_EQ of each other in damage per
+    round and, where the pair records them, in damage taken per round and rounds survived (with real hit points a
+    pair alike in damage only is no control: the set that takes more goes down sooner)."""
     if "control" in p:
         return bool(p["control"])
     m = p.get("model") or {}
     da, db = m.get("a_dpr"), m.get("b_dpr")
     if not (da and db):
         da, db = (p["specs"]["a"].get("expect") or {}).get("dpr"), (p["specs"]["b"].get("expect") or {}).get("dpr")
-    return bool(da and db) and abs(da / db - 1) <= CONTROL_MODEL_EQ
+    if not (da and db) or abs(da / db - 1) > CONTROL_MODEL_EQ:
+        return False
+    for ka, kb in (("a_taken", "b_taken"), ("a_R", "b_R")):
+        if m.get(ka) and m.get(kb) and abs(m[ka] / m[kb] - 1) > CONTROL_MODEL_EQ:
+            return False
+    return True
 
 
 def paired(ea, eb):
@@ -395,7 +511,11 @@ def main(argv=None):
     ap.add_argument("--rounds", type=int, default=16)
     ap.add_argument("--sides", default="a,b", help="a, b or a,b: one set of each pair only (e.g. a reload between)")
     ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")
-    ap.add_argument("--char", help="uuid of the test character (default: the host)")
+    ap.add_argument("--char", help="uuid of the test character (default: the host); lane A's with --lanes")
+    ap.add_argument("--char-b", help="uuid of lane B's character: a second party member with the same build")
+    ap.add_argument("--lanes", help="a lanes entry of tools/gauntlet/arenas.json: both sides at once (see above)")
+    ap.add_argument("--respec", choices=("real", "emulated"), default="real",
+                    help="real: the characters were levelled to the build (test save per build); emulated: boosts")
     ap.add_argument("--report")
     ap.add_argument("--rescore", help="older run records (comma-separated files): re-judge them and run the gate")
     ap.add_argument("--md")

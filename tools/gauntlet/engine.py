@@ -4,6 +4,11 @@
     python tools/gauntlet/engine.py probe           # API availability, party, position, difficulty -> JSON
     python tools/gauntlet/engine.py eval "return GAUNTLET.status"
     python tools/gauntlet/engine.py ceval "return GAUNTLET_UI ~= nil"   # client side
+    python tools/gauntlet/engine.py survey undercity_lanes   # ground + bystanders of an arena / of every lane
+
+While a run is active (run.py, or a lane run) nothing else may talk to the eval hook: the run's own status reads share
+the channel and an answer can be lost (a dry run stalled that way). The run holds a lock file; the commands above
+refuse while it is held (--force overrides, e.g. after a crash before its deadline).
 """
 import json
 import os
@@ -15,6 +20,35 @@ SE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Larian Studios", "Bal
 PREFIX = os.environ.get("EV_PREFIX", "LootAdvisor")
 OUT = "LootAdvisor_gauntlet_out.json"
 RUNS = os.path.join(SE_DIR, "LootAdvisor_gauntlet")
+LOCK = os.path.join(SE_DIR, "LootAdvisor_gauntlet_active.lock")
+
+
+def active():
+    """The lock of a run in progress: {"what", "until"} while it is held and not past its deadline, else None."""
+    try:
+        with open(LOCK, encoding="utf-8") as f:
+            lk = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return lk if lk.get("until", 0) > time.time() else None
+
+
+class _Held:
+    """with _Held(what, seconds): the run lock for the duration of a run (removed when the run ends, also on errors)."""
+
+    def __init__(self, what, seconds):
+        self.what, self.seconds = what, seconds
+
+    def __enter__(self):
+        os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+        with open(LOCK, "w", encoding="utf-8") as f:
+            json.dump({"what": self.what, "until": time.time() + self.seconds}, f)
+
+    def __exit__(self, *exc):
+        try:
+            os.remove(LOCK)
+        except OSError:
+            pass
 
 
 def ev(code, timeout=10.0, side="server"):
@@ -87,6 +121,11 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
     only: the start is sent at most twice, the second time only if the game never showed this run). A run that
     cannot finish raises RunInvalid with the cause instead of hanging."""
     timeout = timeout or 300 + 120 * int(req.get("rounds") or 16)
+    with _Held(req.get("label") or "run", timeout + 60):
+        return _run(req, spec, timeout, poll, log, max_misses)
+
+
+def _run(req, spec, timeout, poll, log, max_misses):
     os.makedirs(RUNS, exist_ok=True)
     before = set(os.listdir(RUNS))
     if spec is not None:
@@ -146,6 +185,71 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
     raise RunInvalid(f"the run did not finish within {timeout} s")
 
 
+LANES_STATE = "return GAUNTLET.lanesState()"
+
+
+def run_lanes(lanes, entries, first, gap_need=None, timeout=None, poll=5.0, log=print, max_misses=6):
+    """Both sides of a pair at once, one per lane (G.runLanes). entries = [(lane id, run request, spec)]; returns
+    {lane id: run record}. The start is sent once (a busy game answers "busy"); afterwards the only eval traffic is
+    this function's status read every `poll` seconds. A lane that never writes its record makes the run invalid."""
+    rounds = max(int(r.get("rounds") or 16) for _i, r, _s in entries)
+    timeout = timeout or 300 + 120 * rounds
+    with _Held("lanes " + ",".join(i for i, _r, _s in entries), timeout + 60):
+        return _run_lanes(lanes, entries, first, gap_need, timeout, poll, log, max_misses)
+
+
+def _run_lanes(lanes, entries, first, gap_need, timeout, poll, log, max_misses):
+    os.makedirs(RUNS, exist_ok=True)
+    before = set(os.listdir(RUNS))
+    run_id = f"lanes{time.time_ns()}"
+    ents = []
+    for lane, req, spec in entries:
+        name = f"LootAdvisor_gauntlet_spec_{lane}.json"
+        write_se(name, spec)
+        ents.append({"id": lane, "req": dict(req, spec_file=name, run_id=f"{run_id}_{lane}")})
+    body = {"run_id": run_id, "lanes": lanes, "first": first, "gap_need": gap_need, "entries": ents}
+    try:
+        r = ev("return GAUNTLET.runLanes(Ext.Json.Parse([==[" + json.dumps(body) + "]==]))", timeout=20.0).strip()
+    except TimeoutError:
+        r = "no answer yet"
+    log("  lanes:", r)
+    if r != "started" and r != "no answer yet":
+        raise RunInvalid(f"the lanes did not start: {r}")
+    want = {lane for lane, _r, _s in entries}
+    got, misses, t0 = {}, 0, time.time()
+    while time.time() - t0 < timeout:
+        t1 = time.time()
+        while time.time() - t1 < poll:
+            time.sleep(min(FILE_POLL, poll) or 0.01)
+            for fn in sorted(set(os.listdir(RUNS)) - before):
+                if fn in got.values():
+                    continue
+                try:
+                    with open(os.path.join(RUNS, fn), encoding="utf-8") as f:
+                        rec = json.load(f)
+                except (OSError, ValueError):
+                    continue          # still being written: read on the next pass
+                if rec.get("lanes_run") == run_id and rec.get("lane") in want:
+                    got[rec["lane"]] = rec
+            if set(got) == want:
+                return got
+        try:
+            st = ev(LANES_STATE, timeout=10.0)
+            misses = 0
+        except TimeoutError:
+            misses += 1
+            log(f"  no answer from the game ({misses}/{max_misses})")
+            if misses >= max_misses:
+                _abort()
+                raise RunInvalid(f"the game did not answer {misses} status reads in a row")
+            continue
+        if run_id not in st and time.time() - t0 > 3 * max(poll, 1.0):
+            _abort()
+            raise RunInvalid(f"the game never showed the lane run ({st.strip()})")
+    _abort()
+    raise RunInvalid(f"the lanes did not finish within {timeout} s (records from {sorted(got) or 'no lane'})")
+
+
 def _abort():
     try:
         ev_retry("return GAUNTLET.abort()", tries=2)
@@ -155,6 +259,11 @@ def _abort():
 
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "probe"
+    held = active()
+    if held and "--force" not in argv and cmd in ("load", "probe", "eval", "ceval", "survey"):
+        print(f"a run is active ({held.get('what')}): not talking to the game until it ends (--force overrides)")
+        return 2
+    argv = [x for x in argv if x != "--force"]
     if cmd == "load":
         print(load())
     elif cmd == "probe":
@@ -164,9 +273,12 @@ def main(argv):
         print(ev(argv[2]))
     elif cmd == "ceval":
         print(ev(argv[2], side="client"))
+    elif cmd == "survey":
+        print(ev("return GAUNTLET.survey(" + json.dumps(argv[2]) + ")"))
+        print(json.dumps(dump().get("results", {}).get("survey"), indent=1))
     else:
         print(__doc__)
 
 
 if __name__ == "__main__":
-    main(sys.argv)
+    sys.exit(main(sys.argv))

@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 3
+G.VERSION = 4
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -49,10 +49,45 @@ function G.fail(msg)
   note("FAIL %s", msg)
   G.status = "failed: " .. msg
 end
+-- ------------------------------------------------------------------------------------------------ lanes
+-- Two fights at once: two characters with the same build, each with its own set and its own enemies, in two combats
+-- far enough apart that nothing of one reaches the other. A run keeps its state in the fields below; each lane has its
+-- own copy. G.inLane(id, fn) puts that lane's copy in place, runs fn and puts the previous one back, so timers, the
+-- fight loop and the engine's events always work on the lane they belong to. A single run uses the "base" copy.
+G.LANE_FIELDS = { "F", "log", "rounds", "dmg", "results", "status", "t0", "round", "fighting", "prepGen", "origin",
+  "manualPrep", "spawned", "spawnedItems", "savedReactions" }
+G.ctx = G.ctx or {}
+G.curLane = G.curLane or "base"
+local function swapTo(id)
+  if G.curLane == id then return end
+  local cur = G.ctx[G.curLane] or {}
+  G.ctx[G.curLane] = cur
+  for _, k in ipairs(G.LANE_FIELDS) do cur[k] = G[k] end
+  local nxt = G.ctx[id] or {}
+  G.ctx[id] = nxt
+  for _, k in ipairs(G.LANE_FIELDS) do G[k] = nxt[k] end
+  G.curLane = id
+end
+function G.inLane(id, fn, ...)
+  local prev = G.curLane
+  swapTo(id or prev)
+  local ok, res = pcall(fn, ...)
+  swapTo(prev)
+  if not ok then error(res, 0) end
+  return res
+end
+-- a field of another lane's state (the current lane's lives in G itself)
+function G.laneField(id, k)
+  if id == G.curLane then return G[k] end
+  return (G.ctx[id] or {})[k]
+end
+
+-- a timer runs in the lane that set it
 local function wait(ms, fn)
+  local lane = G.curLane
   Ext.Timer.WaitFor(ms, function()
-    local ok, err = pcall(fn)
-    if not ok then G.fail("timer: " .. tostring(err)) end
+    local ok, err = pcall(G.inLane, lane, fn)
+    if not ok then pcall(G.inLane, lane, G.fail, "timer: " .. tostring(err)) end
   end)
 end
 local function pos(u) return try(Osi.GetPosition, u) end
@@ -257,7 +292,8 @@ function G.probe()
   for _, f in ipairs({ "CreateAt", "Equip", "Unequip", "GetEquippedItem", "AddBoosts", "RemoveBoosts", "AddPassive",
     "RemovePassive", "AddSpell", "UseSpell", "UseSpellAtPosition", "EndTurn", "ApplyStatus", "SetFaction",
     "EnterCombat", "SetHitpointsPercentage", "TeleportToPosition", "RequestDelete", "GetDifficulty",
-    "SetRelationTemporaryHostile", "SetHostileAndEnterCombat" }) do
+    "SetRelationTemporaryHostile", "SetHostileAndEnterCombat", "IsProficientWith", "GetFaction", "SetRelation",
+    "GetRelation", "IsEnemy", "CombatGetGuidFor" }) do
     out.api[f] = try(function() return Osi[f] ~= nil end)
   end
   out.api.OsirisListener = G._listeners and G._listeners.attacked
@@ -378,7 +414,7 @@ function G.prep(spec)
   G.results.items = {}
   G.results.before = G.sheet(u)
   for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do
-    if uuid(row[1]) ~= uuid(u) and spec.park then
+    if uuid(row[1]) ~= uuid(u) and spec.park and not (G.LANES and G.LANES.on) then
       pcall(Osi.TeleportToPosition, row[1], spec.park[1], spec.park[2], spec.park[3], "", 0, 0, 0, 0, 1)
     end
   end
@@ -386,25 +422,30 @@ function G.prep(spec)
   pcall(Osi.RemoveBoosts, u, "", 0, CAUSE, u)
   G.dropRunBoosts(u, G.OLD_HP_BUFFER)
   G.strip(u)
+  -- a real respec (the character levelled to the build in a test save): the sheet is the character's own; nothing is
+  -- emulated, the setup check compares it with the build instead
+  local emulate = not spec.real_respec
+  G.results.respec = emulate and "emulated" or "real"
   wait(G.SETTLE_MS, function()
     G.results.items_deleted = G.dropSpawnedItems(u)
     G.unencumber(u, true)
-    for _, p in ipairs(spec.passives_remove or {}) do
+    for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
-    for _, p in ipairs(spec.passives_add or {}) do
+    for _, p in ipairs(emulate and spec.passives_add or {}) do
       if try(Osi.HasPassive, u, p) ~= 1 then pcall(Osi.AddPassive, u, p); note("passive +%s", p) end
     end
-    for _, sp in ipairs(spec.spells_add or {}) do pcall(Osi.AddSpell, u, sp, 0, 1) end
-    for _, b in ipairs(spec.boosts or {}) do boost(u, b) end
+    for _, sp in ipairs(emulate and spec.spells_add or {}) do pcall(Osi.AddSpell, u, sp, 0, 1) end
+    for _, b in ipairs(emulate and spec.boosts or {}) do boost(u, b) end
     wait(G.SETTLE_MS, function()
       local cur = abilities(u)
-      for short, want in pairs(spec.sheet.abilities or {}) do
+      for short, want in pairs(emulate and spec.sheet.abilities or {}) do
         local n = ABIL_SHORT[short]
         local d = want - (cur[n] or want)
         if d ~= 0 then boost(u, string.format("Ability(%s,%d)", n, d)) end
       end
       wait(G.SETTLE_MS, function()
+        if not emulate then return G.prepItems(u, spec, gen) end
         local e = ent(u)
         local prof = e and try(function() return e.Stats.ProficiencyBonus end) or spec.sheet.prof
         local dp = spec.sheet.prof - prof
@@ -429,25 +470,27 @@ function G.prep(spec)
           for _, entry in ipairs(resList(u, r.kind) or {}) do m = math.max(m, entry.MaxAmount) end
           if r.n - m ~= 0 then boost(u, string.format("ActionResource(%s,%d,%d)", r.kind, r.n - m, r.level or 0)) end
         end
-        wait(G.SETTLE_MS, function()
-          G.results.bare = G.sheet(u)
-          equipAll(u, spec.items or {}, 1, function()
-            for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
-            wait(G.SETTLE_MS, function()
-              if G.prepGen ~= gen then return end
-              G.refill(u, "long")
-              pcall(Osi.SetHitpointsPercentage, u, 100)
-              G.unencumber(u, false)
-              G.results.after = G.sheet(u)
-              G.status = "prepped"
-              G.dump()
-            end)
-          end)
-        end)
+        wait(G.SETTLE_MS, function() G.prepItems(u, spec, gen) end)
       end)
     end)
   end)
   return G.status
+end
+-- prep, last part: the bare sheet is read, then the set goes on, the fixed statuses, full resources
+function G.prepItems(u, spec, gen)
+  G.results.bare = G.sheet(u)
+  equipAll(u, spec.items or {}, 1, function()
+    for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
+    wait(G.SETTLE_MS, function()
+      if G.prepGen ~= gen then return end
+      G.refill(u, "long")
+      pcall(Osi.SetHitpointsPercentage, u, 100)
+      G.unencumber(u, false)
+      G.results.after = G.sheet(u)
+      G.status = "prepped"
+      G.dump()
+    end)
+  end)
 end
 
 -- ------------------------------------------------------------------------------------------------ reactions
@@ -589,14 +632,15 @@ end
 
 -- ------------------------------------------------------------------------------------------------ the rest of the party
 -- Solo runs: the other party members are moved 40 m away and kept out of the fight; put back when the run ends.
-function G.parkOthers(u, spot)
+function G.parkOthers(u, spot, keep)
   G.parked = G.parked or {}
-  local ox, oy, oz = Osi.GetPosition(u)
+  local ox, oy, oz
+  if u then ox, oy, oz = Osi.GetPosition(u) end
   if spot then ox, oy, oz = spot[1] - 40, spot[2], spot[3] end
   if not ox then return 0 end
   local n = 0
   for _, m in ipairs(partyMembers()) do
-    if m ~= uuid(u) then
+    if m ~= uuid(u) and not (keep and keep[m]) then
       local x, y, z = Osi.FindValidPosition(ox + 40, oy, oz, 20, m, 0)
       if x then pcall(Osi.TeleportToPosition, m, x, y, z, "", 0, 0, 0, 0, 1) end
       pcall(Osi.SetCanJoinCombat, m, 0)
@@ -731,6 +775,45 @@ end
 -- spell slots and class resources as the fight starts. -> { checked = n, mismatches = { {field, want, got} } }
 G.ABIL_FULL = { STR = "Strength", DEX = "Dexterity", CON = "Constitution", INT = "Intelligence", WIS = "Wisdom",
   CHA = "Charisma" }
+-- The character's classes as the game has them: { [class] = level }, { [class] = subclass } (ClassDescription names)
+function G.classesOf(u)
+  local e = ent(u)
+  local lv, sub = {}, {}
+  for _, c in ipairs(e and try(function() return e.Classes.Classes end) or {}) do
+    local cd = try(Ext.StaticData.Get, c.ClassUUID, "ClassDescription")
+    local sd = try(Ext.StaticData.Get, c.SubClassUUID, "ClassDescription")
+    local n = cd and cd.Name or tostring(c.ClassUUID)
+    lv[n] = (lv[n] or 0) + (c.Level or 0)
+    if sd and sd.Name then sub[n] = sd.Name end
+  end
+  return lv, sub
+end
+-- The feats the character took when it levelled up (names), or nil when the game does not show them.
+function G.featsOf(u)
+  local e = ent(u)
+  local ups = e and try(function() return e.LevelUp.LevelUps end)
+  if not ups then return nil end
+  local out = {}
+  for _, l in ipairs(ups) do
+    local f = try(function() return l.Feat end)
+    if f and tostring(f) ~= "00000000-0000-0000-0000-000000000000" then
+      local fd = try(Ext.StaticData.Get, f, "Feat")
+      out[#out + 1] = fd and fd.Name or tostring(f)
+    end
+  end
+  return out
+end
+local function normName(s) return (tostring(s or ""):lower():gsub("[^%a]", "")) end
+-- ability improvements are named differently by the build and the game; they show in the abilities anyway
+local function isAbilityFeat(n) return n:find("^abilityimprovement") or n:find("^abilityscore") or n == "asi" end
+local function featCounts(list)
+  local out = {}
+  for _, f in ipairs(list or {}) do
+    local n = normName(f)
+    if not isAbilityFeat(n) then out[n] = (out[n] or 0) + 1 end
+  end
+  return out
+end
 function G.setupCheck(F, spec, phase, extra)
   local u = F.char
   local out = { checked = 0, mismatches = {} }
@@ -738,8 +821,8 @@ function G.setupCheck(F, spec, phase, extra)
     out.checked = out.checked + 1
     if want ~= got then out.mismatches[#out.mismatches + 1] = { field = field, want = want, got = got } end
   end
-  local worn = {}
-  for slot, it in pairs(G.equipped(u)) do worn[slot] = try(Osi.GetStatString, it) end
+  local worn, eq = {}, G.equipped(u)
+  for slot, it in pairs(eq) do worn[slot] = try(Osi.GetStatString, it) end
   for _, it in ipairs(spec.items or {}) do
     if it.use then
       if phase == "start" then
@@ -749,6 +832,29 @@ function G.setupCheck(F, spec, phase, extra)
       end
     else
       cmp("item " .. tostring(it.slot), it.stats, worn[it.slot])
+      -- proficiency as the game judges it (its "not proficient" warning and the attack bonus it shows follow it): an
+      -- item the build is proficient with must not be one the game calls non-proficient
+      if phase == "start" and it.proficient == true then
+        local item = eq[it.slot]
+        cmp("proficient with " .. tostring(it.stats), true, item ~= nil and try(Osi.IsProficientWith, u, item) == 1)
+      end
+    end
+  end
+  if phase == "start" and spec.real_respec then
+    -- a real respec: the character's own classes, subclasses and feats are the build's
+    local lv, sub = G.classesOf(u)
+    for cls, n in pairs(spec.class_levels or {}) do cmp("class " .. cls .. " level", n, lv[cls] or 0) end
+    for cls, n in pairs(lv) do
+      if not (spec.class_levels or {})[cls] then cmp("class " .. cls .. " level (not in the build)", 0, n) end
+    end
+    for cls, want in pairs(spec.subclass_names or {}) do cmp("subclass of " .. cls, want, sub[cls]) end
+    local feats = G.featsOf(u)
+    if feats then
+      local have, want = featCounts(feats), featCounts(spec.feats)
+      for n, k in pairs(want) do cmp("feat " .. n, k, have[n] or 0) end
+      for n, k in pairs(have) do if not want[n] then cmp("feat " .. n .. " (not in the build)", 0, k) end end
+    else
+      out.notes = { "feats not readable from the character: checked through their passives only" }
     end
   end
   for _, p in ipairs(spec.passives_add or {}) do cmp("passive " .. p, true, try(Osi.HasPassive, u, p) == 1) end
@@ -762,7 +868,12 @@ function G.setupCheck(F, spec, phase, extra)
     local id = try(function() return sp.Id.Prototype end)
     if id then book[id] = true end
   end
-  for _, sp in ipairs(spec.spells_add or {}) do cmp("spell " .. sp, true, book[sp] == true) end
+  if spec.real_respec then
+    -- the respec's own spell book: every spell the round plan casts (an upcast is the same spell in the book)
+    for _, sp in ipairs(spec.spells_plan or {}) do cmp("spell " .. sp, true, book[sp] == true) end
+  else
+    for _, sp in ipairs(spec.spells_add or {}) do cmp("spell " .. sp, true, book[sp] == true) end
+  end
   local bare = (G.results.prep or {}).bare or {}
   local sh = spec.sheet or {}
   for short, want in pairs(sh.abilities or {}) do
@@ -800,12 +911,12 @@ end
 -- Damage log from Osiris AttackedBy (one row per damage type per hit) and the spell log from CastedSpell, registered
 -- once per game session (re-loading this file keeps them).
 local function onAttacked(def, ownerAtt, att, dtype, amount, cause, _sid)
-  if not G.fightOn then return end
+  if not G.fighting then return end
   G.dmg[#G.dmg + 1] = { r = G.round, t = now() - G.t0, target = uuid(def), source = uuid(att), owner = uuid(ownerAtt),
     type = dtype, amount = amount, cause = cause }
 end
 local function onCast(caster, spell)
-  if not G.fightOn then return end
+  if not G.fighting then return end
   local R = G.rounds[#G.rounds]
   if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell } end
 end
@@ -814,7 +925,7 @@ end
 -- Attack of Opportunity: the scripted cast walked the character to a new spot, the reaction interrupted the walk and
 -- the engine dropped the cast.
 local function onCastFailed(caster, spell)
-  if not G.fightOn then return end
+  if not G.fighting then return end
   local R = G.rounds[#G.rounds]
   if R then
     R.cast_fails = R.cast_fails or {}
@@ -822,25 +933,52 @@ local function onCastFailed(caster, spell)
   end
 end
 local function onReaction(who, interrupt)
-  if not G.fightOn then return end
+  if not G.fighting then return end
   local R = G.rounds[#G.rounds]
   if R then
     R.reactions_seen = R.reactions_seen or {}
     R.reactions_seen[#R.reactions_seen + 1] = { who = uuid(who), interrupt = interrupt, t = now() - G.t0 }
   end
 end
-if not G._listeners then
-  G._listeners = {
-    attacked = pcall(Ext.Osiris.RegisterListener, "AttackedBy", 7, "after", function(...) pcall(onAttacked, ...) end),
-    cast = pcall(Ext.Osiris.RegisterListener, "CastedSpell", 5, "after", function(...) pcall(onCast, ...) end),
+-- Lanes: an event goes to the lane whose character or enemies it names (to each, when it names both lanes: one
+-- lane's spell hitting the other's enemies is a fault both must see); an event that names neither goes to every lane.
+function G.lanesFor(who)
+  local L = G.LANES
+  local out, seen = {}, {}
+  for i = 1, who.n or #who do
+    local u = who[i] and uuid(who[i])
+    for _, id in ipairs(L.order) do
+      if u and (L.members[id] or {})[u] and not seen[id] then seen[id] = true; out[#out + 1] = id end
+    end
+  end
+  if #out == 0 then return L.order end
+  return out
+end
+function G.dispatch(fn, who, ...)
+  local L = G.LANES
+  if not (L and L.on) then return fn(...) end
+  for _, id in ipairs(G.lanesFor(who)) do G.inLane(id, fn, ...) end
+end
+-- Registered once per game session; they call through G._on, so a reloaded file brings its handlers along. Listeners
+-- an older version registered check a field this version no longer sets, so they stay silent.
+G._on = {
+  attacked = function(def, ownerAtt, att, ...)
+    G.dispatch(onAttacked, { n = 3, def, att, ownerAtt }, def, ownerAtt, att, ...)
+  end,
+  cast = function(caster, spell, ...) G.dispatch(onCast, { n = 1, caster }, caster, spell, ...) end,
+  failed = function(caster, spell, ...) G.dispatch(onCastFailed, { n = 1, caster }, caster, spell, ...) end,
+  reaction = function(who, interrupt, ...) G.dispatch(onReaction, { n = 1, who }, who, interrupt, ...) end,
+}
+if not G._listeners4 then
+  local function on(k) return function(...) pcall(G._on[k], ...) end end
+  G._listeners4 = {
+    attacked = pcall(Ext.Osiris.RegisterListener, "AttackedBy", 7, "after", on("attacked")),
+    cast = pcall(Ext.Osiris.RegisterListener, "CastedSpell", 5, "after", on("cast")),
+    failed = pcall(Ext.Osiris.RegisterListener, "CastSpellFailed", 5, "after", on("failed")),
+    reaction = pcall(Ext.Osiris.RegisterListener, "ReactionInterruptUsed", 3, "after", on("reaction")),
   }
 end
-if not G._listeners.failed then
-  G._listeners.failed = pcall(Ext.Osiris.RegisterListener, "CastSpellFailed", 5, "after",
-    function(...) pcall(onCastFailed, ...) end)
-  G._listeners.reaction = pcall(Ext.Osiris.RegisterListener, "ReactionInterruptUsed", 3, "after",
-    function(...) pcall(onReaction, ...) end)
-end
+G._listeners = G._listeners4
 
 -- ------------------------------------------------------------------------------------------------ fight
 local function activeTurn(u)
@@ -1394,6 +1532,12 @@ function G.judge(rounds, why, results, opts)
   if (results.outside_hits or 0) > 0 then
     causes[#causes + 1] = results.outside_hits .. " hit(s) on the character from creatures outside the run"
   end
+  if (results.cross_lane_hits or 0) > 0 then
+    causes[#causes + 1] = results.cross_lane_hits .. " hit(s) from the character on the other lane"
+  end
+  local shared = 0
+  for _, R in ipairs(rounds or {}) do if R.combat_shared then shared = shared + 1 end end
+  if shared > 0 then causes[#causes + 1] = "the two lanes shared one combat in " .. shared .. " round(s)" end
   if results.reaction_misses and #results.reaction_misses > 0 then
     causes[#causes + 1] = #results.reaction_misses .. " reaction prompt(s) not covered by the policy"
   end
@@ -1499,6 +1643,40 @@ function G.arenaIntruders(A)
   return out
 end
 
+-- Read-only check of an arena (or of every lane of a lanes entry) before it is used: the ground under the start and
+-- the enemy spots, and the living creatures outside the party inside the radius. Never during a run.
+function G.survey(name)
+  local C = G.catalog() or {}
+  local entry = (C.arenas or {})[name]
+  if not entry then return "unknown arena " .. tostring(name) end
+  local names = {}
+  if entry.lanes then
+    for _, l in pairs(entry.lanes) do names[#names + 1] = l.arena end
+  else
+    names[1] = name
+  end
+  local out = {}
+  for _, n in ipairs(names) do
+    local A = C.arenas[n]
+    local rec = { arena = n, intruders = A and G.arenaIntruders(A) or { "unknown arena" }, ground = {} }
+    if A then
+      local _, pts = G.arena("boss", "caster", false, A.start, A)
+      local spots = { { "start", A.start } }
+      for i, p in ipairs(pts) do spots[#spots + 1] = { "enemy " .. i, p } end
+      for _, sp in ipairs(spots) do
+        local hs = try(Ext.Level.GetHeightsAt, sp[2][1], sp[2][3]) or {}
+        local near
+        for _, y in ipairs(hs) do if not near or math.abs(y - A.start[2]) < math.abs(near - A.start[2]) then near = y end end
+        rec.ground[#rec.ground + 1] = { spot = sp[1], x = sp[2][1], z = sp[2][3], ground = near,
+          ok = near ~= nil and math.abs(near - A.start[2]) < 2.0 }
+      end
+    end
+    out[#out + 1] = rec
+  end
+  G.results.survey = out
+  return G.dump()
+end
+
 -- ------------------------------------------------------------------------------------------------ catalogue
 -- LootAdvisor_gauntlet_catalog.json (written by tools/gauntlet/catalog.py): enemies + buffs per act, every build
 -- (per act: sheet, passives, spells, slots, resources, round plan), every set (items), set-tuned respecs.
@@ -1554,6 +1732,14 @@ local function roundStart(F)
     R.short_rest = true
   end
   F.hpChar = try(Osi.GetHitpoints, F.char)
+  if F.lane then
+    -- two lanes are two combats: the character's combat must not be the other lane's
+    R.combat = tostring(try(Osi.CombatGetGuidFor, F.char))
+    for _, u in pairs(F.lane.others or {}) do
+      local c = tostring(try(Osi.CombatGetGuidFor, u))
+      if c ~= "nil" and c == R.combat then R.combat_shared = true end
+    end
+  end
   G.rounds[#G.rounds + 1] = R
   -- the queue is planned on the first act step, once the engine has refilled the turn's resources
   F.queue, F.qi, F.pending, F.moving = (F.manual and {} or nil), 0, nil, nil
@@ -1641,11 +1827,11 @@ function G.revive(u)
 end
 
 local function finish(F, why)
-  G.fightOn = false
+  G.fighting = false
   F.state = "done"
   if not F.manual then
     G.results.reactions_restored = G.reactionsRestore()
-    G.unparkOthers()
+    if not F.lane then G.unparkOthers() end
   end
   -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
   local gone = {}
@@ -1669,6 +1855,10 @@ local function finish(F, why)
   if F.char and F.enemies then
     G.results.outside_attackers, G.results.outside_hits = G.outsideAttackers(G.dmg, uuid(F.char), F.enemies)
   end
+  if F.lane and F.char then
+    G.results.lane = F.lane
+    G.results.cross_lane_hits = G.crossLaneHits(G.dmg, uuid(F.char), G.LANES and G.LANES.members, F.lane.id)
+  end
   if F.char and not F.manual then G.dropRunBoosts(F.char, F.hpBuffer) end
   -- a character left down after its combat dies once its death saves run out: brought back at once
   if F.char and not F.manual then G.revive(F.char) end
@@ -1681,16 +1871,34 @@ local function finish(F, why)
   G.runSeq = (G.runSeq or 0) + 1
   local spec = F.spec or {}
   local rec = { run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
+    lane = F.lane and F.lane.id, lanes_run = F.lane and F.lane.run, first_lane = F.lane and F.lane.first,
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = F.req.haste and true or false,
     respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
     log = G.log, valid = G.results.valid, invalid = G.results.invalid }
   rec.req.spec = nil
-  try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d.json", F.started, G.runSeq),
-    Ext.Json.Stringify(rec))
+  try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d%s.json", F.started, G.runSeq,
+    F.lane and ("_" .. F.lane.id) or ""), Ext.Json.Stringify(rec))
   G.dump()
   G.notify({ kind = "result", run = G.runSeq, mode = rec.mode, spec = rec.spec_id, scenario = rec.scenario,
     summary = G.results.summary, expect = spec.expect })
+  if F.lane then
+    G.lanesGo()
+    G.lanesDone()
+  end
+end
+
+-- Hits the character dealt to the other lanes' characters and enemies (its spell reached the other fight).
+function G.crossLaneHits(dmg, me, members, mine)
+  local n = 0
+  for _, row in ipairs(dmg or {}) do
+    if (row.source == me or row.owner == me) and row.target ~= me then
+      for id, m in pairs(members or {}) do
+        if id ~= mine and m[row.target] and (row.amount or 0) > 0 then n = n + 1 end
+      end
+    end
+  end
+  return n
 end
 
 -- Boosts older runs gave the character (no Attack of Opportunity, an HP buffer): no longer given, still taken off.
@@ -1709,6 +1917,7 @@ G.PREP_MS = 120000
 G.SETTLE_MS, G.SPAWN_MS = 250, 800
 function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
+  if G.LANES and G.LANES.on and not req.lane then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
     state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"] }
   G.F = F
@@ -1748,6 +1957,15 @@ function G.start(F)
     A = (C.arenas or {})[req.arena]
     if not A then return stop(F, "unknown arena " .. tostring(req.arena)) end
   end
+  F.lane = req.lane
+  if F.lane and F.lane.no_high and A then
+    -- mirrored lanes: the same layout in both, so no high ground unless every lane has one
+    local a2 = {}
+    for k, v in pairs(A) do a2[k] = v end
+    a2.high = nil
+    A = a2
+  end
+  spec.real_respec = req.respec == "real" or spec.real_respec
   G.origin = G.origin or { Osi.GetPosition(u) }
   F.char, F.spec, F.plan, F.S, F.rounds, F.A = u, spec, spec.plan or {}, S, req.rounds or S.rounds, A
   F.prepDeadline = now() + G.PREP_MS
@@ -1764,8 +1982,9 @@ function G.start(F)
       local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin, A)
       pcall(Osi.TeleportToPosition, u, cpos[1], cpos[2], cpos[3], "", 0, 0, 0, 0, 1)
       if not F.manual then
-        G.results.parked = G.parkOthers(u, A and A.park)
-        G.results.reactions = G.reactionsApply(F.plan)
+        -- lanes: the lane runner parked the rest of the party; each lane sets its own character's reactions
+        G.results.parked = F.lane and G.LANES and G.LANES.parkedCount or G.parkOthers(u, A and A.park)
+        G.results.reactions = G.reactionsApply(F.plan, F.lane and { uuid(u) } or nil)
         -- The same setup for both sets of a pair, with the game's rules: Attacks of Opportunity stay on (a cast that
         -- needs a step moves first, G.castSpot) and the sheet's own hit points (a down ends the run, G.step).
         G.results.ignore_leave_attack_range = false
@@ -1785,37 +2004,13 @@ function G.start(F)
           local intr = G.arenaIntruders(A)
           if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
         end
-        F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
-        if #F.enemies == 0 then return stop(F, "no enemies") end
-        wait(G.SPAWN_MS, function()
-          G.results.enemies = G.enemyReport(F.enemies)
-          G.results.enemy_target = E
-          G.results.enemy_damage_scale = F.enemyDamageScale
-          pcall(Osi.SetHitpointsPercentage, u, 100)
-          G.results.char = G.sheet(u)
-          if not F.manual then
-            G.unencumber(u, false)
-            G.results.encumbered = G.encumbrance(u)
-            G.results.precheck = G.precheck(F)
-            local me = uuid(u)
-            local rep = G.results.reactions and G.results.reactions[me]
-            F.setupExtra = { buffs = buffs, encumbered = G.results.encumbered, enemies = F.enemies, E = E,
-              scale = F.enemyDamageScale, parked = G.parked, reactions = rep and rep.verified or nil }
-            G.results.setup = { start = G.setupCheck(F, spec, "start", F.setupExtra) }
-          end
-          G.round, G.fightOn = 0, true
-          G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }
-          F.tFight = now()
-          F.hpChar = try(Osi.GetHitpoints, u)
-          G.enterCombat(F)
-          F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
-          if F.manual then
-            local rows = G.hotbarRows(spec, (G.results.prep or {}).consumables)
-            G.hotbarFill(u, rows)
-            G.notify({ kind = "checklist", rows = rows, hotbar = G.results.hotbar })
-          end
-          G.notify({ kind = "status", text = "fight on: " .. scn .. (F.manual and " - your turns" or "") })
-        end)
+        -- lanes: every lane waits here until all are ready, then all spawn their enemies in the same frame, the first
+        -- lane first (G.lanesGo), so no lane's enemies stand around while the other lane still prepares
+        if F.lane then
+          F.state, F.go = "ready", function() G.spawnAndFight(F, pts, E, buffs, C) end
+          return G.lanesGo()
+        end
+        G.spawnAndFight(F, pts, E, buffs, C)
       end)
     elseif tostring(G.status):match("^failed") then
       stop(F, "prep " .. tostring(G.status))
@@ -1827,6 +2022,55 @@ function G.start(F)
     end
   end
   wait(G.POLL_MS, waitPrep)
+end
+
+-- The enemies, the setup check, then the fight.
+function G.spawnAndFight(F, pts, E, buffs, C)
+  local u, spec = F.char, F.spec
+  F.enemies = G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)
+  if #F.enemies == 0 then return stop(F, "no enemies") end
+  if F.lane and G.LANES then
+    local m = G.LANES.members[F.lane.id] or {}
+    m[uuid(u)] = true
+    for _, d in ipairs(F.enemies) do m[uuid(d)] = true end
+    G.LANES.members[F.lane.id] = m
+  end
+  wait(G.SPAWN_MS, function()
+    G.results.enemies = G.enemyReport(F.enemies)
+    G.results.enemy_target = E
+    G.results.enemy_damage_scale = F.enemyDamageScale
+    pcall(Osi.SetHitpointsPercentage, u, 100)
+    G.results.char = G.sheet(u)
+    if not F.manual then
+      G.unencumber(u, false)
+      G.results.encumbered = G.encumbrance(u)
+      G.results.precheck = G.precheck(F)
+      local me = uuid(u)
+      local rep = G.results.reactions and G.results.reactions[me]
+      F.setupExtra = { buffs = buffs, encumbered = G.results.encumbered, enemies = F.enemies, E = E,
+        scale = F.enemyDamageScale, parked = G.parked, reactions = rep and rep.verified or nil }
+      G.results.setup = { start = G.setupCheck(F, spec, "start", F.setupExtra) }
+    end
+    if F.lane then G.laneSetup(F) end
+    G.goFight(F)
+  end)
+end
+
+-- The fight starts: round 0, the combat entered, the fight loop waits for the character's turn.
+function G.goFight(F)
+  G.round, G.fighting = 0, true
+  G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }
+  F.tFight = now()
+  F.hpChar = try(Osi.GetHitpoints, F.char)
+  G.enterCombat(F)
+  F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
+  if F.manual then
+    local rows = G.hotbarRows(F.spec, (G.results.prep or {}).consumables)
+    G.hotbarFill(F.char, rows)
+    G.notify({ kind = "checklist", rows = rows, hotbar = G.results.hotbar })
+  end
+  G.notify({ kind = "status", text = "fight on: " .. tostring(F.req.scenario or "boss") ..
+    (F.manual and " - your turns" or "") })
 end
 
 -- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
@@ -1851,7 +2095,11 @@ end
 local function turnHolders(F)
   local out = {}
   for _, d in ipairs(F.enemies or {}) do if activeTurn(d) then out[#out + 1] = uuid(d) end end
-  for _, m in ipairs(partyMembers()) do if m ~= uuid(F.char) and activeTurn(m) then out[#out + 1] = m end end
+  local other = {}
+  for _, u in pairs(F.lane and F.lane.others or {}) do other[uuid(u)] = true end
+  for _, m in ipairs(partyMembers()) do
+    if m ~= uuid(F.char) and not other[m] and activeTurn(m) then out[#out + 1] = m end
+  end
   return out
 end
 
@@ -1941,21 +2189,213 @@ function G.step(F, t)
     end
   end
 end
-local function tick()
+local function stepLane()
   local F = G.F
-  if not F or not F.state or F.state == "done" or F.state == "prep" then return end
+  if not F or not F.state or F.state == "done" or F.state == "prep" or F.state == "ready" then return end
+  G.step(F, now())
+end
+local function tick()
   local t = now()
   if t - lastTick < 100 then return end
   lastTick = t
-  G.step(F, t)
+  local L = G.LANES
+  if L and L.on then
+    for _, id in ipairs(L.order) do G.inLane(id, stepLane) end
+    return
+  end
+  stepLane()
 end
 if G._tick then pcall(function() Ext.Events.Tick:Unsubscribe(G._tick) end) end
 G._tick = Ext.Events.Tick:Subscribe(function() pcall(tick) end)
 
 function G.abort()
+  local L = G.LANES
+  if L and L.on then
+    for _, id in ipairs(L.order) do
+      G.inLane(id, function() if G.F and G.F.state ~= "done" then finish(G.F, "aborted") end end)
+    end
+    G.lanesDone()
+  end
   if G.F and G.F.state ~= "done" then finish(G.F, "aborted") end
   if G.barSaved then G.hotbarRestore() end
   return G.status
+end
+
+-- ------------------------------------------------------------------------------------------------ two lanes
+-- G.runLanes(req): both sets of a pair at once. req = { run_id, lanes = <a "lanes" entry of arenas.json>, first = "A",
+-- gap_need = metres, entries = { { id = "A", req = <a run request: char, spec_file, scenario, ...> }, { id = "B", ... } } }
+-- Each lane: its own character (two party members with the same build), its own set and enemies, its own arena spot.
+-- The rest of the party is parked far away; each lane's enemies get the lane's own faction, hostile to that lane's
+-- character only and neutral to the other lane (factions and relations are put back when the last lane ends). Both
+-- fights start in the same frame, the first lane first. Every lane writes its own run record.
+function G.runLanes(req)
+  if G.LANES and G.LANES.on then return "busy" end
+  if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
+  local C = G.catalog() or {}
+  local LS = (C.arenas or {})[req.lanes or ""]
+  if not LS or not LS.lanes then return "unknown lanes " .. tostring(req.lanes) end
+  local order = { req.first }
+  for _, e in ipairs(req.entries or {}) do if e.id ~= req.first then order[#order + 1] = e.id end end
+  local L = { on = true, run = req.run_id, order = order, members = {}, chars = {}, set = LS, first = req.first,
+    gap_need = req.gap_need, t0 = now() }
+  for _, e in ipairs(req.entries or {}) do
+    L.chars[e.id] = uuid(e.req.char)
+    if not L.chars[e.id] or not LS.lanes[e.id] then return "lane " .. tostring(e.id) .. ": no character or lane" end
+  end
+  G.LANES = L
+  local keep = {}
+  for _, u in pairs(L.chars) do keep[u] = true end
+  L.parkedCount = G.parkOthers(nil, LS.park, keep)
+  L.factions = G.laneFactions(L, LS)
+  local allHigh = true
+  for id in pairs(L.chars) do
+    local A = (C.arenas or {})[LS.lanes[id].arena or ""]
+    if not (A and A.high) then allHigh = false end
+  end
+  for _, e in ipairs(req.entries) do
+    local others = {}
+    for id, u in pairs(L.chars) do if id ~= e.id then others[id] = u end end
+    local r = {}
+    for k, v in pairs(e.req) do r[k] = v end
+    r.arena = LS.lanes[e.id].arena
+    r.lane = { id = e.id, run = req.run_id, first = req.first, others = others, enemy_faction = LS.lanes[e.id].enemy_faction,
+      no_high = not allHigh, gap_need = req.gap_need }
+    G.inLane(e.id, function() return G.run(r) end)
+  end
+  return "started"
+end
+
+-- Each lane's enemies get the lane's faction: hostile (0) to that lane's character, neutral (50) to the other lanes'
+-- characters and enemies. Relations are between factions, so when both characters share one (the party's), each gets
+-- its lane's character faction for the run. Everything changed is recorded and put back by G.laneFactionsRestore.
+function G.laneFactions(L, LS)
+  local out = { chars = {}, relations = {}, set = {} }
+  local fac, seen = {}, {}
+  local shared = false
+  for _, id in ipairs(L.order) do
+    local f = try(Osi.GetFaction, L.chars[id])
+    if f == nil or seen[f] then shared = true end
+    if f then seen[f] = true end
+  end
+  for _, id in ipairs(L.order) do
+    local u = L.chars[id]
+    local cur = try(Osi.GetFaction, u)
+    local want = cur
+    local lane = LS.lanes[id] or {}
+    if shared and lane.char_faction then
+      out.chars[#out.chars + 1] = { char = u, was = cur }
+      want = lane.char_faction
+      pcall(Osi.SetFaction, u, want)
+    end
+    fac[id] = { char = want, enemy = lane.enemy_faction }
+  end
+  local function rel(a, b, v)
+    if not a or not b then return end
+    local k = a .. "|" .. b
+    if not out.relations[k] then out.relations[k] = { a = a, b = b, was = try(Osi.GetRelation, a, b) } end
+    pcall(Osi.SetRelation, a, b, v)
+    out.set[#out.set + 1] = { a = a, b = b, v = v }
+  end
+  for _, i in ipairs(L.order) do
+    for _, j in ipairs(L.order) do
+      local v = (i == j) and 0 or 50
+      rel(fac[i].enemy, fac[j].char, v)
+      rel(fac[j].char, fac[i].enemy, v)
+      if i ~= j then rel(fac[i].enemy, fac[j].enemy, 50) end
+    end
+  end
+  out.factions = fac
+  return out
+end
+function G.laneFactionsRestore(st)
+  if not st then return 0 end
+  local n = 0
+  for _, r in pairs(st.relations or {}) do
+    if r.was ~= nil then pcall(Osi.SetRelation, r.a, r.b, r.was); n = n + 1 end
+  end
+  for _, c in ipairs(st.chars or {}) do
+    if c.was then pcall(Osi.SetFaction, c.char, c.was); n = n + 1 end
+  end
+  return n
+end
+
+-- Lane isolation, read by engine as the fights start (any failure fails that lane's run, like a setup mismatch): the
+-- other lanes' characters are beyond the spacing the lanes need, the lane's enemies are hostile to its character and
+-- not to the other lanes' characters.
+function G.laneIsolation(F)
+  local out = {}
+  local function cmp(field, want, got)
+    if want ~= got then out[#out + 1] = { field = field, want = want, got = got } end
+  end
+  local me = F.char
+  for id, u in pairs(F.lane.others or {}) do
+    local d = dist(me, u)
+    cmp("lane " .. id .. " character beyond " .. tostring(F.lane.gap_need) .. " m", true,
+      F.lane.gap_need == nil or d >= F.lane.gap_need)
+    for i, e in ipairs(F.enemies or {}) do
+      cmp("enemy " .. i .. " not hostile to lane " .. id .. "'s character", 0, try(Osi.IsEnemy, e, u))
+    end
+  end
+  for i, e in ipairs(F.enemies or {}) do cmp("enemy " .. i .. " hostile to the character", 1, try(Osi.IsEnemy, e, me)) end
+  return out
+end
+
+-- Starts every ready lane once no lane is still preparing (a lane that failed in prep is done and is not waited for):
+-- each spawns its enemies, the first lane first; their fights start after the same spawn pause.
+function G.lanesGo()
+  local L = G.LANES
+  if not L or not L.on or L.went then return end
+  for _, id in ipairs(L.order) do
+    local F = G.laneField(id, "F")
+    if not F or (F.state ~= "ready" and F.state ~= "done") then return end
+  end
+  L.went = true
+  L.go_ms = now() - L.t0
+  for _, id in ipairs(L.order) do
+    G.inLane(id, function()
+      local F = G.F
+      if F.state ~= "ready" then return end
+      F.state = "prep"
+      F.go()
+    end)
+  end
+end
+
+-- As the lane's fight starts (every lane's enemies stand by then): the isolation check joins the setup check.
+function G.laneSetup(F)
+  local iso = G.laneIsolation(F)
+  local sc = G.results.setup and G.results.setup.start
+  if sc then
+    for _, m in ipairs(iso) do sc.mismatches[#sc.mismatches + 1] = m end
+    sc.checked = sc.checked + 1
+  end
+  G.results.lane_isolation = iso
+  G.results.lane_factions = G.LANES and G.LANES.factions
+end
+
+-- After the last lane: factions and relations back, the party back.
+function G.lanesDone()
+  local L = G.LANES
+  if not L or not L.on then return end
+  for _, id in ipairs(L.order) do
+    local F = G.laneField(id, "F")
+    if F and F.state ~= "done" then return end
+  end
+  L.restored = G.laneFactionsRestore(L.factions)
+  G.unparkOthers()
+  L.on = false
+end
+
+function G.lanesState()
+  local L = G.LANES
+  if not L then return "no lanes" end
+  local parts = { "lanes " .. tostring(L.run) .. (L.on and " on" or " done") }
+  for _, id in ipairs(L.order) do
+    local F = G.laneField(id, "F")
+    parts[#parts + 1] = string.format("%s:%s r%s", id, tostring(G.laneField(id, "status")),
+      tostring(G.laneField(id, "round")) .. " " .. tostring(F and F.state))
+  end
+  return table.concat(parts, " | ")
 end
 
 -- ------------------------------------------------------------------------------------------------ hotbar (manual)
@@ -2101,5 +2541,7 @@ G._net = Ext.Events.NetMessage:Subscribe(function(e) pcall(onNet, e) end)
 G._itemRule, G._parseCosts, G._doAction, G._roundStart = itemRule, parseCosts, doAction, roundStart
 G._equipAll = equipAll
 G._onCastFailed, G._onReaction, G._finish, G._summarize = onCastFailed, onReaction, finish, summarize
+G._onAttacked, G._onCast = onAttacked, onCast
+G._wait, G._tickFn = wait, tick
 
 return "gauntlet v" .. G.VERSION .. " loaded"
