@@ -284,6 +284,7 @@ end
 
 -- ------------------------------------------------------------------------------------------------ items
 -- items: { {slot = "MeleeOffHand", template = "<uuid>", stats = "<stats id>"}, ... } equipped in order
+G.POLL_MS, G.EQUIP_MS, G.USE_MS = 100, 2000, 500
 local function equipAll(u, items, i, cb)
   if i > #items then return cb() end
   local spec = items[i]
@@ -296,7 +297,7 @@ local function equipAll(u, items, i, cb)
   G.spawnedItems = G.spawnedItems or {}
   G.spawnedItems[#G.spawnedItems + 1] = it
   pcall(Osi.ToInventory, it, u, 1, 0, 0)
-  wait(200, function()
+  wait(G.POLL_MS, function()
     if spec.use and G.manualPrep then
       G.results.consumables = G.results.consumables or {}
       G.results.consumables[#G.results.consumables + 1] = it
@@ -306,18 +307,29 @@ local function equipAll(u, items, i, cb)
     if spec.use then
       pcall(Osi.Use, u, it, "")
       G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "used", uuid = it }
-      return wait(800, function() equipAll(u, items, i + 1, cb) end)
+      return wait(G.USE_MS, function() equipAll(u, items, i + 1, cb) end)
     end
     pcall(Osi.Equip, u, it, 1, 0, 0)
-    wait(350, function()
+    -- worn yet? asked every POLL_MS; an equip that has not taken by half of EQUIP_MS is asked for once more (two runs
+    -- of the control lost a ring or boots that a fixed 350 ms wait read as not worn)
+    local t0, again = now(), false
+    local function check()
       local where
       for s, e in pairs(G.equipped(u)) do if uuid(e) == uuid(it) then where = s end end
       -- the slot query can miss a slot name; the item itself knows whether it is worn
       if not where and try(Osi.IsEquipped, it) == 1 then where = spec.slot end
-      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = where, uuid = it }
+      local waited = now() - t0
+      -- a slow frame can skip past half the time: the second ask always happens before giving up
+      if not where and (waited < G.EQUIP_MS or not again) then
+        if not again and waited >= G.EQUIP_MS / 2 then again = true; t0 = now() - G.EQUIP_MS / 2; pcall(Osi.Equip, u, it, 1, 0, 0) end
+        return wait(G.POLL_MS, check)
+      end
+      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = where, uuid = it,
+        ms = waited, again = again or nil }
       note("item %s want %s got %s", spec.stats, spec.slot, tostring(where))
       equipAll(u, items, i + 1, cb)
-    end)
+    end
+    wait(G.POLL_MS, check)
   end)
 end
 
@@ -370,10 +382,11 @@ function G.prep(spec)
       pcall(Osi.TeleportToPosition, row[1], spec.park[1], spec.park[2], spec.park[3], "", 0, 0, 0, 0, 1)
     end
   end
+  G.revive(u)
   pcall(Osi.RemoveBoosts, u, "", 0, CAUSE, u)
   G.dropRunBoosts(u, G.OLD_HP_BUFFER)
   G.strip(u)
-  wait(600, function()
+  wait(G.SETTLE_MS, function()
     G.results.items_deleted = G.dropSpawnedItems(u)
     G.unencumber(u, true)
     for _, p in ipairs(spec.passives_remove or {}) do
@@ -384,14 +397,14 @@ function G.prep(spec)
     end
     for _, sp in ipairs(spec.spells_add or {}) do pcall(Osi.AddSpell, u, sp, 0, 1) end
     for _, b in ipairs(spec.boosts or {}) do boost(u, b) end
-    wait(500, function()
+    wait(G.SETTLE_MS, function()
       local cur = abilities(u)
       for short, want in pairs(spec.sheet.abilities or {}) do
         local n = ABIL_SHORT[short]
         local d = want - (cur[n] or want)
         if d ~= 0 then boost(u, string.format("Ability(%s,%d)", n, d)) end
       end
-      wait(500, function()
+      wait(G.SETTLE_MS, function()
         local e = ent(u)
         local prof = e and try(function() return e.Stats.ProficiencyBonus end) or spec.sheet.prof
         local dp = spec.sheet.prof - prof
@@ -416,11 +429,11 @@ function G.prep(spec)
           for _, entry in ipairs(resList(u, r.kind) or {}) do m = math.max(m, entry.MaxAmount) end
           if r.n - m ~= 0 then boost(u, string.format("ActionResource(%s,%d,%d)", r.kind, r.n - m, r.level or 0)) end
         end
-        wait(400, function()
+        wait(G.SETTLE_MS, function()
           G.results.bare = G.sheet(u)
           equipAll(u, spec.items or {}, 1, function()
             for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
-            wait(600, function()
+            wait(G.SETTLE_MS, function()
               if G.prepGen ~= gen then return end
               G.refill(u, "long")
               pcall(Osi.SetHitpointsPercentage, u, 100)
@@ -1334,6 +1347,17 @@ G.SCENARIOS = {
   longday = { enemies = 4, rounds = 16, fight_rounds = 4, short_rest_every = 4 },
 }
 G.RANGE = { melee = 1.6, throw = 6.0, ranged = 10.0, caster = 10.0 }
+-- A solo character takes every hit a party would share, and keeps its real hit points: the enemies' damage per hit is
+-- scaled (the same for both sets; a scenario or a request may set enemy_damage_scale), rounded to whole points.
+G.ENEMY_DAMAGE_SCALE = 0.5
+function G.scaleEnemy(E, scale)
+  local out = {}
+  for k, v in pairs(E) do out[k] = v end
+  out.damage_scale = scale or 1
+  out.dmg_unscaled = E.dmg
+  out.dmg = math.max(1, math.floor((E.dmg or 1) * out.damage_scale + 0.5))
+  return out
+end
 
 local function ground(x, z, nearY)
   local best
@@ -1433,7 +1457,7 @@ end
 local function roundStart(F)
   G.round = G.round + 1
   local R = { r = G.round, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {},
-    char_hp_before = try(Osi.GetHitpoints, F.char) }
+    char_hp_before = try(Osi.GetHitpoints, F.char), tm = { turn = now() - G.t0 } }
   R.char_hp_lost_enemy_turns = math.max(0, (F.hpChar or 0) - (R.char_hp_before or 0))
   -- downed in the enemies' turn: the engine gives the turn no action (healing does not bring it back). G.step ends the
   -- run before such a round; a round that still starts down is recorded as downed, never as an idle round.
@@ -1525,6 +1549,13 @@ function G.dropRunBoosts(u, hpBuffer)
   for _, b in ipairs(list) do pcall(Osi.RemoveBoosts, u, b, 0, CAUSE, u) end
 end
 
+-- Back on its feet with full hit points: resurrected when dead, the downed state removed.
+function G.revive(u)
+  if try(Osi.IsDead, u) == 1 then pcall(Osi.Resurrect, u) end
+  pcall(Osi.RemoveStatus, u, "DOWNED")
+  pcall(Osi.SetHitpointsPercentage, u, 100)
+end
+
 local function finish(F, why)
   G.fightOn = false
   F.state = "done"
@@ -1542,6 +1573,7 @@ local function finish(F, why)
   end)
   if F.manual and G.barSaved and why ~= "reset" then G.results.hotbar_restore = G.hotbarRestore() end
   if why == "downed" then F.downAt = G.round + 1 end
+  if G.results.timing and F.tFight then G.results.timing.fight_ms = now() - F.tFight end
   G.results.summary = summarize(F)
   G.results.ended = why or "rounds done"
   local downed = {}
@@ -1551,6 +1583,8 @@ local function finish(F, why)
     G.results.outside_attackers, G.results.outside_hits = G.outsideAttackers(G.dmg, uuid(F.char), F.enemies)
   end
   if F.char and not F.manual then G.dropRunBoosts(F.char, F.hpBuffer) end
+  -- a character left down after its combat dies once its death saves run out: brought back at once
+  if F.char and not F.manual then G.revive(F.char) end
   if not F.manual then
     G.results.foreign_casts = G.foreignCasts(G.rounds, uuid(F.char), F.plan or {})
     local j = G.judge(G.rounds, G.results.ended, G.results, { me = uuid(F.char), char_acts = F.S and F.S.char_acts })
@@ -1583,6 +1617,9 @@ G.HP_BUFFER = 0
 -- stays small and does not time out. Anything that stops a run before or during the fight (bad request, prep failed
 -- or timed out, arena not clear) still ends in a run record, marked invalid with its cause.
 G.PREP_MS = 120000
+-- prep pauses: boosts and statuses settle within a few frames; spawned enemies need a moment before their stats are
+-- forced and read back
+G.SETTLE_MS, G.SPAWN_MS = 250, 800
 function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
@@ -1615,8 +1652,10 @@ function G.start(F)
   if not S then return stop(F, "unknown scenario " .. tostring(scn)) end
   local C = G.catalog() or {}
   local act = tostring(req.act or spec.act)
-  local E = req.enemy or (C.enemies and C.enemies[act])
-  if not E then return stop(F, "no enemy stats for act " .. act) end
+  local E0 = req.enemy or (C.enemies and C.enemies[act])
+  if not E0 then return stop(F, "no enemy stats for act " .. act) end
+  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)
+  F.enemyDamageScale = E.damage_scale
   local A
   if req.arena then
     A = (C.arenas or {})[req.arena]
@@ -1625,6 +1664,8 @@ function G.start(F)
   G.origin = G.origin or { Osi.GetPosition(u) }
   F.char, F.spec, F.plan, F.S, F.rounds, F.A = u, spec, spec.plan or {}, S, req.rounds or S.rounds, A
   F.prepDeadline = now() + G.PREP_MS
+  -- where a run's time goes (ms): prep until the fight starts, then per round R.tm (our turn, the enemies' turns)
+  F.tRun = now()
   G.manualPrep = F.manual
   G.prep(spec)
   local function waitPrep()
@@ -1659,9 +1700,10 @@ function G.start(F)
         end
         F.enemies = G.spawnEnemies(pts, E, C.enemy_faction)
         if #F.enemies == 0 then return stop(F, "no enemies") end
-        wait(1500, function()
+        wait(G.SPAWN_MS, function()
           G.results.enemies = G.enemyReport(F.enemies)
           G.results.enemy_target = E
+          G.results.enemy_damage_scale = F.enemyDamageScale
           pcall(Osi.SetHitpointsPercentage, u, 100)
           G.results.char = G.sheet(u)
           if not F.manual then
@@ -1670,6 +1712,8 @@ function G.start(F)
             G.results.precheck = G.precheck(F)
           end
           G.round, G.fightOn = 0, true
+          G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }
+          F.tFight = now()
           F.hpChar = try(Osi.GetHitpoints, u)
           G.enterCombat(F)
           F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
@@ -1687,16 +1731,19 @@ function G.start(F)
       G.prepGen = (G.prepGen or 0) + 1
       stop(F, string.format("prep timed out after %d s (status %s)", math.floor(G.PREP_MS / 1000), tostring(G.status)))
     else
-      wait(300, waitPrep)
+      wait(G.POLL_MS, waitPrep)
     end
   end
-  wait(300, waitPrep)
+  wait(G.POLL_MS, waitPrep)
 end
 
 -- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
 -- combat if the character left it, else the turn of whoever holds it is ended); after TURN_RECOVERIES tries the run
 -- ends, invalid. Ending the character's own turn is retried until the engine lets go of it.
 G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 45000, 2, 4000, 3, 90000
+-- pauses around the character's turn: after the turn starts (the engine refills the turn's resources) and after the
+-- last action (the cast has ended: G.step waits for casting() first)
+G.ACT_DELAY_MS, G.END_DELAY_MS = 200, 100
 function G.recoverTurn(F, inCombat, holders)
   if not inCombat then
     G.enterCombat(F)
@@ -1739,7 +1786,7 @@ function G.step(F, t)
       -- real hit points: a down is a result. The run ends there; the rounds fought and their damage are the record.
       if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end
       roundStart(F)
-      F.state, F.next, F.turnStart = F.manual and "player" or "act", t + 400, t
+      F.state, F.next, F.turnStart = F.manual and "player" or "act", t + G.ACT_DELAY_MS, t
     elseif t > F.deadline then
       F.recoveries = (F.recoveries or 0) + 1
       if F.recoveries > G.TURN_RECOVERIES then
@@ -1764,15 +1811,15 @@ function G.step(F, t)
       return
     end
     if F.moving then
-      if not G.moveSettled(F, t) then F.next = t + 150; return end
+      if not G.moveSettled(F, t) then F.next = t + G.POLL_MS; return end
       local M = F.moving
       F.moving = nil
       doAction(F, M.a, M.R, M.rec)
-      F.next = t + 150
+      F.next = t + G.POLL_MS
       return
     end
     if F.pending then
-      if not G.settle(F, R, t) or F.pending then F.next = t + 150; return end
+      if not G.settle(F, R, t) or F.pending then F.next = t + G.POLL_MS; return end
     end
     if casting(F.char) then F.next = t + 200; return end
     if not F.queue then F.queue, F.qi = G.planRound(F, R), 0 end
@@ -1781,14 +1828,19 @@ function G.step(F, t)
       doAction(F, F.queue[F.qi], R)
       F.next = t + (F.queue[F.qi].ms or 300)
     else
-      F.state, F.next = "ending", t + 300
+      R.tm.acted = t - G.t0
+      F.state, F.next = "ending", t + G.END_DELAY_MS
     end
   elseif F.state == "ending" and t >= F.next then
     if casting(F.char) then F.next = t + 200; return end
     G.endTurn(F.char)
+    local R = G.rounds[#G.rounds]
+    if R and R.tm then R.tm.end_asked = t - G.t0 end
     F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
   elseif F.state == "ended" then
     if not activeTurn(F.char) then
+      local R = G.rounds[#G.rounds]
+      if R and R.tm then R.tm.released = t - G.t0 end
       F.state, F.deadline = "wait", t + G.TURN_WAIT_MS
     elseif t >= F.next then
       if F.endTries >= G.END_TURN_TRIES then return finish(F, "the character's turn could not be ended") end
@@ -1955,6 +2007,7 @@ G._net = Ext.Events.NetMessage:Subscribe(function(e) pcall(onNet, e) end)
 
 -- pure helpers, exposed for the tests (tests/test_gauntlet.py)
 G._itemRule, G._parseCosts, G._doAction, G._roundStart = itemRule, parseCosts, doAction, roundStart
+G._equipAll = equipAll
 G._onCastFailed, G._onReaction, G._finish, G._summarize = onCastFailed, onReaction, finish, summarize
 
 return "gauntlet v" .. G.VERSION .. " loaded"

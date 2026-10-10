@@ -83,30 +83,67 @@ def do_runs(a):
     for i, p in enumerate(pairs):
         if only is not None and i not in only:
             continue
-        for side in a.sides.split(","):
-            spec = p["specs"][side]
-            for sc in scen:
-                for haste in ([False, True] if a.haste else [False]):
-                    req = {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds,
-                           "arena": a.arena,
-                           "char": a.char, "label": f"pair{i}:{side}"}
-                    t0 = time.time()
-                    print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
-                          f"{' haste' if haste else ''}")
-                    try:
-                        rec = engine.run(req, spec)
-                    except Exception as e:
-                        rec = {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
-                        print("  ERROR", e)
-                    rec["pair"], rec["side"], rec["secs"] = i, side, round(time.time() - t0, 1)
-                    rec["valid"], rec["invalid"] = run_validity(rec)
-                    if not rec["valid"]:
-                        print("  INVALID: " + "; ".join(rec["invalid"]))
-                    with open(a.results, "a", encoding="utf-8") as f:
-                        f.write(json.dumps(rec, default=str) + "\n")
-                    s = (rec.get("results") or {}).get("summary") or {}
-                    print(f"  dpr {s.get('dpr', 0):.1f} taken/round {s.get('taken_per_round', 0):.1f} "
-                          f"not done {s.get('actions_not_done')} ({rec['secs']} s)")
+        got = {"a": [], "b": []}
+        for k in range(min(3, max(1, a.repeats))):
+            for side in a.sides.split(","):
+                got[side] += run_side(a, i, p, side, scen)
+            stop, why = decisive(got["a"], got["b"], a.control_tol)
+            print(f"  pair {i} after {k + 1} repeat(s): {why}")
+            if stop:
+                break
+
+
+def decisive(xa, xb, tol=None):
+    """Sequential stopping: -> (stop, why). The 95% interval of the ratio of the two sides' mean damage per round is
+    decisive when it excludes 1 (one set is better) or lies inside 1 +- tol (the sets measure alike)."""
+    tol = CONTROL_TOL if tol is None else tol
+    if min(len(xa), len(xb)) < CONTROL_MIN_ROUNDS:
+        return False, f"{min(len(xa), len(xb))} fair rounds on the shorter side, not decisive"
+    ci = boot_ratio(xa, xb)
+    if not ci:
+        return False, "no interval"
+    if ci[0] > 1 or ci[1] < 1:
+        return True, f"decisive: ratio 95% interval {ci[0]:.2f}-{ci[1]:.2f} excludes 1"
+    if ci[0] >= 1 - tol and ci[1] <= 1 + tol:
+        return True, f"decisive: ratio 95% interval {ci[0]:.2f}-{ci[1]:.2f} within {tol:.0%}"
+    return False, f"ratio 95% interval {ci[0]:.2f}-{ci[1]:.2f}, not decisive"
+
+
+def run_side(a, i, p, side, scen):
+    """One side of a pair over the scenarios -> the damage per round of its usable runs, fair rounds only."""
+    spec = p["specs"][side]
+    dealt = []
+    for sc in scen:
+        for haste in ([False, True] if a.haste else [False]):
+            req = {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds,
+                   "arena": a.arena,
+                   "char": a.char, "label": f"pair{i}:{side}"}
+            t0 = time.time()
+            print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
+                  f"{' haste' if haste else ''}")
+            try:
+                rec = engine.run(req, spec)
+            except Exception as e:
+                rec = {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
+                print("  ERROR", e)
+            rec["pair"], rec["side"], rec["secs"] = i, side, round(time.time() - t0, 1)
+            rec["valid"], rec["invalid"] = run_validity(rec)
+            if not rec["valid"]:
+                print("  INVALID: " + "; ".join(rec["invalid"]))
+            with open(a.results, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, default=str) + "\n")
+            s = (rec.get("results") or {}).get("summary") or {}
+            tm = (rec.get("results") or {}).get("timing") or {}
+            print(f"  dpr {s.get('dpr', 0):.1f} taken/round {s.get('taken_per_round', 0):.1f} "
+                  f"not done {s.get('actions_not_done')} survived {s.get('rounds_survived')} ({rec['secs']} s; "
+                  f"prep {tm.get('prep_ms', 0) / 1000:.1f} s, fight {tm.get('fight_ms', 0) / 1000:.1f} s)")
+            if sc == "defence":
+                continue
+            ok, _causes, clean = rescore(rec)
+            d = s.get("dealt") or []
+            if ok and len(d) == len(clean):
+                dealt += [x for x, c in zip(d, clean) if c]
+    return dealt
 
 
 def run_validity(rec):
@@ -228,7 +265,9 @@ def rescore(rec):
             if all(ITEM_SPELL.search(x) or own_aoo(rec, x) for x in spells):
                 continue
         left.append(c)
-    if not left and sum(clean) < CONTROL_MIN_ROUNDS:
+    # a run the character's down ended is short by its result, not by a fault: the minimum applies to the whole side
+    downed = (rec.get("results") or {}).get("ended") == "downed"
+    if not left and not downed and sum(clean) < CONTROL_MIN_ROUNDS:
         left.append(f"only {sum(clean)} fair rounds")
     return not left, left, clean
 
@@ -354,6 +393,8 @@ def main(argv=None):
     ap.add_argument("--scenarios", default="boss,pack,defence,longday")
     ap.add_argument("--haste", action="store_true", help="also run every scenario with Haste")
     ap.add_argument("--only")
+    ap.add_argument("--repeats", type=int, default=1, help="up to this many runs per side (at most 3), stopping "
+                    "early once the 95%% interval of the two sides' ratio is decisive")
     ap.add_argument("--rounds", type=int, default=16)
     ap.add_argument("--sides", default="a,b", help="a, b or a,b: one set of each pair only (e.g. a reload between)")
     ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")

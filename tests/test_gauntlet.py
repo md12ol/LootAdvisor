@@ -445,11 +445,38 @@ def equip_tests(L):
         { want = "Ring2", stats = "MAG_Ring" }, { want = "Elixir", stats = "OBJ_Potion", got = "used" } } }
       T_unworn = G.unworn(prep)
       T_ju = G.judge({ { r = 1, done = { action = true } } }, "rounds done", { prep = prep }, { me = "c1" })
+      -- an equip that has not taken is waited for and asked for once more
+      local clock, equips = 0, 0
+      local wf, mt = Ext.Timer.WaitFor, Ext.Utils.MonotonicTime
+      Ext.Timer.WaitFor = function(ms, f) clock = clock + ms; f() end
+      Ext.Utils.MonotonicTime = function() return clock end
+      Osi.CreateAt = function() return "it1" end
+      Osi.Equip = function() equips = equips + 1 end
+      Osi.IsEquipped = function() return equips >= 2 and 1 or 0 end
+      G.results = { items = {} }
+      local done = false
+      G._equipAll("c1", { { slot = "Boots", template = "t", stats = "MAG_Boots" } }, 1, function() done = true end)
+      T_eqr = G.results.items[1]
+      T_eqdone, T_equips = done, equips
+      -- a slow frame: the first check comes after the whole wait
+      equips = 0
+      local calls = 0
+      Ext.Timer.WaitFor = function(ms, f) calls = calls + 1; clock = clock + (calls == 2 and 3000 or ms); f() end
+      G.results = { items = {} }
+      G._equipAll("c1", { { slot = "Boots", template = "t", stats = "MAG_Boots" } }, 1, function() end)
+      T_eqslow = G.results.items[1]
+      Ext.Timer.WaitFor, Ext.Utils.MonotonicTime = wf, mt
+      Osi.CreateAt, Osi.Equip, Osi.IsEquipped = nil, nil, nil
     """)
     g = L.globals()
     check("equip: weapons found under the Osiris slot names", g.T_eq.MeleeMainHand == "staff" and g.T_eq.Helmet == "hood",
           str(dict(g.T_eq.items())))
     check("equip: a set item that did not go on is listed", lst(g.T_unworn) == ["MAG_Ring (Ring2)"], str(lst(g.T_unworn)))
+    check("equip: an equip that has not taken is asked for again and then found worn",
+          g.T_eqdone is True and g.T_equips == 2 and g.T_eqr.got == "Boots" and g.T_eqr.again is True,
+          f"{g.T_equips} {g.T_eqr and g.T_eqr.got}")
+    check("equip: a slow frame still gets the second ask", g.T_eqslow.got == "Boots" and g.T_eqslow.again is True,
+          str(g.T_eqslow and g.T_eqslow.got))
     check("verdict: set items not worn make the run invalid",
           g.T_ju.valid is False and any("MAG_Ring" in c for c in lst(g.T_ju.causes)), str(lst(g.T_ju.causes)))
 
@@ -707,6 +734,9 @@ def start_tests(L):
     check("fight start: the game's rules, Attacks of Opportunity on and no HP buffer",
           "IgnoreLeaveAttackRange()" not in b and not any(x.startswith("IncreaseMaxHP") for x in b) and
           g.T_res.hp_buffer == 0 and g.T_res.ignore_leave_attack_range is False, f"{b} state {g.T_state}")
+    check("fight start: the enemies' damage scale is applied and recorded",
+          g.T_res.enemy_damage_scale == 0.5 and g.T_res.enemy_target.damage_scale == 0.5,
+          str(g.T_res.enemy_damage_scale))
     check("fight start: leftovers cleared, encumbrance read, plan prechecked before the first round",
           g.T_res.leftovers is not None and g.T_res.encumbered is not None and g.T_res.precheck is not None and
           len(g.T_res.precheck) == 1 and g.T_res.precheck[1].spell == "Target_MAG_Gaze",
@@ -740,6 +770,14 @@ def rules_tests(L):
       pcall(G.step, F, 0)
       T_dstate, T_dended = F.state, G.results.ended
       T_dsum = G.results.summary
+      local revived = {}
+      Osi.IsDead = function() return 1 end
+      Osi.Resurrect = function(u) revived[#revived + 1] = u end
+      G.revive("c1")
+      T_revived = revived
+      T_e3 = G.scaleEnemy({ dmg = 17, ac = 19 }, 0.5)
+      T_e1 = G.scaleEnemy({ dmg = 9 }, G.ENEMY_DAMAGE_SCALE)
+      Osi.IsDead, Osi.Resurrect = nil, nil
       Osi.GetHitpoints = nil
       -- moving to cast: the direct route leaves e1's reach, a detour south does not
       Osi.IsDead = function() return 0 end
@@ -771,6 +809,10 @@ def rules_tests(L):
     check("rules: a down before the character's turn ends the run with the rounds survived",
           g.T_dstate == "done" and g.T_dended == "downed" and g.T_dsum and g.T_dsum.rounds_survived == 3,
           f"{g.T_dstate} {g.T_dended}")
+    check("rules: enemy damage per hit scaled by half and rounded (17 -> 9, 9 -> 5), the rest unchanged",
+          g.T_e3.dmg == 9 and g.T_e3.dmg_unscaled == 17 and g.T_e3.ac == 19 and g.T_e3.damage_scale == 0.5 and
+          g.T_e1.dmg == 5, f"{g.T_e3.dmg} {g.T_e1.dmg}")
+    check("rules: a dead test character is resurrected", lst(g.T_revived) == ["c1"], str(lst(g.T_revived)))
     check("rules: the route to a casting spot keeps out of leaving an enemy's reach when it can",
           g.T_spot and g.T_spot.risk is None and g.T_spot.z < 0, str(g.T_spot and (g.T_spot.risk, g.T_spot.z)))
     check("rules: a cast out of range moves first", g.T_moving is True)
@@ -782,6 +824,13 @@ def py_tests():
     xs = [10, 20, 30, 40, 50, 60, 70, 80]
     lo, hi = R.boot_ci(xs)
     check("bootstrap CI contains the mean", lo <= R.mean(xs) <= hi, f"{lo} {hi}")
+    flat = [50.0, 52.0, 48.0, 51.0, 49.0, 50.0, 50.0, 51.0] * 3
+    check("sequential stopping: two sides alike within the tolerance are decisive",
+          R.decisive(flat, list(reversed(flat)), 0.15)[0] is True, R.decisive(flat, list(reversed(flat)), 0.15)[1])
+    check("sequential stopping: a clear gap is decisive", R.decisive(flat, [x * 0.5 for x in flat], 0.15)[0] is True)
+    noisy_a, noisy_b = [10, 90, 20, 80, 15, 85, 30, 70], [60, 40, 70, 30, 55, 45, 65, 35]
+    check("sequential stopping: wide intervals and too few rounds are not decisive",
+          R.decisive(noisy_a, noisy_b, 0.15)[0] is False and R.decisive(flat[:4], flat[:4], 0.15)[0] is False)
     lo2, hi2 = R.boot_ci(xs * 8)
     check("bootstrap CI narrows with more rounds", (hi2 - lo2) < (hi - lo))
     stats = {"Zone_LightningBolt": {"UseCosts": "ActionPoint:1;SpellSlotsGroup:1:1:3"},
@@ -958,6 +1007,10 @@ def rescore_tests(R):
     check("rescore: a run that ended early stays void", not ok2 and "ended" in causes2[0], str(causes2))
     ok3, causes3, _ = R.rescore(_r7_rec("a", R7_A[:5], [True] * 5))
     check("rescore: too few fair rounds is no measurement", not ok3 and "fair rounds" in causes3[0], str(causes3))
+    rec4 = _r7_rec("b", R7_B[:3], [True] * 3)
+    rec4["results"]["ended"] = "downed"
+    ok4, causes4, _ = R.rescore(rec4)
+    check("rescore: a run the character's down ended is short by its result and stays usable", ok4, str(causes4))
     pairs = [_pair("gale", 129.9, 132.6)]
     by = {(0, "a", "boss", False): {"dealt": R7_A, "clean": [True] * 16},
           (0, "b", "boss", False): {"dealt": R7_B, "clean": R7_B_FAIR}}
@@ -1076,6 +1129,17 @@ MUTATIONS = [
      "                scan(p, 1)", "            pass"),
     ("engine: no retry on a missed eval", EN, "if misses >= max_misses:", "if misses >= 1:"),
     ("engine: start never re-sent", EN, "elif not seen and not resent and polls >= 3:", "elif False:"),
+    ("equip: no second ask", GL, "if not again and waited >= G.EQUIP_MS / 2 then again = true; t0 = now() - G.EQUIP_MS / 2; pcall(Osi.Equip, u, it, 1, 0, 0) end", ""),
+    ("equip: no wait for the equip", GL, "if not where and (waited < G.EQUIP_MS or not again) then", "if false then"),
+    ("equip: a slow frame skips the second ask", GL, "if not where and (waited < G.EQUIP_MS or not again) then",
+     "if not where and waited < G.EQUIP_MS then"),
+    ("rescore: a down-ended run voided as too short", RN, "if not left and not downed and sum(clean)", "if not left and sum(clean)"),
+    ("enemies: damage not scaled", GL, "  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)",
+     "  local E = E0"),
+    ("enemies: default scale 1", GL, "G.ENEMY_DAMAGE_SCALE = 0.5", "G.ENEMY_DAMAGE_SCALE = 1"),
+    ("revive: the dead stay dead", GL, "  if try(Osi.IsDead, u) == 1 then pcall(Osi.Resurrect, u) end", ""),
+    ("stopping: never decisive on equality", RN, "    if ci[0] >= 1 - tol and ci[1] <= 1 + tol:", "    if False:"),
+    ("stopping: decisive on any interval", RN, '    return False, f"ratio 95% interval', '    return True, f"ratio 95% interval'),
     ("gate: tolerance ignored", RN, "if diff > 2 * tol or (diff > tol and beyond_dice):", "if False:"),
     ("gate: one-sided control passes", RN, 'causes.append(f"control pair {i} ({p[\'char\']} {p[\'build\']}) not measured '
      'on both sides")', "pass"),

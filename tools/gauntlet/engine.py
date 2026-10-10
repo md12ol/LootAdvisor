@@ -78,6 +78,9 @@ STATE = ("local F = GAUNTLET.F\nreturn tostring(GAUNTLET.status) .. ' r' .. tost
          "tostring(F and F.req and F.req.run_id)")
 
 
+FILE_POLL = 0.25
+
+
 def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
     """One gauntlet run; returns the run record (the file the game writes into LootAdvisor_gauntlet/). The game
     starts the run on timers and answers at once; a busy game that misses an eval is asked again (status reads
@@ -105,10 +108,15 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
     seen, resent, misses, failed_polls, polls = r == "started", False, 0, 0, 0
     t0 = time.time()
     while time.time() - t0 < timeout:
-        time.sleep(poll)
-        new = sorted(set(os.listdir(RUNS)) - before)
+        # the run record is looked for every FILE_POLL seconds; the game's status is read every `poll` seconds
+        t1 = time.time()
+        while True:
+            time.sleep(min(FILE_POLL, poll))
+            new = sorted(set(os.listdir(RUNS)) - before)
+            if new or time.time() - t1 >= poll:
+                break
         if new:
-            time.sleep(min(0.5, poll))
+            time.sleep(min(FILE_POLL, poll))
             with open(os.path.join(RUNS, new[-1]), encoding="utf-8") as f:
                 return json.load(f)
         try:
