@@ -87,7 +87,9 @@ function T.Text(rows, who)
   else title = ("%s for %s"):format(slot, who) end
 
   local body, warn
-  if r.s == "better" and r.better then
+  if r.s == "better" and r.better and r.picked then
+    body = "Equal; " .. (LA.CHAR_NAME[r.better] or r.better) .. " keeps it"   -- a settled exact tie
+  elseif r.s == "better" and r.better then
     body = "Better on " .. (LA.CHAR_NAME[r.better] or r.better)
   elseif r.s == "closed" then
     body = fit("Path closed: " .. clean(r.reason or ""), MAXLINE)
