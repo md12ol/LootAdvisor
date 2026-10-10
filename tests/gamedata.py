@@ -158,3 +158,23 @@ def builds_lua(path):
     for m in re.finditer(r'^\s*(\w+)\s*=\s*\{\s*builds\s*=\s*\{([^}]*)\}', tail, re.M):
         origins[m.group(1)] = re.findall(r'"([^"]+)"', m.group(2))
     return builds, origins
+
+
+def builds_lua_levels(path):
+    """Independent Builds.lua reader: {build id: {"cl": {class: levels}, "main": plus2 ability, "base": {...}}} -
+    class levels counted from the build's level list (one L("<Class>", ...) per level)."""
+    src = open(path, encoding="utf-8").read()
+    head = src.split("BA.BuildById", 1)[0]
+    starts = [m for m in re.finditer(r'\bid\s*=\s*"([^"]+)"', head)]
+    out = {}
+    for i, m in enumerate(starts):
+        blk = head[m.start(): starts[i + 1].start() if i + 1 < len(starts) else len(head)]
+        cl = {}
+        for c in re.findall(r'\bL\("([A-Za-z]+)"', blk):
+            cl[c] = cl.get(c, 0) + 1
+        main = re.search(r'\bplus2\s*=\s*"([A-Z]{3})"', blk)
+        base = re.search(r"\bbase\s*=\s*\{([^}]*)\}", blk)
+        out[m.group(1)] = {"cl": cl, "main": main.group(1) if main else None,
+                           "base": {k: int(v) for k, v in re.findall(r"([A-Z]{3})\s*=\s*(\d+)", base.group(1))}
+                           if base else {}}
+    return out

@@ -51,6 +51,8 @@
   // The mod writes the running game's state; the page loader passes it to LootAdvisorSets.live(state). In the
   // online copy LIVE stays null and nothing below changes the page.
   var LIVE = null, LIVE_HAVE = {}, LIVE_PLAY = {}, OVR = store.json("ovr", {}), liveSel = null, liveAct = null;
+  // tie picks made on this page: [stats id] = character (the game's pick, live state "picks", wins)
+  var PICKS = store.json("picks", {});
   var PLAY_KEYS = ["durge", "grove", "night", "isobel"];
   var LIVE_SKIP = { shar: 1, selune: 1, goblins: 1, tieflings: 1, isobel_kill: 1, isobel_dead: 1, isobel_alive: 1 };
   function recomputeHave() { HAVE = Object.assign({}, HAVE_M, LIVE_HAVE); }
@@ -64,13 +66,27 @@
   // a contested item in the live game: "give" = an owner who gets more from it is in the party (use the alternative),
   // "shared" = tied exactly with a party member, "free" = nobody with a better claim is in the party
   function liveContest(set, e) {
-    var me = setChar(set), it = ITEMS[e.sid] || {}, tie = it.ot || [], owners = (e.owner && e.owner.length ? e.owner : it.o) || [];
-    if (tie.indexOf(me) >= 0) {
-      var sh = tie.filter(function (c) { return c !== me && inParty(c); });
-      return sh.length ? { k: "shared", who: sh } : { k: "free", who: [] };
+    var me = setChar(set), it = ITEMS[e.sid] || {}, owners = (e.owner && e.owner.length ? e.owner : it.o) || [];
+    // an exact tie between party members: tools/sets_ship/ties.js (the game's pick, else this page's, else ask)
+    if (window.LA_TIES && window.LA_TIES.members(it).length) {
+      return window.LA_TIES.contest(me, it, inParty, (LIVE.picks || {})[e.sid] || null, PICKS[e.sid] || null);
     }
     var pr = owners.filter(function (c) { return c !== me && inParty(c); });
     return pr.length ? { k: "give", who: pr } : { k: "free", who: owners.filter(function (c) { return c !== me; }) };
+  }
+  function tieBy(by) { return by === "wear" ? "wears it" : by === "game" ? "picked in the game" : "your pick on this page"; }
+  // the tie-pick line of an item card: who has it, or buttons to give it to one of the tied party members
+  function tieHtml(sid, lc) {
+    if (!lc || !lc.cands || lc.cands.length < 2) return "";
+    var h = "";
+    if (lc.pick) h += '<span class="o">Tie: ' + esc(capf(names([lc.pick]))) + " gets it (" + tieBy(lc.by) + ").</span>";
+    else h += '<span class="o">Tie: ' + esc(names(lc.cands)) + " get exactly as much from it. Who gets it?</span>";
+    if (lc.by === "wear" || lc.by === "game") return h;
+    h += '<span class="tiepick">';
+    lc.cands.forEach(function (c) {
+      if (c !== lc.pick) h += '<button type="button" class="btn-pill" data-tie="' + esc(sid) + '" data-tiec="' + esc(c) + '">Give it to ' + esc(names([c])) + "</button>";
+    });
+    return h + "</span>";
   }
   function liveLevel(set) {
     if (!LIVE || set.act !== LIVE.act) return 0;
@@ -147,7 +163,10 @@
     if (br) alt("fb", br);
     else if (e.ca && F.durge === "yes" && !caB) alt("ca", "Dark Urge playthrough: " + itemOf(e.ca).n + " is better here");
     else if (e.oa && HAVE[e.oa] && ITEMS[e.oa]) { r.sid = e.oa; r.swap = { kind: "oa", why: "you have " + itemOf(e.oa).n + ", which beats it" + (e.oaGain ? " (+" + e.oaGain + ")" : "") }; }
-    else if (LIVE && e.pa && liveContest(set, e).k === "give") alt("pa", names(liveContest(set, e).who) + " is in your party and gets more from " + itemOf(e.sid).n);
+    else if (LIVE && e.pa && liveContest(set, e).k === "give") {
+      var lcg = liveContest(set, e);
+      alt("pa", lcg.pick ? capf(names(lcg.who)) + " gets " + itemOf(e.sid).n + " (" + tieBy(lcg.by) + ")" : names(lcg.who) + " is in your party and gets more from " + itemOf(e.sid).n);
+    }
     else if (!LIVE && F.party && e.pa) alt("pa", names(e.owner) + " gets more from " + itemOf(e.sid).n);
     else if (e.own && F.gone && !HAVE[e.sid]) alt("fb", "an Act " + ROMAN[e.act] + " item you don't have");
     return r;
@@ -170,7 +189,7 @@
     set._v = v;
     return v;
   }
-  function fkey() { return JSON.stringify(F) + "|" + JSON.stringify(HAVE) + (LIVE ? "|" + JSON.stringify([LIVE.inParty, LIVE.paths, LIVE.comp]) : ""); }
+  function fkey() { return JSON.stringify(F) + "|" + JSON.stringify(HAVE) + (LIVE ? "|" + JSON.stringify([LIVE.inParty, LIVE.paths, LIVE.comp, LIVE.picks, PICKS]) : ""); }
   // severity per shown slot (F6): story locks, theft / kills, missable, earlier act, party conflict. Mild tips not counted.
   function slotTags(set, r) {
     var t = {};
@@ -819,7 +838,8 @@
       if (e.oa && ITEMS[e.oa]) h += '<span class="s">If you already have ' + itemName(e.oa) + ": use it instead" + (e.oaGain ? " (+" + esc(e.oaGain) + ")" : "") + ". Mark it \"Have it\" in the shopping list to switch.</span>";
       if (e.ca && ITEMS[e.ca]) h += '<span class="s">In a Dark Urge campaign: ' + itemName(e.ca) + ".</span>";
       var lc = LIVE && e.pa ? liveContest(set, e) : null;
-      if (lc && lc.k === "shared") h += '<span class="o">Shared pick: ' + esc(names(lc.who)) + " is in your party and gets exactly as much from it. Decide who wears it.</span>";
+      if (lc && lc.cands && lc.cands.length >= 2) h += tieHtml(e.sid, lc);
+      else if (lc && lc.k === "shared") h += '<span class="o">Shared pick: ' + esc(names(lc.who)) + " is in your party and gets exactly as much from it. Decide who wears it.</span>";
       else if (lc && lc.k === "free") h += '<span class="y">' + (lc.who.length ? esc(capf(names(lc.who))) + " would get more from it, but is not in your party right now." : "Nobody else in your party needs it more.") + "</span>";
       else if (lc) h += '<span class="o">' + esc(capf(names(lc.who))) + " is in your party and gets more from it: use " + itemName(e.pa) + " here.</span>";
       else if (e.pa) h += '<span class="o">Party conflict: ' + esc(names(e.owner)) + " gets more from it. With " + esc(names(e.owner)) + " in your party, use " + itemName(e.pa) + " here instead. (The character sheet assumes " + esc(it.n) + "; switch on \"Give contested items\" in My playthrough to use the alternative.)</span>";
@@ -922,7 +942,8 @@
     if (r.swap && r.swap.kind === "ca") out.push(["up", "Dark Urge playthrough: " + itemOf(e.ca).n + " replaces " + itemOf(e.sid).n + " here."]);
     else if (e.ca && ITEMS[e.ca]) out.push(["up", "In a Dark Urge campaign: " + itemOf(e.ca).n + " (set \"Dark Urge playthrough\" to Yes to use it)."]);
     var lc = LIVE && orig && e.pa ? liveContest(set, e) : null;
-    if (lc && lc.k === "shared") out.push(["party", "Shared pick with " + names(lc.who) + " (in your party, gets exactly as much from it)."]);
+    if (lc && lc.pick) out.push(["party", "Tie: " + capf(names([lc.pick])) + " gets it (" + tieBy(lc.by) + ")."]);
+    else if (lc && lc.k === "shared") out.push(["party", "Tie with " + names(lc.who) + " (in your party, gets exactly as much from it): pick who gets it in the item card."]);
     else if (lc && lc.k === "free") { if (lc.who.length) out.push(["tip", capf(names(lc.who)) + " would get more from it, but is not in your party right now."]); }
     else if (orig && e.pa) out.push(["party", capf(names(e.owner)) + " needs it more: use " + itemOf(e.pa).n + " here if " + names(e.owner) + " is with you."]);
     else if (orig && e.fb && !e.own && (e.cond.length || e.tags.length)) out.push(["alt", "Can't get it? " + (e.fbE ? e.fb : "Use " + itemOf(e.fb).n) + "."]);
@@ -1124,8 +1145,9 @@
     if (window.innerWidth < 860) document.getElementById("main").scrollIntoView({ behavior: REDUCED ? "auto" : "smooth", block: "start" });
   }
   document.addEventListener("click", function (ev) {
-    var t = ev.target.closest("[data-act],[data-char],[data-set].srow,[data-cmpset],#cmpToggle,.tt-close,#pfReset,#partyBtn,#showHid,#cmpSwap,[data-lvl],[data-legend],#ttb");
+    var t = ev.target.closest("[data-act],[data-char],[data-set].srow,[data-cmpset],#cmpToggle,.tt-close,#pfReset,#partyBtn,#showHid,#cmpSwap,[data-lvl],[data-legend],#ttb,[data-tie]");
     if (t) {
+      if (t.dataset.tie) { PICKS[t.dataset.tie] = t.dataset.tiec; store.set("picks", JSON.stringify(PICKS)); hideTip(true); render(); return; }
       if (t.classList.contains("lg-close")) { closeLegend(); return; }
       if (t.classList.contains("tt-close") || t.id === "ttb") { hideTip(true); return; }
       if (t.dataset.legend) { openLegend(); return; }

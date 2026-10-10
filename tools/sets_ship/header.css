@@ -89,3 +89,6 @@
 .spoil { flex: 1 1 100%; max-width: 1440px; margin: -4px auto 0; padding: 6px 12px; border-left: 3px solid var(--warn);
   border-radius: 0 3px 3px 0; background: rgba(242, 162, 36, .08); color: var(--warn-hi); font-size: var(--fs-s); line-height: 1.4; }
 .spoil b { color: var(--warn); font-weight: 600; }
+/* tie picks in an item card: one button per tied party member */
+.tt-la .tiepick { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 2px; }
+.tt-la .tiepick .btn-pill { padding: 4px 10px; font-size: var(--fs-xs); }

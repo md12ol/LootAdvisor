@@ -207,6 +207,17 @@ local function objKey(vm)
   return ("%d|%d"):format(math.floor(x * 2 + 0.5), math.floor(z * 2 + 0.5))
 end
 
+-- off-screen markers { {rk = rank}, ... } -> sorted best first in place; keep[i] = true for the ones that keep their
+-- arrow: the best maxArrows of the selected character's (rank below LA.OTHERS * 100), never anyone else's
+function P.ArrowPicks(off, maxArrows)
+  table.sort(off, function(a, b) return a.rk < b.rk end)
+  local keep, n = {}, 0
+  for i, o in ipairs(off) do
+    if o.rk < LA.OTHERS * 100 and n < maxArrows then keep[i] = true; n = n + 1 end
+  end
+  return keep
+end
+
 local function handleMarkers(list, A, st)
   local off = {}
   local recycled = {}
@@ -252,11 +263,10 @@ local function handleMarkers(list, A, st)
   for _, r in ipairs(recycled) do
     if restoreMarker(r.m, r.ty, markerParts(r.m)) then st.restored = (st.restored or 0) + 1 end
   end
-  table.sort(off, function(a, b) return a.rk < b.rk end)
-  local maxArrows = tonumber(LA.Settings.Arrows) or 5
+  local keep = P.ArrowPicks(off, tonumber(LA.Settings.Arrows) or 5)
   for i, o in ipairs(off) do
     local k = tostring(o.m)
-    if i <= maxArrows then
+    if keep[i] then
       if P.hidden[k] then set(o.m, "Opacity", 1.0); P.hidden[k] = nil end
       st.arrows = st.arrows + 1
     else

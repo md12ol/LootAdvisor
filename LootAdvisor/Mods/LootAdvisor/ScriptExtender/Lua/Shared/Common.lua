@@ -2,6 +2,8 @@
 -- Settings file (optional): %LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor_settings.json
 --   {"Enabled": true, "Hotkey": "F6", "Frames": true, "Markers": true, "Tooltips": true, "Arrows": 5, "Dev": false}
 -- "SpoilerNoticeSeen": true once the spoiler warning in the F6 window was dismissed (the window writes it).
+-- "MarkerFilter": whose items get map markers: "all" (party, camp, companions who may still join), "party" or
+-- "selected" (the F6 window writes it).
 -- "Dev": true enables the eval hook (LootAdvisor_client_eval.lua / LootAdvisor_server_eval.lua -> *_eval_out.txt,
 -- for testing) and the test command file (LootAdvisor_cmd.txt, Server/Cheats.lua).
 
@@ -10,6 +12,10 @@ LA = LA or {}
 LA.SETTINGS_FILE = "LootAdvisor_settings.json"
 LA.CH_SEL = "LA_Sel"       -- client -> server: selected character (JSON ctx)
 LA.CH_RESULT = "LA_Result" -- server -> client: recommendation result (JSON)
+LA.CH_PICK = "LA_Pick"     -- client -> server: a tie pick { id = stats id, c = character key }
+-- marker rank offset for markers that are not the selected character's: painted, but never given an off-screen arrow
+LA.OTHERS = 1000
+LA.FILTERS = { "all", "party", "selected" }
 LA.MARK = "\u{25C6}"       -- the diamond used in texts
 
 LA.SLOTS = { "MainHand", "OffHand", "Ranged", "RangedOff", "Helmet", "Cloak", "Breast", "Gloves", "Boots",
@@ -53,7 +59,7 @@ function LA.Norm(s)
 end
 
 LA.DEFAULTS = { Enabled = true, Hotkey = "F6", Frames = true, Markers = true, Tooltips = true, Arrows = 5, Dev = false,
-                UnsafeUiOnOldSE = false, SpoilerNoticeSeen = false }
+                UnsafeUiOnOldSE = false, SpoilerNoticeSeen = false, MarkerFilter = "all" }
 LA.Settings = {}
 for k, v in pairs(LA.DEFAULTS) do LA.Settings[k] = v end
 function LA.SaveSettings()

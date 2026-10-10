@@ -3,13 +3,13 @@
 
 [color=#e8a33d][b]Spoiler warning:[/b] Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes (who can die, which side you take, endings).[/color]
 
-Loot Advisor shows, for the origin character you have selected, the best items per slot and act for that character's build. Advice follows the character's actual build, the current act, your story choices and what the party already owns. It covers the seven origin characters: Astarion, Gale, Karlach, Lae'zel, Shadowheart, Wyll and the Dark Urge.
+Loot Advisor shows, for the origin character you have selected, the best items per slot and act for that character's build. Advice follows the character's actual build, the current act, your story choices and what the party already owns. It covers the seven origin characters: Astarion, Gale, Karlach, Lae'zel, Shadowheart, Wyll and the Dark Urge. Halsin, Jaheira, Minsc, Minthara, Tavs and hirelings borrow the closest origin build.
 
 [size=4][b]In the game[/b][/size]
 [list]
 [*][b]Rainbow frames:[/b] a recommended item gets a rainbow frame instead of the game's rarity frame, wherever it appears (inventory, bags, equipment, hotbar, containers, the camp chest, the trade window). A bag holding one is framed too.
 [*][b]Tooltips:[/b] an extra line explains why the item is recommended, or warns when it is better on another party member.
-[*][b]Map markers:[/b] each item to fetch gets a rainbow diamond on the minimap and the world map; hover it for the items you can get there.
+[*][b]Map markers:[/b] each item to fetch gets a rainbow diamond on the minimap and the world map, for everyone in your party, your camp and the companions who may still join; hover it for the items you can get there and who they are for. The F6 list narrows it to the party or the selected character.
 [*][b]Item list (F6):[/b] everything recommended for the selected character, with direction and distance, including items with no fixed spot (quest rewards, boss drops, forge results).
 [*][b]Sets page:[/b] a local page in your browser with full loadouts for every origin, act by act. It follows the running game live. Its art and item texts are built from your own game install; no game files ship with the mod.
 [/list]

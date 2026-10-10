@@ -132,6 +132,24 @@ COMPANIONS = {
     "minsc": ("S_Player_Minsc", "GLO_Origin_PartOfTheTeam_Minsc", ["GLO_Minsc_State_PermaDefeated"]),
     "minthara": ("S_Player_Minthara", "GLO_Origin_PartOfTheTeam_Minthara", ["GLO_DrowCommander_State_Dead"]),
 }
+# story flags after which a companion who is not in the team will never join (again): left for good, killed off-screen.
+# Such a companion gets no map markers (a companion who may still join later does).
+COMPANION_GONE = {
+    "astarion": ["ORI_Astarion_State_PermaDefeated"],
+    "karlach": ["ORI_GortashConfrontation_State_KarlachLeft", "ORI_WyllConfrontation_State_KarlachLeftHostile"],
+    "laezel": ["ORI_Laezel_State_DeadInSCL"],
+    "shadowheart": ["ORI_ShadowheartRecruitment_State_ShadowheartKilled", "ORI_Shadowheart_State_DiedNoGobRecruitment"],
+    "wyll": ["ORI_WyllConfrontation_State_WyllLeft", "ORI_WyllConfrontation_State_WyllLeftHostile"],
+    "halsin": ["GLO_Halsin_State_DeadInGOB", "GLO_PathToMoonrise_HalsinDeadRiver"],
+    "jaheira": ["ORI_Jaheira_State_LeftPermanently", "GLO_Jaheira_State_LeftInAnger"],
+    "minsc": ["ORI_Minsc_State_LeftPermanently", "GLO_Minsc_State_LeftInAnger", "ORI_Minsc_State_IsDead",
+              "ORI_Minsc_State_PermaDefeated"],
+    "minthara": ["ORI_Minthara_State_MintharaLeavesTheTeam"],
+}
+
+
+def lua_key(k):
+    return k if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k) else "[%s]" % lua_str(k)
 
 
 def lua_str(s):
@@ -442,6 +460,8 @@ def main():
     for _, team, dead in COMPANIONS.values():
         names.add(team)
         names.update(dead)
+    for gone in COMPANION_GONE.values():
+        names.update(gone)
     flag_lua, missing = [], []
     for nm in sorted(names):
         if nm in F:
@@ -471,8 +491,24 @@ def main():
             lua_list(p.get("dead", [])), lua_list(p.get("deadno", []))))
     comp_lua = []
     for k, (u, team, dead) in COMPANIONS.items():
-        comp_lua.append("  %s = {npc=%s,team=%s,dead=%s}," % (k, lua_str(u or ""), lua_str(team if team in F else ""),
-                                                              lua_list([x for x in dead if x in F])))
+        comp_lua.append("  %s = {npc=%s,team=%s,dead=%s,gone=%s}," % (
+            k, lua_str(u or ""), lua_str(team if team in F else ""), lua_list([x for x in dead if x in F]),
+            lua_list([x for x in COMPANION_GONE.get(k, []) if x in F])))
+    # every Build Advisor build (class levels, main ability) and its origin build order: a companion or hireling
+    # with no class levels to read (not loaded yet) is matched through its Build Advisor build
+    import build_profiles
+    import la_common
+    ba_stats = build_profiles.builds_lua_stats()
+    _gear, ba_origins = la_common.load_builds_lua(build_profiles.BUILDS_LUA)
+    ba_build_lua = []
+    for bid, ba in ba_stats.items():
+        cl = {}
+        for c, _picks in ba["levels"]:
+            cl[c] = cl.get(c, 0) + 1
+        main = max(ba["stats"], key=lambda k: ba["stats"][k])
+        ba_build_lua.append("  %s = {cl={%s},main=%s}," % (lua_key(bid), ",".join("%s=%d" % kv for kv in cl.items()),
+                                                         lua_str(main)))
+    ba_origin_lua = ["  %s = %s," % (k, lua_list(v)) for k, v in ba_origins.items() if k != "generic"]
     region_lua = ["  %s = %d," % (k, v) for k, v in REGION_ACT.items()]
 
     out = ["-- LootAdvisor derived data (generated, do not edit).",
@@ -485,7 +521,11 @@ def main():
            "-- NPC name -> MapKey (global characters, for Osi.IsDead)", "LA.Mod.npcs = {"] + npc_lua + ["}",
            "-- condition paths: yes = happened when any flag set (or any 'dead' NPC dead); no = can no longer happen",
            "LA.Mod.paths = {"] + path_lua + ["}",
+           "-- companions: npc, team flag, dead flags, gone flags (left for good: never joins again)",
            "LA.Mod.companions = {"] + comp_lua + ["}",
+           "-- Build Advisor: every build's class levels + main ability, and the build order per origin / companion",
+           "LA.Mod.baBuilds = {"] + ba_build_lua + ["}",
+           "LA.Mod.baOrigins = {"] + ba_origin_lua + ["}",
            "LA.Mod.regionAct = {"] + region_lua + ["}",
            "-- zones: cell size; per region [zone] = 'row,x0,x1;...' runs of occupied %d m grid cells"
            % CELLZ, "LA.Mod.zoneCell = %s" % CELLZ, "LA.Mod.zones = {"] + zone_lua + ["}",
