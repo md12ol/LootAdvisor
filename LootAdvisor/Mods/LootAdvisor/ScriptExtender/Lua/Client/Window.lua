@@ -15,6 +15,7 @@ local GREEN = { 0.45, 1.0, 0.45, 1.0 }
 local BLUE = { 0.6, 0.8, 1.0, 1.0 }
 local VIOLET = { 0.85, 0.6, 1.0, 1.0 }
 local WHITE = { 0.92, 0.9, 0.85, 1.0 }
+local AMBER = { 0.95, 0.64, 0.14, 1.0 }
 
 local function colored(t, c) if c then try(function() t:SetColor("Text", c) end) end return t end
 local function short(s, n) s = tostring(s or ""); if #s > n then return s:sub(1, n - 3) .. "..." end return s end
@@ -175,12 +176,29 @@ local function pageRow(h)
   colored(h:AddText("Your browser cannot be opened from the game: click the path, press Ctrl+C, then Win+R, Ctrl+V, Enter."), GREY)
 end
 
+-- Spoiler warning: shown at the top of the window until the player dismisses it once; the dismissal is kept in the
+-- settings file, so it stays hidden in every later game. Two lines, so it fits the window without wrapping.
+W.SPOILER = { "Spoiler warning: Loot Advisor names items, where they are and who carries them,",
+              "and its notes reveal story outcomes (who can die, which side you take, endings)." }
+local function spoilerRow(h)
+  if LA.Settings.SpoilerNoticeSeen == true then return end
+  for _, line in ipairs(W.SPOILER) do colored(h:AddText(line), AMBER) end
+  local b = h:AddButton("Got it, hide this")
+  try(function() b.OnClick = function()
+    LA.Settings.SpoilerNoticeSeen = true
+    LA.SaveSettings()
+    W.Render(LA.Result)
+  end end)
+  try(function() h:AddSeparator() end)
+end
+
 W.dirCells = {}
 function W.Render(res)
   if not W.window then return end
   local h = reset("header")
   local c = reset("content")
   W.dirCells = {}
+  spoilerRow(h)
   if not res then
     colored(h:AddText("Waiting for the selected character..."), GREY)
     return

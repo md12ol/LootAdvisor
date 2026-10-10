@@ -428,10 +428,14 @@ LOCKUP = os.path.join(SHIP_SRC, "brand_lockup.webp")   # tools/sets_ship/render_
 LOCKUP_PRIVATE = os.path.join(SHIP_SRC, "brand_lockup_private.webp")   # the online copy (does not follow the game)
 ALT_SHIP = "Loot Advisor: Synergy Sets - full loadouts for your build, follows your game live"
 ALT_PRIVATE = "Loot Advisor: Synergy Sets - full loadouts for every origin, act by act"
+# under the header: the same sentence as the README, INSTALL.md, the Nexus page, the handbook and the F6 notice
+SPOILER = ("Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes "
+           "(who can die, which side you take, endings).")
 
 
 def header_html(shell, lockup=LOCKUP, alt=ALT_SHIP):
-    """The Gilded Panel header in place of shell.html's text brand (also used by build_sets_artifact.gilded_header)."""
+    """The Gilded Panel header in place of shell.html's text brand (also used by build_sets_artifact.gilded_header),
+    with the spoiler warning under it."""
     import base64
     lock = base64.b64encode(open(lockup, "rb").read()).decode("ascii")
     old = re.search(r'<div class="brand">.*?</div>', shell, re.S)
@@ -444,7 +448,8 @@ def header_html(shell, lockup=LOCKUP, alt=ALT_SHIP):
            '<img class="gp-lock" src="data:image/webp;base64,@LOCK@" width="659" height="240" '
            'alt="@ALT@">'
            '<span class="gp-strip" id="gpStrip" aria-hidden="true"></span><span class="gp-row" id="gpRow" aria-hidden="true"></span>'
-           '</span></span></h1>\n    </div>').replace("@LOCK@", lock).replace("@ALT@", alt)
+           '</span></span></h1>\n    </div>\n    <p class="spoil" role="note"><b>Spoiler warning:</b> @SPOIL@</p>')
+    new = new.replace("@LOCK@", lock).replace("@ALT@", alt).replace("@SPOIL@", SPOILER)
     return shell[:old.start()] + new + shell[old.end():]
 
 

@@ -1,5 +1,7 @@
 # Loot Advisor (BG3 mod)
 
+> **Spoiler warning:** Loot Advisor names items, where they are and who carries them, and its notes reveal story outcomes (who can die, which side you take, endings).
+
 Shows, for every origin character and build, the best items per slot and act: a rainbow frame and an extra tooltip
 line on recommended items, map markers at their spots, an **F6** list with direction and distance, and a local
 **Sets page** (full loadouts for every origin, act by act) that follows the running game.
