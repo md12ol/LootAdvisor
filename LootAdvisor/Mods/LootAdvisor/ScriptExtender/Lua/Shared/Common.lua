@@ -31,6 +31,7 @@ LA.CHAR_NAME = { astarion = "Astarion", gale = "Gale", karlach = "Karlach", laez
 -- names: list of item names, or of { n = name, who = {character names} } entries;
 -- who: characters this marker is shown for; allWho: [marker] = who lists of every shown marker.
 -- A character suffix " (Astarion)" is added only when markers are shown for more than one character.
+LA.LABEL_WIDTH = 46
 function LA.MarkerLabel(names, who, allWho)
   local chars = {}
   for _, w in pairs(allWho or {}) do for _, c in ipairs(w) do chars[c] = true end end
@@ -41,7 +42,20 @@ function LA.MarkerLabel(names, who, allWho)
     local n = type(e) == "table" and e.n or e
     local w = type(e) == "table" and e.who or who
     local line = tostring(n or "?")
-    if multi > 1 and type(w) == "table" and #w > 0 then line = line .. " (" .. table.concat(w, ", ") .. ")" end
+    if multi > 1 and type(w) == "table" and #w > 0 then
+      -- the map tooltip cuts lines off past about 48 characters: long name lists continue on indented lines
+      local parts, cur = {}, line .. " ("
+      for i, c in ipairs(w) do
+        local piece = c .. (i < #w and ", " or ")")
+        if #cur + #piece > LA.LABEL_WIDTH and cur:match("%S") and not cur:match("%($") then
+          parts[#parts + 1] = cur:gsub("%s+$", "")
+          cur = "    "
+        end
+        cur = cur .. piece
+      end
+      parts[#parts + 1] = cur
+      line = table.concat(parts, "\n")
+    end
     if not seen[line] then seen[line] = true; lines[#lines + 1] = line end
   end
   return table.concat(lines, "\n")

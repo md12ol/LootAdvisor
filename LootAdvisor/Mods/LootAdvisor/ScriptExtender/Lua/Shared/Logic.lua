@@ -363,7 +363,10 @@ function L.Recommend(charKey, ctx, state, baPick, baOrder, opts)
     elseif type(o) == "table" and #o > 0 and not has(o, charKey) then
       for _, c in ipairs(o) do if ownerAvailable(c, state) then better = c; break end end
     end
-    if owned then st.s = "owned"
+    -- a settled tie goes to the wearer / pick even when the party owns the item (seen in game: boots the Dark Urge
+    -- wears and keeps stayed "owned" and best in Astarion's list)
+    if better and picked then st.s = "better"; st.better = better; st.picked = picked
+    elseif owned then st.s = "owned"
     elseif cond == "closed" then st.s = "closed"
     elseif mode == "-" or (tonumber(it.la) and tonumber(it.la) < act) then st.s = "onlyowned"
     elseif better then st.s = "better"; st.better = better; st.picked = picked

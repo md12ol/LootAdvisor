@@ -45,44 +45,70 @@ end
 
 local function dist(ax, az, bx, bz) return math.sqrt((ax - bx) ^ 2 + (az - bz) ^ 2) end
 
--- player at (px, pz) in zone zp, item at (ix, iz) in zone zi -> first entrance on the shortest way (or nil)
-function Z.Route(region, zp, px, pz, zi, ix, iz)
-  local ents = (LA.Mod.entrances or {})[region]
-  if not ents or not zp or not zi or zp == zi then return nil end
-  local done, best = {}, nil
-  local open = {}
-  for i, e in ipairs(ents) do
-    if e.zf == zp then open[#open + 1] = { d = dist(px, pz, e.x, e.z), i = i, first = i } end
+-- Shortest distances from the player to every entrance (Dijkstra over the entrance links, straight lines inside an
+-- area), with the first entrance taken on each way. Computed once per player spot and shared by every item: with the
+-- whole roster marked, a refresh routes hundreds of items and a search per item cost most of a second (seen in game).
+local tree = { key = nil }
+local function routes(region, ents, zp, px, pz)
+  local key = ("%s|%s|%.1f|%.1f"):format(region, zp, px, pz)
+  if tree.key == key then return tree end
+  local byZone = {}
+  for j, f in ipairs(ents) do
+    local l = byZone[f.zf]
+    if not l then l = {}; byZone[f.zf] = l end
+    l[#l + 1] = j
+  end
+  local d, first, done, open = {}, {}, {}, {}
+  for _, i in ipairs(byZone[zp] or {}) do
+    local e = ents[i]
+    d[i], first[i] = dist(px, pz, e.x, e.z), i
+    open[#open + 1] = i
   end
   while #open > 0 do
     local bi = 1
-    for k = 2, #open do if open[k].d < open[bi].d then bi = k end end
-    local cur = table.remove(open, bi)
-    if not done[cur.i] then
-      done[cur.i] = true
-      local e = ents[cur.i]
-      if e.zt == zi then
-        local tot = cur.d + dist(e.tx, e.tz, ix, iz)
-        if not best or tot < best.d then best = { d = tot, first = cur.first } end
-      elseif not best or cur.d < best.d then
-        for j, f in ipairs(ents) do
-          if f.zf == e.zt and not done[j] then
-            open[#open + 1] = { d = cur.d + dist(e.tx, e.tz, f.x, f.z), i = j, first = cur.first }
+    for k = 2, #open do if d[open[k]] < d[open[bi]] then bi = k end end
+    local i = table.remove(open, bi)
+    if not done[i] then
+      done[i] = true
+      local e = ents[i]
+      for _, j in ipairs(byZone[e.zt] or {}) do
+        if not done[j] then
+          local f = ents[j]
+          local nd = d[i] + dist(e.tx, e.tz, f.x, f.z)
+          if not d[j] or nd < d[j] then
+            if not d[j] then open[#open + 1] = j end
+            d[j], first[j] = nd, first[i]
           end
         end
       end
     end
   end
+  tree = { key = key, d = d, first = first }
+  return tree
+end
+
+-- player at (px, pz) in zone zp, item at (ix, iz) in zone zi -> first entrance on the shortest way (or nil)
+function Z.Route(region, zp, px, pz, zi, ix, iz)
+  local ents = (LA.Mod.entrances or {})[region]
+  if not ents or not zp or not zi or zp == zi then return nil end
+  local t = routes(region, ents, zp, px, pz)
+  local best, bd
+  for i, e in ipairs(ents) do
+    if e.zt == zi and t.d[i] then
+      local tot = t.d[i] + dist(e.tx, e.tz, ix, iz)
+      if not bd or tot < bd then best, bd = i, tot end
+    end
+  end
   if best then
-    local f = ents[best.first]
-    return f, best.d, f.zt == zi
+    local f = ents[t.first[best]]
+    return f, bd, f.zt == zi
   end
   -- no way from here (the player's area is not linked): the last entrance into the item's area nearest the player
   local last, ld
   for _, e in ipairs(ents) do
     if e.zt == zi then
-      local d = dist(px, pz, e.x, e.z)
-      if not ld or d < ld then last, ld = e, d end
+      local dd = dist(px, pz, e.x, e.z)
+      if not ld or dd < ld then last, ld = e, dd end
     end
   end
   return last, ld, true

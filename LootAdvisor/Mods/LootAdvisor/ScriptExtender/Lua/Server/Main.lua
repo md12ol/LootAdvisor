@@ -278,11 +278,14 @@ Ext.Events.Tick:Subscribe(function()
   if not ok then Ext.Utils.PrintError("[Loot Advisor] refresh: " .. tostring(err)) end
 end)
 
--- inventory / story changes -> recompute on the next check (owned items, closed paths)
+-- inventory / story / equipment changes -> recompute on the next check (owned items, closed paths)
 pcall(Ext.Osiris.RegisterListener, "AddedTo", 3, "after", markDirty)
 pcall(Ext.Osiris.RegisterListener, "RemovedFrom", 2, "after", markDirty)
 pcall(Ext.Osiris.RegisterListener, "FlagSet", 3, "after", markDirty)
 pcall(Ext.Osiris.RegisterListener, "Died", 1, "after", markDirty)
+-- the wearer of a tied item keeps it: equipping it settles the tie at once instead of on the next idle refresh
+pcall(Ext.Osiris.RegisterListener, "Equipped", 2, "after", markDirty)
+pcall(Ext.Osiris.RegisterListener, "Unequipped", 2, "after", markDirty)
 
 Ext.Osiris.RegisterListener("LevelGameplayStarted", 2, "after", function()
   shown = {}

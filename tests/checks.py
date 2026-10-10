@@ -1399,6 +1399,17 @@ def check_markers_everyone(env):
             for w in lua_list(e.who):
                 if str(w) not in label:
                     fails.append(f"{m.m}: label lacks {w} ('{label[:80]}')")
+        # the game's map tooltip cuts a line off past about 48 characters: long name lists wrap
+        width = int(G.LA.LABEL_WIDTH)
+        for line in label.split("\n"):
+            # (one long item or character name alone on a line cannot be split)
+            if len(line) > width and ", " in line.rstrip(","):
+                fails.append(f"{m.m}: label line longer than {width} characters: '{line}'")
+    long = str(G.LA.MarkerLabel(L.table_from({1: L.table_from({"n": "Helldusk Gloves", "who": L.table_from(
+        {1: "The Dark Urge", 2: "Astarion", 3: "Shadowheart", 4: "Minsc", 5: "Jaheira"})})}), None,
+        L.table_from({"a": L.table_from({1: "x", 2: "y"})})))
+    if max(len(x) for x in long.split("\n")) > int(G.LA.LABEL_WIDTH) or "Jaheira" not in long:
+        fails.append(f"a five-name label is not wrapped: {long!r}")
     # client: ranks of the merged markers and the off-screen arrow pick
     CL = client_lua(env, defer=True)
     C = CL.globals()
@@ -1448,7 +1459,7 @@ def _ties_from_data(env):
 
 def check_tie_picks(env):
     """Two tie members in the party -> an open tie (both see a shared pick); a saved pick gives it to that one (the
-    other sees 'better on'); the one wearing it keeps it whatever the pick; a pick outlives a party swap and is not
+    other sees 'better on', also when the party already owns it); the one wearing it keeps it whatever the pick; a pick outlives a party swap and is not
     asked again; a tie among others while the picked one is away is a new tie; camp members never make a tie."""
     L = env.lua()
     G = L.globals()
@@ -1526,6 +1537,13 @@ def check_tie_picks(env):
             r = row(st1)
             if r is not None and not (r.s == "better" and r.better == other):
                 fails.append(f"{sid}: picked {other}, {viewer} sees {r.s} (better {r.better})")
+            # the party already owns it: a settled tie still sends the other one to their next best
+            st1o = state({a, b}, picks={sid: other})
+            st1o.act = act
+            st1o.owned = L.table_from({sid: 1})
+            r = row(st1o)
+            if r is not None and not (r.s == "better" and r.better == other):
+                fails.append(f"{sid}: owned, picked {other}, {viewer} sees {r.s} (better {r.better})")
             st2 = state({a, b}, picks={sid: viewer})
             st2.act = act
             r = row(st2)

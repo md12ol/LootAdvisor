@@ -351,6 +351,7 @@ LA.Mod.flags = {
 LA.Mod.npcs = {
   S_GLO_Halsin = "7628bc0e-52b8-42a7-856a-13a6fd413323",
   S_GLO_Isobel = "263bfbfc-6160-46f4-a9e1-1089cdb5c211",
+  S_GOB_DrowCommander = "25721313-0c15-4935-8176-9f134385451b",
   S_Player_Astarion = "c7c13742-bacd-460a-8f65-f864fe41f255",
   S_Player_Gale = "ad9af97d-75da-406a-ae13-7071c563f604",
   S_Player_Jaheira = "91b6b200-7d00-4d62-8dc9-99e8339dfa1a",
@@ -400,7 +401,7 @@ LA.Mod.companions = {
   halsin = {npc="S_GLO_Halsin",team="GLO_Origin_PartOfTheTeam_Halsin",dead={"GLO_Halsin_State_PermaDefeated"},gone={"GLO_Halsin_State_DeadInGOB","GLO_PathToMoonrise_HalsinDeadRiver"}},
   jaheira = {npc="S_Player_Jaheira",team="GLO_Origin_PartOfTheTeam_Jaheira",dead={"GLO_Jaheira_State_PermaDefeated"},gone={"ORI_Jaheira_State_LeftPermanently","GLO_Jaheira_State_LeftInAnger"}},
   minsc = {npc="S_Player_Minsc",team="GLO_Origin_PartOfTheTeam_Minsc",dead={"GLO_Minsc_State_PermaDefeated"},gone={"ORI_Minsc_State_LeftPermanently","GLO_Minsc_State_LeftInAnger","ORI_Minsc_State_IsDead","ORI_Minsc_State_PermaDefeated"}},
-  minthara = {npc="S_Player_Minthara",team="GLO_Origin_PartOfTheTeam_Minthara",dead={"GLO_DrowCommander_State_Dead"},gone={"ORI_Minthara_State_MintharaLeavesTheTeam"}},
+  minthara = {npc="S_GOB_DrowCommander",team="GLO_Origin_PartOfTheTeam_Minthara",dead={"GLO_DrowCommander_State_Dead"},gone={"ORI_Minthara_State_MintharaLeavesTheTeam"}},
 }
 -- Build Advisor: every build's class levels + main ability, and the build order per origin / companion
 LA.Mod.baBuilds = {

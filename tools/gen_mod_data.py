@@ -130,7 +130,7 @@ COMPANIONS = {
     "halsin": ("S_GLO_Halsin", "GLO_Origin_PartOfTheTeam_Halsin", ["GLO_Halsin_State_PermaDefeated"]),
     "jaheira": ("S_Player_Jaheira", "GLO_Origin_PartOfTheTeam_Jaheira", ["GLO_Jaheira_State_PermaDefeated"]),
     "minsc": ("S_Player_Minsc", "GLO_Origin_PartOfTheTeam_Minsc", ["GLO_Minsc_State_PermaDefeated"]),
-    "minthara": ("S_Player_Minthara", "GLO_Origin_PartOfTheTeam_Minthara", ["GLO_DrowCommander_State_Dead"]),
+    "minthara": ("S_GOB_DrowCommander", "GLO_Origin_PartOfTheTeam_Minthara", ["GLO_DrowCommander_State_Dead"]),
 }
 # story flags after which a companion who is not in the team will never join (again): left for good, killed off-screen.
 # Such a companion gets no map markers (a companion who may still join later does).

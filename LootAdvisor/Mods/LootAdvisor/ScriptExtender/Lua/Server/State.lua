@@ -83,15 +83,25 @@ function S.Companions()
       local nm = u:match("^(.-)_%x+%-%x+%-%x+%-%x+%-%x+$"); if nm then inParty[nm] = true end
     end
   end
+  local here = LA.Mod.regionAct and LA.Mod.regionAct[S.Region() or ""]
   for name, c in pairs(LA.Mod.companions or {}) do
     local d = false
+    -- c.npc is the global's name (S_Player_Gale); Osiris and the team set want its guid
+    local guid = c.npc ~= "" and ((LA.Mod.npcs or {})[c.npc] or c.npc) or nil
     for _, f in ipairs(c.dead or {}) do if flag(f) then d = true end end
-    if c.npc and c.npc ~= "" and try(Osi.IsDead, c.npc) == 1 then d = true end
-    local inTeam = (c.npc ~= "" and team[c.npc]) or (c.team ~= "" and flag(c.team)) or false
+    if guid and try(Osi.IsDead, guid) == 1 then d = true end
+    local inTeam = (guid and team[guid]) or (c.team ~= "" and flag(c.team)) or false
     -- gone for good: a "left / killed" story flag while not in the team (never joins again, gets no markers)
     local gone = false
     if not inTeam then for _, f in ipairs(c.gone or {}) do if flag(f) then gone = true end end end
-    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d,
+    -- never recruited and left behind in an earlier act's level (seen in game: Gale in the Act 1 wilderness, Halsin in
+    -- the Act 2 shadowlands of an Act 3 save): nobody follows the party across acts, so they can no longer join
+    if not inTeam and not gone and here and guid then
+      local r = try(Osi.GetRegion, guid)
+      local a = r and LA.Mod.regionAct[r]
+      if a and a < here then gone = true end
+    end
+    out[name] = { team = inTeam and true or false, party = (guid and (inParty[guid] or inParty[c.npc])) or false, dead = d,
                   gone = gone }
   end
   return out
@@ -242,10 +252,11 @@ function S.Describe(uuid)
   if not ((LA.Data.chars or {})[key] or (LA.Mod.companions or {})[key]) then key = nil end
   local name = try(function() return e.DisplayName.Name:Get() end)
   return { key = key, name = (name and name ~= "") and name or (key and LA.CHAR_NAME[key]) or "?",
-           ctx = { classes = classes, abilities = abilities, name = name } }
+           ctx = { classes = classes, abilities = abilities, name = name }, playable = o ~= nil }
 end
 
--- party (every player's characters) + camp, as L.Roster wants them
+-- party (every player's characters) + camp, as L.Roster wants them. The team also lists camp followers who never
+-- fight (Withers, Volo, Mizora, Scratch, ...); only characters with an Origin component (origins, hirelings, Tavs) count.
 function S.People()
   local out, seen = {}, {}
   for _, u in ipairs(S.Players()) do
@@ -260,7 +271,7 @@ function S.People()
     if not seen[u] and try(Osi.IsCharacter, u) == 1 then
       seen[u] = true
       local d = S.Describe(u)
-      if d then out[#out + 1] = { uuid = u, key = d.key, name = d.name, inParty = false, ctx = d.ctx } end
+      if d and d.playable then out[#out + 1] = { uuid = u, key = d.key, name = d.name, inParty = false, ctx = d.ctx } end
     end
   end
   return out
