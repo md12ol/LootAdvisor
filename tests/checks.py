@@ -6,6 +6,7 @@ A check that finds nothing to check FAILS (no empty passes).
 Every check is a function check_x(env) -> list of failure strings; run.py adds the case counts.
 """
 import glob
+import html
 import json
 import os
 import re
@@ -1014,11 +1015,6 @@ def spoiler_doc_places(docs=None):
     def readme_top():
         return "\n".join(_read(REPO, "README.md").splitlines()[:12])
 
-    def meta_description():
-        m = re.search(r'id="Description" type="LSString" value="([^"]*)"',
-                      _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "meta.lsx"))
-        return m.group(1) if m else ""
-
     def sets_page_header():
         m = re.search(r'<header class="topbar">.*?</header>',
                       _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "Page", "Sets.html"), re.S)
@@ -1117,6 +1113,30 @@ def _header(G):
         if c.kind == "Button" and "hide" in str(c.Label or "").lower():
             button = c
     return " ".join(texts), button
+
+
+META_DESCRIPTION_MAX = 250   # Larian's Toolkit (mod.io publishing) caps the mod description at 250 characters
+
+
+def meta_description():
+    m = re.search(r'id="Description" type="LSString" value="([^"]*)"',
+                  _read(REPO, "LootAdvisor", "Mods", "LootAdvisor", "meta.lsx"))
+    return html.unescape(m.group(1)) if m else ""
+
+
+def check_meta_description(env):
+    """meta.lsx Description fits the Toolkit's 250 characters and names Script Extender."""
+    text = getattr(env, "file_overrides", {}).get("meta.lsx Description")
+    text = meta_description() if text is None else text
+    env.counts["characters"] = len(text)
+    fails = []
+    if not text:
+        fails.append("meta.lsx has no Description")
+    if len(text) > META_DESCRIPTION_MAX:
+        fails.append(f"meta.lsx Description is {len(text)} characters (the Toolkit keeps {META_DESCRIPTION_MAX})")
+    if "Script Extender" not in text:
+        fails.append("meta.lsx Description does not say it needs Script Extender")
+    return fails
 
 
 def check_spoiler_warning(env):
@@ -1675,4 +1695,5 @@ CHECKS = [
     ("tie picks: party only, wearer keeps it, picks survive party swaps", check_tie_picks, False),
     ("Sets page tie picks: the game's pick wins over the page's", check_page_tie_picks, False),
     ("F6 window: marker filter and tie-pick buttons", check_f6_filter_and_ties, False),
+    ("meta.lsx Description: at most 250 characters, names Script Extender", check_meta_description, False),
 ]
