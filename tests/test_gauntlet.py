@@ -734,6 +734,9 @@ def start_tests(L):
     check("fight start: the game's rules, Attacks of Opportunity on and no HP buffer",
           "IgnoreLeaveAttackRange()" not in b and not any(x.startswith("IncreaseMaxHP") for x in b) and
           g.T_res.hp_buffer == 0 and g.T_res.ignore_leave_attack_range is False, f"{b} state {g.T_state}")
+    check("fight start: the enemies' damage scale is applied and recorded",
+          g.T_res.enemy_damage_scale == 0.5 and g.T_res.enemy_target.damage_scale == 0.5,
+          str(g.T_res.enemy_damage_scale))
     check("fight start: leftovers cleared, encumbrance read, plan prechecked before the first round",
           g.T_res.leftovers is not None and g.T_res.encumbered is not None and g.T_res.precheck is not None and
           len(g.T_res.precheck) == 1 and g.T_res.precheck[1].spell == "Target_MAG_Gaze",
@@ -772,6 +775,8 @@ def rules_tests(L):
       Osi.Resurrect = function(u) revived[#revived + 1] = u end
       G.revive("c1")
       T_revived = revived
+      T_e3 = G.scaleEnemy({ dmg = 17, ac = 19 }, 0.5)
+      T_e1 = G.scaleEnemy({ dmg = 9 }, G.ENEMY_DAMAGE_SCALE)
       Osi.IsDead, Osi.Resurrect = nil, nil
       Osi.GetHitpoints = nil
       -- moving to cast: the direct route leaves e1's reach, a detour south does not
@@ -804,6 +809,9 @@ def rules_tests(L):
     check("rules: a down before the character's turn ends the run with the rounds survived",
           g.T_dstate == "done" and g.T_dended == "downed" and g.T_dsum and g.T_dsum.rounds_survived == 3,
           f"{g.T_dstate} {g.T_dended}")
+    check("rules: enemy damage per hit scaled by half and rounded (17 -> 9, 9 -> 5), the rest unchanged",
+          g.T_e3.dmg == 9 and g.T_e3.dmg_unscaled == 17 and g.T_e3.ac == 19 and g.T_e3.damage_scale == 0.5 and
+          g.T_e1.dmg == 5, f"{g.T_e3.dmg} {g.T_e1.dmg}")
     check("rules: a dead test character is resurrected", lst(g.T_revived) == ["c1"], str(lst(g.T_revived)))
     check("rules: the route to a casting spot keeps out of leaving an enemy's reach when it can",
           g.T_spot and g.T_spot.risk is None and g.T_spot.z < 0, str(g.T_spot and (g.T_spot.risk, g.T_spot.z)))
@@ -1126,6 +1134,9 @@ MUTATIONS = [
     ("equip: a slow frame skips the second ask", GL, "if not where and (waited < G.EQUIP_MS or not again) then",
      "if not where and waited < G.EQUIP_MS then"),
     ("rescore: a down-ended run voided as too short", RN, "if not left and not downed and sum(clean)", "if not left and sum(clean)"),
+    ("enemies: damage not scaled", GL, "  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)",
+     "  local E = E0"),
+    ("enemies: default scale 1", GL, "G.ENEMY_DAMAGE_SCALE = 0.5", "G.ENEMY_DAMAGE_SCALE = 1"),
     ("revive: the dead stay dead", GL, "  if try(Osi.IsDead, u) == 1 then pcall(Osi.Resurrect, u) end", ""),
     ("stopping: never decisive on equality", RN, "    if ci[0] >= 1 - tol and ci[1] <= 1 + tol:", "    if False:"),
     ("stopping: decisive on any interval", RN, '    return False, f"ratio 95% interval', '    return True, f"ratio 95% interval'),

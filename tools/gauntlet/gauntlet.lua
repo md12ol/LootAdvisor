@@ -1347,6 +1347,17 @@ G.SCENARIOS = {
   longday = { enemies = 4, rounds = 16, fight_rounds = 4, short_rest_every = 4 },
 }
 G.RANGE = { melee = 1.6, throw = 6.0, ranged = 10.0, caster = 10.0 }
+-- A solo character takes every hit a party would share, and keeps its real hit points: the enemies' damage per hit is
+-- scaled (the same for both sets; a scenario or a request may set enemy_damage_scale), rounded to whole points.
+G.ENEMY_DAMAGE_SCALE = 0.5
+function G.scaleEnemy(E, scale)
+  local out = {}
+  for k, v in pairs(E) do out[k] = v end
+  out.damage_scale = scale or 1
+  out.dmg_unscaled = E.dmg
+  out.dmg = math.max(1, math.floor((E.dmg or 1) * out.damage_scale + 0.5))
+  return out
+end
 
 local function ground(x, z, nearY)
   local best
@@ -1641,8 +1652,10 @@ function G.start(F)
   if not S then return stop(F, "unknown scenario " .. tostring(scn)) end
   local C = G.catalog() or {}
   local act = tostring(req.act or spec.act)
-  local E = req.enemy or (C.enemies and C.enemies[act])
-  if not E then return stop(F, "no enemy stats for act " .. act) end
+  local E0 = req.enemy or (C.enemies and C.enemies[act])
+  if not E0 then return stop(F, "no enemy stats for act " .. act) end
+  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)
+  F.enemyDamageScale = E.damage_scale
   local A
   if req.arena then
     A = (C.arenas or {})[req.arena]
@@ -1690,6 +1703,7 @@ function G.start(F)
         wait(G.SPAWN_MS, function()
           G.results.enemies = G.enemyReport(F.enemies)
           G.results.enemy_target = E
+          G.results.enemy_damage_scale = F.enemyDamageScale
           pcall(Osi.SetHitpointsPercentage, u, 100)
           G.results.char = G.sheet(u)
           if not F.manual then
