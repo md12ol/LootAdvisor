@@ -87,7 +87,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -q "lupa==$LUPA_VERSION" "pillow==$PILLOW_VERSION"
+      - run: pip install -q "lupa==$LUPA_VERSION" "pillow==$PILLOW_VERSION" "lz4==4.4.5"
       - name: Regression suite, tracked files only (local-only checks listed as [LOCAL])
         run: python LootAdvisor/tests/run.py --ci
       - name: Mutation check (every CI check goes red when its rule is broken)

@@ -73,7 +73,7 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install -q "pillow==$PILLOW_VERSION"   # the handbook generator embeds a screenshot
+      - run: pip install -q "pillow==$PILLOW_VERSION" "lz4==4.4.5"   # lz4: compressed paks; the handbook generator embeds a screenshot
       - name: Stamp version, build the pak and the package
         env:
           V: ${{ steps.ver.outputs.version }}
