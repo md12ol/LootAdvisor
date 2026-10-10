@@ -7,7 +7,7 @@
 --                                              base64 in .js files (a file:// page can load scripts, not fetch files)
 -- 3. once per page version:                  Sets.html, copied from this mod's pak (Mods/LootAdvisor/Page/Sets.html)
 -- 4. live:                                    LootAdvisor_state.js - party, classes, levels, act, region, story state,
---                                              owned items + holders, selected character; at most every 2 s on changes,
+--                                              owned items + holders, selected character, tie picks; at most every 2 s on changes,
 --                                              plus a heartbeat every 10 s so the page knows the game is running.
 -- Nothing of the game ships with the mod: only paths and handles. Settings: "Page": false switches all of this off.
 
@@ -279,6 +279,14 @@ function P.BuildState()
   st.paths = try(S.Paths) or {}
   st.comp = try(S.Companions) or {}
   st.durge = try(S.IsDurgeCampaign) and true or false
+  -- tie picks: the game's answer per tied item (the one wearing it, else the pick from the F6 list); the page asks
+  -- about the open ones itself
+  local okT, ties = pcall(function()
+    return LA.Logic.Ties({ comp = st.comp, durge = st.durge, tiePicks = LA.TiePicks and LA.TiePicks() or {},
+                           wear = S.Wear(S.People()) })
+  end)
+  st.picks = {}
+  if okT then for id, t in pairs(ties) do if t.pick then st.picks[id] = { c = t.pick, by = t.by } end end end
   -- party (active) + camp (team members not in the party)
   local party, owned, inParty = setmetatable({}, P.ARRAY), {}, {}
   for _, u in ipairs(S.Players()) do

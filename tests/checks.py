@@ -1083,8 +1083,15 @@ def window_lua(env, settings_json=None):
     L.execute(WINDOW_STUB)
     G = L.globals()
 
+    from lupa import lua_type
+
     def to_py(t):
-        return {k: t[k] for k in t}
+        if lua_type(t) != "table":
+            return t
+        keys = list(t.keys())
+        if keys and all(isinstance(k, int) for k in keys) and sorted(keys) == list(range(1, len(keys) + 1)):
+            return [to_py(t[k]) for k in sorted(keys)]
+        return {k: to_py(t[k]) for k in keys}
     G.Ext.Json.Stringify = lambda t: json.dumps(to_py(t))
     G.Ext.Json.Parse = lambda s: L.table_from(json.loads(s))
     if settings_json is not None:
@@ -1176,6 +1183,475 @@ def check_spoiler_warning(env):
     return fails
 
 
+# ================================================= 14. map markers for everyone (party, camp, companions who may join)
+# Expectations: class levels and main abilities from Builds.lua (tests/gamedata.py's own reader), the roster rule as
+# the player was promised it (party incl. other players' characters, camp, companions who may still join; the dead and
+# the ones gone for good left out), and set arithmetic over each person's own markers.
+def _lua_classes(L, cl):
+    return L.table_from({"classes": [{"name": c, "level": n} for c, n in sorted(cl.items())]}, recursive=True)
+
+
+def _pool(G):
+    """[(origin, build)] in LootData, with the build's class levels as LootData lists them."""
+    out = []
+    for ck in ("astarion", "gale", "karlach", "laezel", "shadowheart", "wyll", "darkurge"):
+        cd = G.LA.Data.chars[ck]
+        for b in lua_list(cd.b if cd is not None else None):
+            out.append((ck, b, lua_dict(b.cl)))
+    return out
+
+
+def _main_of(G, ba, ck, bid):
+    if bid in ba and ba[bid]["main"]:
+        return ba[bid]["main"]
+    info = G.LA.Mod.builds[ck]
+    return info[bid].main if info is not None and info[bid] is not None else None
+
+
+def check_build_for_everyone(env):
+    """A Tav / hireling with exactly a Build Advisor build's class levels gets a build with those class levels; with no
+    class in common with any scored build, a build whose main ability is the character's highest. A companion with no
+    class levels to read (not loaded) goes through its first Build Advisor build; an origin stays among its own."""
+    L = env.lua()
+    G = L.globals()
+    ba = gamedata.builds_lua_levels(env.builds_lua)
+    _b, origins = gamedata.builds_lua(env.builds_lua)
+    pool = _pool(G)
+    fails, n_exact, n_main, n_lazy = [], 0, 0, 0
+    for bid, x in ba.items():
+        exact = [(ck, b) for ck, b, cl in pool if cl == x["cl"]]
+        overlap = any(set(cl) & set(x["cl"]) for _ck, _b2, cl in pool)
+        ab = {k: 10 for k in ("STR", "DEX", "CON", "INT", "WIS", "CHA")}
+        ab[x["main"]] = 17
+        ctx = L.table_from({"classes": [{"name": c, "level": n} for c, n in sorted(x["cl"].items())],
+                            "abilities": ab}, recursive=True)
+        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": "p_" + bid, "ctx": ctx}))
+        if b is None:
+            fails.append(f"a Tav with {bid}'s class levels: no build")
+            continue
+        if exact:
+            n_exact += 1
+            if lua_dict(b.cl) != x["cl"]:
+                fails.append(f"a Tav with {bid}'s class levels {x['cl']}: got {ck}.{b.id} {lua_dict(b.cl)}")
+        elif not overlap:
+            n_main += 1
+            got = _main_of(G, ba, ck, b.id)
+            if got != x["main"]:
+                fails.append(f"a Tav with {bid}'s classes (none scored), main {x['main']}: got {ck}.{b.id} (main {got})")
+    # companions without class levels to read: their first Build Advisor build stands in
+    for key, ids in origins.items():
+        if key == "generic" or not ids or ids[0] not in ba:
+            continue
+        x = ba[ids[0]]
+        b, ck, _why = G.LA.Logic.BuildFor(L.table_from({"key": key}))
+        n_lazy += 1
+        if b is None:
+            fails.append(f"{key} (not loaded): no build")
+            continue
+        exact = [1 for _ck, _b2, cl in pool if cl == x["cl"]]
+        own = G.LA.Data.chars[key] is not None
+        if own and ck != key:
+            fails.append(f"{key} (not loaded): a build of {ck}, not one of its own")
+        if exact and lua_dict(b.cl) != x["cl"]:
+            fails.append(f"{key} (not loaded, Build Advisor {ids[0]} {x['cl']}): got {ck}.{b.id} {lua_dict(b.cl)}")
+        elif not any(set(cl) & set(x["cl"]) for _ck, _b2, cl in pool) and _main_of(G, ba, ck, b.id) != x["main"]:
+            fails.append(f"{key} (not loaded, Build Advisor {ids[0]}, main {x['main']}): got {ck}.{b.id}")
+    env.counts["exact class levels"] = n_exact
+    env.counts["no class in common (main ability)"] = n_main
+    env.counts["companions not loaded"] = n_lazy
+    if n_exact == 0 or n_main == 0 or n_lazy == 0:
+        fails.append(f"nothing checked: {n_exact} exact, {n_main} main-ability, {n_lazy} not-loaded cases")
+    return fails
+
+
+ROSTER_PEOPLE = [  # read from the game: party (DB_Players, other players' characters too) + camp
+    {"uuid": "u-gale", "key": "gale", "name": "Gale", "inParty": True},
+    {"uuid": "u-tav", "name": "Tav", "inParty": True},
+    {"uuid": "u-karlach", "key": "karlach", "name": "Karlach", "inParty": True},   # another player's character
+    {"uuid": "u-wyll", "key": "wyll", "name": "Wyll", "inParty": False},
+    {"uuid": "u-hire", "name": "Hireling", "inParty": False},
+    {"uuid": "u-laezel", "key": "laezel", "name": "Lae'zel", "inParty": False},
+]
+ROSTER_COMP = {  # story state of every companion
+    "gale": {"team": True, "party": True}, "karlach": {"team": True, "party": True},
+    "wyll": {"team": True}, "laezel": {"team": True, "dead": True},
+    "astarion": {}, "shadowheart": {"gone": True}, "halsin": {}, "jaheira": {"gone": True},
+    "minsc": {"dead": True}, "minthara": {},
+}
+ROSTER_WANT = {"party": {"Gale", "Tav", "Karlach"}, "camp": {"Wyll", "Hireling"},
+               "future": {"Astarion", "Halsin", "Minthara"}}
+
+
+def check_roster(env):
+    """Who gets markers: the active party (other players' characters too), the camp, and every companion who may
+    still join; the dead and the ones gone for good are left out, and the Dark Urge never 'joins later'."""
+    L = env.lua()
+    G = L.globals()
+    state = L.table_from({"comp": ROSTER_COMP}, recursive=True)
+    roster = [r for r in lua_list(G.LA.Logic.Roster(L.table_from(ROSTER_PEOPLE, recursive=True), state))]
+    got = {"party": set(), "camp": set(), "future": set()}
+    fails = []
+    for r in roster:
+        kind = "party" if r.party else "future" if r.future else "camp" if r.camp else "?"
+        got.setdefault(kind, set()).add(str(r.name))
+    for kind, want in ROSTER_WANT.items():
+        if got.get(kind, set()) != want:
+            fails.append(f"{kind}: {sorted(got.get(kind, set()))}, want {sorted(want)}")
+    names = {str(r.name) for r in roster}
+    for lost in ("Lae'zel", "Shadowheart", "Jaheira", "Minsc", "The Dark Urge"):
+        if lost in names:
+            fails.append(f"{lost} is on the roster (dead, gone for good or never a companion to join)")
+    env.counts["people on the roster"] = len(roster)
+    if not roster:
+        fails.append("nothing checked: empty roster")
+    return fails
+
+
+def _markers_scene(L, G):
+    """Act 1 in the region with the most act-1 markers; Gale (selected) and Karlach in the party, Wyll in camp,
+    Astarion and Halsin may still join. -> (state, people with their own Recommend results)"""
+    count = {}
+    for _sid, ms in lua_dict(G.LA.Mod.markers).items():
+        for m in lua_list(ms):
+            if m.a == 1:
+                count[m.r] = count.get(m.r, 0) + 1
+    region = max(count, key=count.get)
+    comp = {"gale": {"team": True, "party": True}, "karlach": {"team": True, "party": True},
+            "wyll": {"team": True, "party": False}, "astarion": {}, "halsin": {}}
+    state = L.table_from({"act": 1, "region": region, "durge": False, "paths": {}, "comp": comp, "owned": {},
+                          "markerPos": {}}, recursive=True)
+    people = []
+    for key, name, party, sel in (("gale", "Gale", True, True), ("karlach", "Karlach", True, False),
+                                  ("wyll", "Wyll", False, False), ("astarion", "Astarion", False, False),
+                                  ("halsin", "Halsin", False, False)):
+        b, _ck, why = G.LA.Logic.BuildFor(L.table_from({"key": key}))
+        opts = None if G.LA.Data.chars[key] is not None else L.table_from({"build": b, "why": why})
+        res = G.LA.Logic.Recommend(key, L.table_from({"name": name}), state, None, None, opts)
+        people.append({"key": key, "name": name, "party": party, "selected": sel, "res": res})
+    return state, region, people
+
+
+def check_markers_everyone(env):
+    """One marker per spot for everyone on the roster, labelled with every name it is for; the filter keeps the party
+    or only the selected character; the selected character's markers keep their rank and only they get the
+    off-screen arrows (client: marker ranks and the arrow pick)."""
+    L = env.lua()
+    G = L.globals()
+    _state, region, people = _markers_scene(L, G)
+    own = {p["name"]: {} for p in people}
+    for p in people:
+        for m in lua_list(p["res"].markers):
+            r = own[p["name"]].get(m.m)
+            own[p["name"]][m.m] = min(r, m.rank) if r is not None else m.rank
+    lp = L.table_from([dict(p) for p in people])
+    fails, n_shared = [], 0
+    merged = {}
+    for flt in ("all", "party", "selected"):
+        out = lua_list(G.LA.Logic.MergeMarkers(lp, flt))
+        ids = [m.m for m in out]
+        if len(ids) != len(set(ids)):
+            fails.append(f"filter {flt}: {len(ids) - len(set(ids))} marker spots listed twice")
+        keep = [p for p in people if p["selected"] or flt == "all" or (flt == "party" and p["party"])]
+        want = set().union(*(set(own[p["name"]]) for p in keep))
+        if set(ids) != want:
+            fails.append(f"filter {flt}: {len(set(ids) - want)} extra, {len(want - set(ids))} missing marker spots")
+        merged[flt] = out
+    allwho = {}
+    for m in merged["all"]:
+        who = set(lua_list(m.who))
+        allwho[m.m] = m.who
+        want = {n for n, ms in own.items() if m.m in ms}
+        if who != want:
+            fails.append(f"{m.m}: for {sorted(who)}, want {sorted(want)}")
+        if len(want) > 1:
+            n_shared += 1
+        sel_rank = own["Gale"].get(m.m)
+        if bool(m.sel) != (sel_rank is not None):
+            fails.append(f"{m.m}: selected flag {bool(m.sel)}, Gale's marker: {sel_rank is not None}")
+        elif sel_rank is not None and m.rank != sel_rank:
+            fails.append(f"{m.m}: rank {m.rank}, Gale's rank {sel_rank}")
+    lab_who = L.table_from(allwho)
+    for m in merged["all"]:
+        label = str(G.LA.MarkerLabel(m.entries, None, lab_who))
+        for e in lua_list(m.entries):
+            if str(e.n) not in label:
+                fails.append(f"{m.m}: label lacks the item {e.n}")
+            for w in lua_list(e.who):
+                if str(w) not in label:
+                    fails.append(f"{m.m}: label lacks {w} ('{label[:80]}')")
+    # client: ranks of the merged markers and the off-screen arrow pick
+    CL = client_lua(env, defer=True)
+    C = CL.globals()
+    plain = [{"m": m.m, "h": m.h, "rank": m.rank, "slot": m.slot, "sel": bool(m.sel), "who": lua_list(m.who)}
+             for m in merged["all"]]
+    C.LA.OnResult(CL.table_from({"markers": plain, "rows": [], "frames": {}}, recursive=True))
+    others = int(C.LA.OTHERS) * 100
+    n_rank = 0
+    for m in merged["all"]:
+        rk = C.LA.MarkerRank[m.h]
+        n_rank += 1
+        if rk is None or (rk < others) != bool(m.sel):
+            fails.append(f"{m.m}: client rank {rk} (selected: {bool(m.sel)})")
+    off = [{"rk": r} for r in (others + 100, 101, 205, others + 101, 102, others + 50, others + 7)]
+    keep = C.LA.Paint.ArrowPicks(CL.table_from(off, recursive=True), 5)
+    srt = [o["rk"] for o in sorted(off, key=lambda o: o["rk"])]
+    kept = [srt[i - 1] for i in range(1, len(srt) + 1) if keep[i]]
+    want = sorted(r for r in srt if r < others)[:5]
+    if kept != want:
+        fails.append(f"off-screen arrows kept for ranks {kept}, want the selected character's best 5 {want}")
+    env.counts["region"] = region
+    env.counts["marker spots (all)"] = len(merged["all"])
+    env.counts["spots for 2+ characters"] = n_shared
+    env.counts["client ranks"] = n_rank
+    if not merged["all"] or n_shared == 0 or len(merged["selected"]) == len(merged["all"]):
+        fails.append(f"nothing checked: {len(merged['all'])} spots, {n_shared} shared, "
+                     f"{len(merged['selected'])} for the selected character")
+    return sorted(set(fails))
+
+
+# ================================================= 15. tie picks (exact ties between party members)
+def _ties_from_data(env):
+    """{stats id: [tie members]} read from LootData.lua's text (owners o + tied ot), not through the mod's Lua."""
+    out = {}
+    for p in (os.path.join(env.root, "data", "scores", "lua", "LootData.lua"),):
+        src = open(p, encoding="utf-8").read()
+        for m in re.finditer(r'\{id="([^"]+)",[^\n]*?\bo=\{([^}]*)\},ot=\{([^}]*)\}', src):
+            ot = re.findall(r'"(\w+)"', m.group(3))
+            if ot:
+                mem = []
+                for c in re.findall(r'"(\w+)"', m.group(2)) + ot:
+                    if c not in mem:
+                        mem.append(c)
+                out[m.group(1)] = mem
+    return out
+
+
+def check_tie_picks(env):
+    """Two tie members in the party -> an open tie (both see a shared pick); a saved pick gives it to that one (the
+    other sees 'better on'); the one wearing it keeps it whatever the pick; a pick outlives a party swap and is not
+    asked again; a tie among others while the picked one is away is a new tie; camp members never make a tie."""
+    L = env.lua()
+    G = L.globals()
+    ties = _ties_from_data(env)
+    chars = list(lua_dict(G.LA.Data.chars))
+    fails, n = [], {"ties": 0, "rows": 0, "swaps": 0, "new ties": 0}
+
+    def state(party, picks=None, wear=None, durge=False):
+        comp = {c: {"team": True, "party": c in party, "dead": False} for c in chars if c != "darkurge"}
+        return L.table_from({"act": 1, "region": "", "durge": durge, "paths": {}, "comp": comp, "owned": {},
+                             "markerPos": {}, "tiePicks": picks or {}, "wear": wear or {}}, recursive=True)
+
+    def tie(st, sid):
+        return G.LA.Logic.Ties(st)[sid]
+
+    where = {}
+    for char in chars:
+        cd = G.LA.Data.chars[char]
+        for b in lua_list(cd.b):
+            for act in ACTS:
+                a = b.a[act] if b.a is not None else None
+                for _slot, pair in (lua_dict(a.best).items() if a is not None and a.best is not None else []):
+                    for i in lua_list(pair):
+                        if i:
+                            where.setdefault((G.LA.Data["items"][i].id, char), (b, act))
+    for sid, mem in ties.items():
+        mem = [c for c in mem if c != "darkurge"]
+        if len(mem) < 2:
+            continue
+        a, b = mem[0], mem[1]
+        n["ties"] += 1
+        t = tie(state({a, b}), sid)
+        if t is None or t.pick is not None or set(lua_list(t.cands)) != {a, b}:
+            fails.append(f"{sid}: {a} and {b} in the party: tie {None if t is None else lua_list(t.cands)}, "
+                         f"pick {None if t is None else t.pick}")
+        t = tie(state({a, b}, picks={sid: a}), sid)
+        if t is None or t.pick != a or t.by != "pick":
+            fails.append(f"{sid}: picked {a}: got {None if t is None else (t.pick, t.by)}")
+        t = tie(state({a, b}, picks={sid: a}, wear={sid: b}), sid)
+        if t is None or t.pick != b or t.by != "wear":
+            fails.append(f"{sid}: {b} wears it, pick {a}: got {None if t is None else (t.pick, t.by)}")
+        # party swap: the picked one goes to camp (no tie: the other has it), comes back (the pick holds)
+        n["swaps"] += 1
+        if tie(state({b}, picks={sid: a}), sid) is not None:
+            fails.append(f"{sid}: {a} in camp, only {b} in the party: still a tie")
+        t = tie(state({a, b}, picks={sid: a}), sid)
+        if t is None or t.pick != a:
+            fails.append(f"{sid}: {a} back in the party: pick {None if t is None else t.pick}, want {a} (not asked again)")
+        if len(mem) >= 3:
+            c = mem[2]
+            n["new ties"] += 1
+            t = tie(state({b, c}, picks={sid: a}), sid)
+            if t is None or t.pick is not None:
+                fails.append(f"{sid}: {a} picked but away, {b} and {c} in the party: want a new open tie, got "
+                             f"{None if t is None else t.pick}")
+        # what the two see in their own rows
+        for viewer, other in ((a, b), (b, a)):
+            if (sid, viewer) not in where:
+                continue
+            bb, act = where[(sid, viewer)]
+
+            def row(st):
+                res = G.LA.Logic.Recommend(viewer, ctx_for(L, viewer, bb), st, bb.id, None)
+                return next((r for r in lua_list(res.rows) if r.id == sid), None)
+            st0 = state({a, b})
+            st0.act = act
+            r = row(st0)
+            if r is None or r.s in ("onlyowned", "closed", "owned"):
+                continue
+            n["rows"] += 1
+            if r.s == "better" or other not in lua_list(r.shared):
+                fails.append(f"{sid}: open tie, {viewer} sees {r.s} / shared {lua_list(r.shared)}")
+            st1 = state({a, b}, picks={sid: other})
+            st1.act = act
+            r = row(st1)
+            if r is not None and not (r.s == "better" and r.better == other):
+                fails.append(f"{sid}: picked {other}, {viewer} sees {r.s} (better {r.better})")
+            st2 = state({a, b}, picks={sid: viewer})
+            st2.act = act
+            r = row(st2)
+            if r is not None and (r.s == "better" or lua_list(r.shared)):
+                fails.append(f"{sid}: picked {viewer}, {viewer} sees {r.s} / shared {lua_list(r.shared)}")
+    for k, v in n.items():
+        env.counts[k] = v
+    if n["ties"] == 0 or n["rows"] == 0 or n["new ties"] == 0:
+        fails.append(f"nothing checked: {n}")
+    return fails
+
+
+TIES_NODE = r"""
+const T = require(process.argv[1]);
+const inP = (s) => (c) => s.includes(c);
+const it = { o: ["gale"], ot: ["gale", "wyll", "karlach"] };
+const out = {
+  open: T.contest("gale", it, inP(["gale", "wyll"]), null, null),
+  page: T.contest("gale", it, inP(["gale", "wyll"]), null, "wyll"),
+  game: T.contest("gale", it, inP(["gale", "wyll"]), { c: "gale", by: "pick" }, "wyll"),
+  wear: T.contest("wyll", it, inP(["gale", "wyll"]), { c: "wyll", by: "wear" }, "gale"),
+  alone: T.contest("wyll", it, inP(["wyll", "astarion"]), null, "gale"),
+  away: T.contest("karlach", it, inP(["gale", "wyll"]), null, null),
+  awayPick: T.contest("wyll", it, inP(["wyll", "karlach"]), { c: "gale", by: "pick" }, "gale"),
+  none: T.contest("gale", { o: ["gale"], ot: [] }, inP(["gale", "wyll"]), null, null),
+};
+console.log(JSON.stringify(out));
+"""
+TIES_WANT = {  # (k, pick, by) per scenario: the game's answer wins, then the page's pick, else ask
+    "open": ("shared", None, None), "page": ("give", "wyll", "page"), "game": ("free", "gale", "game"),
+    "wear": ("free", "wyll", "wear"), "alone": ("free", None, None), "away": ("give", None, None),
+    "awayPick": ("shared", None, None), "none": ("free", None, None),
+}
+
+
+def check_page_tie_picks(env):
+    """The Sets page's tie logic (tools/sets_ship/ties.js, run in node): the game's pick or wearer wins over a pick
+    made on the page, the page's pick is used while the game has none, fewer than two tie members in the party is no
+    tie, and a pick for someone who is away asks again."""
+    import subprocess
+    src = getattr(env, "file_overrides", {}).get("ties.js")
+    path = os.path.join(REPO, "tools", "sets_ship", "ties.js")
+    tmp = None
+    if src is not None:
+        tmp = tempfile.mkdtemp(prefix="la_ties_")
+        path = os.path.join(tmp, "ties.js")
+        open(path, "w", encoding="utf-8").write(src)
+    try:
+        r = subprocess.run(["node", "-e", TIES_NODE, os.path.abspath(path)], capture_output=True, text=True,
+                           timeout=60)
+    finally:
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    if r.returncode != 0:
+        return ["node failed: " + (r.stderr or r.stdout)[-300:]]
+    got = json.loads(r.stdout)
+    fails = []
+    for k, (want_k, pick, by) in TIES_WANT.items():
+        g = got.get(k) or {}
+        if (g.get("k"), g.get("pick"), g.get("by")) != (want_k, pick, by):
+            fails.append(f"{k}: got {(g.get('k'), g.get('pick'), g.get('by'))}, want {(want_k, pick, by)}")
+    env.counts["scenarios"] = len(TIES_WANT)
+    return fails
+
+
+def check_f6_filter_and_ties(env):
+    """F6 window: the marker filter offers everyone / the party / the selected character, saves the choice and sends
+    the selection again (the server reads the filter from it); open ties get one button per tied party member, a click
+    sends the pick to the server; a tie the wearer settles has no buttons. Selected.lua sends the filter."""
+    L = window_lua(env)
+    G = L.globals()
+    posts = []
+    G.Ext.ClientNet = L.table_from({"PostMessageToServer": lambda ch, payload: posts.append((ch, payload))})
+    resent = []
+    G.LA.ResendSelection = lambda: resent.append(1)
+    res = L.table_from({"char": "gale", "act": 1, "rows": [], "build": {"n": "x"},
+                        "markers": [{"m": "a", "h": "h1", "sel": True, "who": ["Gale"]},
+                                    {"m": "b", "h": "h2", "who": ["Wyll"]}],
+                        "roster": [{"n": "Wyll", "camp": True, "b": "Sorlock"}],
+                        "ties": [{"id": "SID_OPEN", "n": "Ring", "cands": ["gale", "karlach"]},
+                                 {"id": "SID_WORN", "n": "Boots", "cands": ["gale", "wyll"], "pick": "wyll",
+                                  "by": "wear"}]}, recursive=True)
+    G.LA.Settings.SpoilerNoticeSeen = True
+    G.LA.Win.Toggle()
+    G.LA.Win.Render(res)
+    fails = []
+
+    def walk(el, out):
+        for c in lua_list(el.children):
+            out.append(c)
+            walk(c, out)
+        return out
+    els = walk(G.LA.Win.header, []) + walk(G.LA.Win.content, [])
+    combos = [e for e in els if e.kind == "Combo"]
+    if len(combos) != 1:
+        fails.append(f"{len(combos)} marker filter combos in the window")
+    else:
+        cb = combos[0]
+        opts = lua_list(cb.Options)
+        if len(opts) != 3:
+            fails.append(f"the marker filter offers {len(opts)} choices, want 3 (everyone / party / selected)")
+        if cb.SelectedIndex != 0:
+            fails.append(f"the marker filter shows choice {cb.SelectedIndex}, the setting is 'all' (0)")
+        if cb.OnChange is None:
+            fails.append("the marker filter has no change handler")
+        else:
+            cb.SelectedIndex = 1
+            cb.OnChange(cb)
+            saved = json.loads(G.STUB.files[SETTINGS_FILE] or "{}")
+            if G.LA.Settings.MarkerFilter != "party" or saved.get("MarkerFilter") != "party":
+                fails.append(f"choosing 'party': setting {G.LA.Settings.MarkerFilter}, saved {saved.get('MarkerFilter')}")
+            if not resent:
+                fails.append("choosing a filter did not send the selection again")
+    buttons = [e for e in els if e.kind == "Button" and "Give it to" in str(e.Label or "")]
+    open_b = [b for b in buttons if "SID_OPEN" in str(b.Label)]
+    worn_b = [b for b in buttons if "SID_WORN" in str(b.Label)]
+    if len(open_b) != 2:
+        fails.append(f"open tie: {len(open_b)} 'Give it to' buttons, want 2 (Gale, Karlach)")
+    if worn_b:
+        fails.append(f"a tie the wearer keeps shows {len(worn_b)} buttons")
+    for btn in open_b:
+        if "Karlach" in str(btn.Label) and btn.OnClick is not None:
+            btn.OnClick()
+    picks = [json.loads(p) for ch, p in posts if ch == G.LA.CH_PICK]
+    if picks != [{"id": "SID_OPEN", "c": "karlach"}]:
+        fails.append(f"clicking 'Give it to Karlach' sent {posts}")
+    # Selected.lua: the filter travels with the selection and a new filter sends it again
+    sel_src = _read(env.mods_lua, "Client", "Selected.lua")
+    for old, new in env.lua_patches.get("Selected.lua", []):
+        sel_src = sel_src.replace(old, new)
+    L.execute("Ext.Entity = { GetAllEntitiesWithComponent = function() return {} end }; Ext.StaticData = {}")
+    L.execute(sel_src)
+    L.execute("function LA.SelectedEntity() return { Uuid = { EntityUuid = 'u-gale' } } end")
+    posts.clear()
+    G.LA.Settings.MarkerFilter = "selected"
+    G.LA.PollSelection()
+    G.LA.PollSelection()
+    G.LA.Settings.MarkerFilter = "all"
+    G.LA.PollSelection()
+    sent = [json.loads(p).get("filter") for ch, p in posts if ch == G.LA.CH_SEL]
+    if sent != ["selected", "all"]:
+        fails.append(f"selection messages carried filters {sent}, want ['selected', 'all']")
+    env.counts["buttons"] = len(buttons)
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -1192,4 +1668,11 @@ CHECKS = [
      False),
     ("tooltip warnings: at most 3 lines, nothing lost, full text in F6 / page", check_tooltip_warnings, False),
     ("spoiler warning: docs, Nexus text, Sets page, handbook and once in the F6 window", check_spoiler_warning, False),
+    ("builds for everyone: Tavs, hirelings, companions not loaded", check_build_for_everyone, False),
+    ("marker roster: party, camp, companions who may still join; no lost ones", check_roster, False),
+    ("map markers for everyone: one per spot, all names, filter, arrows for the selected", check_markers_everyone,
+     False),
+    ("tie picks: party only, wearer keeps it, picks survive party swaps", check_tie_picks, False),
+    ("Sets page tie picks: the game's pick wins over the page's", check_page_tie_picks, False),
+    ("F6 window: marker filter and tie-pick buttons", check_f6_filter_and_ties, False),
 ]

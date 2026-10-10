@@ -17,9 +17,12 @@ function LA.OnResult(res)
     if res.frames[r.id] then for _, t in ipairs(r.t or {}) do ft[t] = r.id end end
   end
   LA.FrameTemplates = ft
+  -- rank per marker label handle: the selected character's markers by pick and slot (the off-screen arrows go to
+  -- the best of them), everyone else's after LA.OTHERS (painted, never an arrow)
   local mr = {}
   for _, m in ipairs(res.markers or {}) do
     local v = (m.rank or 2) * 100 + (SLOTI[m.slot] or 50)
+    if m.who and not m.sel then v = v + LA.OTHERS * 100 end
     if not mr[m.h] or v < mr[m.h] then mr[m.h] = v end
   end
   LA.MarkerRank = mr

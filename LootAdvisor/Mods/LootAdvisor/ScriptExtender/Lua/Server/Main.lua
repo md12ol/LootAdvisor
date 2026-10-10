@@ -1,7 +1,9 @@
 -- LootAdvisor server: gets the selected character from the client, computes the recommendation (Shared/Logic.lua)
 -- from the story state (Server/State.lua), shows/hides our journal map markers (Osi.ShowMapMarker, markers shipped
--- in Story/Journal/Markers, generated), writes their label texts (Ext.Loca,
+-- in Story/Journal/Markers, generated) for everyone on the roster (party, camp, companions who may still join; the
+-- F6 filter narrows it to the party or the selected character), writes their label texts (Ext.Loca,
 -- runtime only) and sends the result to the client (frames, tooltips, list window).
+-- Tie picks (an item tied exactly between party members) come from the F6 list and are kept in LootAdvisor_picks.json.
 -- Note: ShowMapMarker visibility is journal state and probably goes into a save made while markers are shown.
 
 LA = LA or {}
@@ -17,6 +19,23 @@ local IDLE_REFRESH_MS = 20000 -- or this long after the last one (live positions
 local dirty, lastFull = true, 0
 local function markDirty() dirty = true end
 
+-- ---------------------------------------------------------------- tie picks: [stats id] = character key
+LA.PICKS_FILE = "LootAdvisor_picks.json"
+local picks
+function LA.TiePicks()
+  if not picks then
+    local raw = try(Ext.IO.LoadFile, LA.PICKS_FILE)
+    local d = raw and try(Ext.Json.Parse, raw)
+    picks = type(d) == "table" and d or {}
+  end
+  return picks
+end
+function LA.SetTiePick(id, c)
+  if type(id) ~= "string" or type(c) ~= "string" then return end
+  LA.TiePicks()[id] = c
+  try(Ext.IO.SaveFile, LA.PICKS_FILE, Ext.Json.Stringify(picks))
+end
+
 local function hideAll()
   for id, who in pairs(shown) do pcall(Osi.ShowMapMarker, who, id, 0) end
   shown = {}
@@ -30,14 +49,14 @@ local function applyMarkers(res, who)
   for id, w in pairs(shown) do
     if not want[id] or w ~= who then pcall(Osi.ShowMapMarker, w, id, 0); shown[id] = nil end
   end
-  local cname = LA.CHAR_NAME[res.char] or res.char
-  -- label = the items reachable at this marker, one per line; the client draws our diamond in front of it.
-  -- A character name is added only when markers are shown for more than one character (LA.MarkerLabel).
+  local cname = res.name or LA.CHAR_NAME[res.char] or res.char
+  -- label = the items reachable at this marker, one per line, each with everyone it is for; the client draws our
+  -- diamond in front of it. Names are added only when markers are shown for more than one character (LA.MarkerLabel).
   local whoOf = {}
-  for id, m in pairs(want) do whoOf[id] = { cname } end
+  for id, m in pairs(want) do whoOf[id] = m.who or { cname } end
   for id, m in pairs(want) do
     local it = LA.Item(m.i)
-    local names = m.entrance and (m.items or {}) or { it and it.n or id }
+    local names = m.entries or (m.entrance and (m.items or {})) or { it and it.n or id }
     local txt = LA.MarkerLabel(names, whoOf[id], whoOf)
     if labels[m.h] ~= txt then labels[m.h] = txt; try(Ext.Loca.UpdateTranslatedString, m.h, txt) end
     -- re-asserted on every refresh: a ShowMapMarker sent while a save is still loading is silently lost
@@ -140,15 +159,74 @@ function LA.PlayerZoneChanged(region)
   return false
 end
 
+local function guidOf(s) return type(s) == "string" and (s:match("(%x+%-%x+%-%x+%-%x+%-%x+)$") or s) or nil end
+
+-- the map markers of everyone on the roster, merged with the selected character's (res); the F6 filter picks who
+local function everyone(res, state, people)
+  local filter = sel.ctx.filter or LA.Settings.MarkerFilter or "all"
+  local list = { { key = res.char, name = res.name or LA.CHAR_NAME[res.char] or "?", party = true, selected = true,
+                   res = res } }
+  local roster = {}
+  if filter ~= "selected" then
+    for _, p in ipairs(LA.Logic.Roster(people, state)) do
+      if guidOf(p.uuid) ~= guidOf(sel.uuid) and (filter == "all" or p.party) then
+        if not p.ctx and p.uuid then
+          -- a companion who may still join: its live class levels when it is loaded, else its Build Advisor build
+          local d = LA.State.Describe(p.uuid)
+          p.ctx = d and d.ctx or nil
+        end
+        local b, _, why = LA.Logic.BuildFor(p)
+        if b then
+          local key = p.key or ("p_" .. tostring(guidOf(p.uuid) or #list))
+          local r = LA.Logic.Recommend(key, p.ctx or {}, state, nil, p.ba, { build = b, why = why })
+          LA.UseEntrances(r, state.region)
+          list[#list + 1] = { key = key, name = p.name, party = p.party, res = r }
+          roster[#roster + 1] = { n = p.name, party = p.party, camp = p.camp, future = p.future, b = b.n }
+        end
+      end
+    end
+  end
+  res.markers = LA.Logic.MergeMarkers(list, filter)
+  res.filter, res.roster = filter, roster
+end
+
+-- open and settled ties among the party, for the F6 list (items obtainable in this act or owned)
+local function tieRows(state)
+  local out, byId = {}, {}
+  for _, x in ipairs(LA.Data.items or {}) do byId[x.id] = x end
+  for id, t in pairs(state.ties or {}) do
+    local it = byId[id]
+    if it and (LA.ItemAct(it, state.act) ~= "-" or (state.owned[id] or 0) > 0) then
+      out[#out + 1] = { id = id, n = it.n, cands = t.cands, pick = t.pick, by = t.by }
+    end
+  end
+  table.sort(out, function(a, b) return tostring(a.n) < tostring(b.n) end)
+  return out
+end
+
 function LA.ServerRefresh(force)
   if not sel then return end
   local t0 = Ext.Utils.MonotonicTime()
   local state = LA.State.Snapshot()
   if tonumber(LA.Settings.ActOverride) then state.act = tonumber(LA.Settings.ActOverride) end
-  local res = LA.Logic.Recommend(sel.key, sel.ctx, state, sel.ctx.baPick, sel.ctx.baOrder)
+  local people = LA.State.People()
+  state.tiePicks = LA.TiePicks()
+  state.wear = LA.State.Wear(people)
+  state.ties = LA.Logic.Ties(state)
+  local res
+  if (LA.Data.chars or {})[sel.key] then
+    res = LA.Logic.Recommend(sel.key, sel.ctx, state, sel.ctx.baPick, sel.ctx.baOrder)
+  else
+    -- a companion without builds of its own, a Tav or a hireling: the closest build of any origin
+    local key = (LA.Mod.companions or {})[sel.key or ""] and sel.key or ("p_" .. tostring(guidOf(sel.uuid)))
+    local b, _, why = LA.Logic.BuildFor({ key = key, ctx = sel.ctx, ba = (LA.Mod.baOrigins or {})[sel.key or ""] })
+    res = LA.Logic.Recommend(key, sel.ctx, state, nil, nil, { build = b, why = why })
+  end
   res.uuid = sel.uuid
   res.paths, res.comp, res.durge = state.paths, state.comp, state.durge
   LA.UseEntrances(res, state.region)
+  everyone(res, state, people)
+  res.ties = tieRows(state)
   res.ms = Ext.Utils.MonotonicTime() - t0
   LA.LastResult, LA.LastState = res, state
   applyMarkers(res, sel.uuid)
@@ -166,6 +244,17 @@ Ext.Events.NetMessage:Subscribe(function(e)
   if type(ctx) ~= "table" then return end
   if sel and sel.uuid ~= ctx.uuid then hideAll() end
   sel = { uuid = ctx.uuid, key = ctx.key, ctx = ctx }
+  if LA.Page and LA.Page.Dirty then LA.Page.Dirty() end
+  local ok, err = pcall(LA.ServerRefresh, true)
+  if not ok then Ext.Utils.PrintError("[Loot Advisor] refresh: " .. tostring(err)) end
+end)
+
+-- a tie pick from the F6 list: { id = stats id, c = character key }
+Ext.Events.NetMessage:Subscribe(function(e)
+  if e.Channel ~= LA.CH_PICK then return end
+  local p = try(Ext.Json.Parse, e.Payload)
+  if type(p) ~= "table" then return end
+  LA.SetTiePick(p.id, p.c)
   if LA.Page and LA.Page.Dirty then LA.Page.Dirty() end
   local ok, err = pcall(LA.ServerRefresh, true)
   if not ok then Ext.Utils.PrintError("[Loot Advisor] refresh: " .. tostring(err)) end

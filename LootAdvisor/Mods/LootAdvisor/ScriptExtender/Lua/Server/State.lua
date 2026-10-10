@@ -88,7 +88,11 @@ function S.Companions()
     for _, f in ipairs(c.dead or {}) do if flag(f) then d = true end end
     if c.npc and c.npc ~= "" and try(Osi.IsDead, c.npc) == 1 then d = true end
     local inTeam = (c.npc ~= "" and team[c.npc]) or (c.team ~= "" and flag(c.team)) or false
-    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d }
+    -- gone for good: a "left / killed" story flag while not in the team (never joins again, gets no markers)
+    local gone = false
+    if not inTeam then for _, f in ipairs(c.gone or {}) do if flag(f) then gone = true end end end
+    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d,
+                  gone = gone }
   end
   return out
 end
@@ -193,6 +197,91 @@ function S.MarkerPositions(region)
       if m.r == region then
         local p = pos(m.t)
         if p then out[m.m] = p end
+      end
+    end
+  end
+  return out
+end
+
+-- ---------------------------------------------------------------- everyone (markers for the whole roster)
+local NULLG = "00000000-0000-0000-0000-000000000000"
+local resCache = {}
+local function resource(guid, kind)
+  if not guid or guid == NULLG or guid == "" then return nil end
+  local k = kind .. guid
+  if resCache[k] == nil then
+    local r = try(Ext.StaticData.Get, guid, kind)
+    resCache[k] = r and { name = try(function() return r.Name end),
+                          display = try(function() return r.DisplayName:Get() end) } or false
+  end
+  return resCache[k] or nil
+end
+local ABIL = { "STR", "DEX", "CON", "INT", "WIS", "CHA" }
+
+-- key (origin / companion: "astarion", "halsin"; nil for a Tav or hireling), name, class levels and abilities of a
+-- loaded character; nil when the entity is not loaded (a companion in another level)
+function S.Describe(uuid)
+  local e = try(Ext.Entity.Get, uuid)
+  if not e then return nil end
+  local classes = {}
+  for _, c in ipairs(try(function() return e.Classes.Classes end) or {}) do
+    local cl, sub = resource(c.ClassUUID, "ClassDescription"), resource(c.SubClassUUID, "ClassDescription")
+    if cl then classes[#classes + 1] = { name = cl.name, sub = sub and (sub.display or sub.name) or nil, level = c.Level } end
+  end
+  local abilities = {}
+  local ab = try(function() return e.Stats.Abilities end)
+  if ab then
+    local off = ((try(function() return #ab end) or 0) >= 7) and 1 or 0
+    for i, k in ipairs(ABIL) do abilities[k] = try(function() return ab[i + off] end) end
+  end
+  -- the server's Origin component holds the origin name ("Astarion", "DarkUrge", "Generic")
+  local o = try(function() return e.Origin.Origin end)
+  local r = o and resource(o, "Origin")
+  local oname = r and r.name or (type(o) == "string" and not o:match("^%x+%-%x+%-") and o) or ""
+  local key = LA.Norm(oname)
+  if not ((LA.Data.chars or {})[key] or (LA.Mod.companions or {})[key]) then key = nil end
+  local name = try(function() return e.DisplayName.Name:Get() end)
+  return { key = key, name = (name and name ~= "") and name or (key and LA.CHAR_NAME[key]) or "?",
+           ctx = { classes = classes, abilities = abilities, name = name } }
+end
+
+-- party (every player's characters) + camp, as L.Roster wants them
+function S.People()
+  local out, seen = {}, {}
+  for _, u in ipairs(S.Players()) do
+    local g = guidOf(u)
+    if g and not seen[g] then
+      seen[g] = true
+      local d = S.Describe(u) or { name = "?", ctx = {} }
+      out[#out + 1] = { uuid = g, key = d.key, name = d.name, inParty = true, ctx = d.ctx }
+    end
+  end
+  for u in pairs(S.Team()) do
+    if not seen[u] and try(Osi.IsCharacter, u) == 1 then
+      seen[u] = true
+      local d = S.Describe(u)
+      if d then out[#out + 1] = { uuid = u, key = d.key, name = d.name, inParty = false, ctx = d.ctx } end
+    end
+  end
+  return out
+end
+
+-- tied items someone in the party is wearing: [stats id] = that character's key (the wearer keeps a tied item)
+local EQUIP_SLOTS = { "Helmet", "Breast", "Cloak", "MeleeMainHand", "MeleeOffHand", "RangedMainHand", "RangedOffHand",
+                      "Ring", "Ring2", "Boots", "Gloves", "Amulet" }
+local tiedIds
+function S.Wear(people)
+  if not tiedIds then
+    tiedIds = {}
+    for _, it in ipairs(LA.Data.items or {}) do if type(it.ot) == "table" and #it.ot > 0 then tiedIds[it.id] = true end end
+  end
+  local out = {}
+  for _, p in ipairs(people or {}) do
+    if p.inParty and p.key then
+      for _, slot in ipairs(EQUIP_SLOTS) do
+        local item = try(Osi.GetEquippedItem, p.uuid, slot)
+        local sid = item and try(Osi.GetStatString, item)
+        if sid and tiedIds[sid] then out[sid] = p.key end
       end
     end
   end

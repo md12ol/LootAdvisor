@@ -529,6 +529,7 @@ def build(args):
     dds = open(os.path.join(SHIP_SRC, "dds.js"), encoding="utf-8").read()
     ship = open(os.path.join(SHIP_SRC, "ship.js"), encoding="utf-8").read()
     hdr_js = open(os.path.join(SHIP_SRC, "header.js"), encoding="utf-8").read()
+    ties_js = open(os.path.join(SHIP_SRC, "ties.js"), encoding="utf-8").read()
     css += "\n" + open(os.path.join(SHIP_SRC, "header.css"), encoding="utf-8").read()
     shell = header_html(shell)
     payload["generated"] = time.strftime("%Y-%m-%d %H:%M")
@@ -540,7 +541,8 @@ def build(args):
                  .replace("/*@CSS@*/", css)
                  .replace("@IMAGES@", "{}")
                  .replace("@DATA@", data_json)
-                 .replace("/*@JS@*/", "window.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + hdr_js + "\n" + ship))
+                 .replace("/*@JS@*/", ties_js + "\nwindow.LA_APP = function () {\n" + app + "\n};\n" + dds + "\n" + hdr_js
+                          + "\n" + ship))
     html = html.replace("@LOADING@", '<span class="prep" id="prep">Preparing the page from your game files...'
                         '<span class="bar"><i></i></span></span>')
     page = ('<!doctype html>\n<html lang="en"><head><meta charset="utf-8"><meta name="viewport" '

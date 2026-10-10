@@ -83,6 +83,7 @@ function LA.DescribeSelected()
   ctx.baPick = baChoices()[LA.Norm(ctx.origin) .. "|" .. LA.Norm(ctx.name)]
   local live = try(function() return Mods.BuildAdvisor.BA.Origins[ctx.key].builds end)
   ctx.baOrder = (type(live) == "table" and #live > 0) and live or BA_ORDER[ctx.key] or {}
+  ctx.filter = LA.Settings.MarkerFilter or "all"
   return ctx, e
 end
 
@@ -92,7 +93,7 @@ function LA.PollSelection()
   local ctx, e = LA.DescribeSelected()
   if not ctx or not ctx.uuid then return false end
   LA.selectedEntity = e
-  local parts = { ctx.uuid, ctx.key, tostring(ctx.baPick) }
+  local parts = { ctx.uuid, ctx.key, tostring(ctx.baPick), tostring(ctx.filter) }
   for _, c in ipairs(ctx.classes) do parts[#parts + 1] = tostring(c.name) .. tostring(c.sub) .. tostring(c.level) end
   local sig = table.concat(parts, "|")
   if sig == lastSig then return false end

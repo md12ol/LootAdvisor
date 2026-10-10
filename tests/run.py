@@ -429,7 +429,7 @@ def mutations(sc):
 
     def m13f():
         sc.reset()
-        return sc.env(lua_patches={"Common.lua": [("SpoilerNoticeSeen = false }", "SpoilerNoticeSeen = true }")]})
+        return sc.env(lua_patches={"Common.lua": [("SpoilerNoticeSeen = false,", "SpoilerNoticeSeen = true,")]})
     out.append((names[12], "Common.lua: the setting defaults to hidden (never shown to a new player)", m13f, "red"))
 
     def m13g():
@@ -438,6 +438,79 @@ def mutations(sc):
         env.spoiler_places = []
         return env
     out.append((names[12], "no place listed for the spoiler warning (nothing to check)", m13g, "red"))
+    # 14a-14d. builds and roster for everyone: class levels ignored; no Build Advisor stand-in for a companion that is
+    # not loaded; companions gone for good kept; companions who may still join left out
+    def lua_mut(fname, old, new):
+        def make():
+            sc.reset()
+            return sc.env(lua_patches={fname: [(old, new)]})
+        return make
+    out.append((names[13], "Logic.lua MatchAnyBuild: class levels ignored (main ability only)", lua_mut(
+        "Logic.lua", 'if any then return best, bestChar, "closest to the class levels" end',
+        'if false then return best, bestChar, "closest to the class levels" end'), "red"))
+    out.append((names[13], "Logic.lua BuildFor: no Build Advisor build for a companion without class levels", lua_mut(
+        "Logic.lua", "if not ctx.classes or #ctx.classes == 0 then", "if false then"), "red"))
+    out.append((names[14], "Logic.lua Roster: companions gone for good stay on the roster", lua_mut(
+        "Logic.lua", "return cs ~= nil and (cs.dead == true or cs.gone == true)", "return cs ~= nil and cs.dead == true"),
+        "red"))
+    out.append((names[14], "Logic.lua Roster: companions who may still join left out", lua_mut(
+        "Logic.lua", 'if not seen[k] and k ~= "darkurge" and not lost(k) then', "if false then"), "red"))
+
+    # 15a-15d. merged markers: the party filter keeps everyone; one name per marker; arrows for anyone's markers;
+    # the client ranks everyone's markers like the selected character's
+    out.append((names[15], "Logic.lua MergeMarkers: the party filter keeps camp and future companions", lua_mut(
+        "Logic.lua", '(filter == "party" and p.party)', '(filter == "party")'), "red"))
+    out.append((names[15], "Logic.lua MergeMarkers: a marker keeps only the first name it is for", lua_mut(
+        "Logic.lua", "        add(e.who, p.name)\n", "        if #e.who == 0 then add(e.who, p.name) end\n"), "red"))
+    out.append((names[15], "Paint.lua ArrowPicks: other characters' markers get off-screen arrows", lua_mut(
+        "Paint.lua", "if o.rk < LA.OTHERS * 100 and n < maxArrows then", "if n < maxArrows then"), "red"))
+    out.append((names[15], "Main.lua OnResult: everyone's markers ranked like the selected character's", lua_mut(
+        "Main.lua", "    if m.who and not m.sel then v = v + LA.OTHERS * 100 end\n", ""), "red"))
+
+    # 16a-16e. ties: the wearer ignored; the saved pick ignored; camp members make a tie; the row ignores the pick;
+    # no ties in the data
+    out.append((names[16], "Logic.lua Ties: the one wearing it does not keep it", lua_mut(
+        "Logic.lua", 'if w and has(present, w) then t.pick, t.by = w, "wear"', 'if false then t.pick, t.by = w, "wear"'),
+        "red"))
+    out.append((names[16], "Logic.lua Ties: the saved pick is ignored (asked again every time)", lua_mut(
+        "Logic.lua", 'elseif pk and has(present, pk) then t.pick, t.by = pk, "pick" end',
+        'elseif false then t.pick, t.by = pk, "pick" end'), "red"))
+    out.append((names[16], "Logic.lua Ties: camp members count for a tie", lua_mut(
+        "Logic.lua", "for _, c in ipairs(mem) do if ownerAvailable(c, state) then present[#present + 1] = c end end",
+        "for _, c in ipairs(mem) do if state.comp[c] and state.comp[c].team then present[#present + 1] = c end end"),
+        "red"))
+    out.append((names[16], "Logic.lua Recommend: a settled tie still shown as a shared pick", lua_mut(
+        "Logic.lua", "if t and t.pick then", "if false then"), "red"))
+    out.append((names[16], "LootData: no ties in the data (nothing to check)", lua_mut(
+        "LootData.lua", ",ot={", ",xot={"), "red"))
+
+    # 17a-17b. Sets page ties.js: the page's pick beats the game's; one party member alone still makes a tie
+    def ties_mut(old, new):
+        def make():
+            sc.reset()
+            src = open(os.path.join(LA, "tools", "sets_ship", "ties.js"), encoding="utf-8").read()
+            if old not in src:
+                raise RuntimeError("mutation target not found in ties.js: " + old[:60])
+            env = sc.env()
+            env.file_overrides = {"ties.js": src.replace(old, new)}
+            return env
+        return make
+    out.append((names[17], "ties.js: the page's pick overrides the game's", ties_mut(
+        'else if (pagePick && present.indexOf(pagePick) >= 0) { pick = pagePick; by = "page"; }',
+        'if (pagePick && present.indexOf(pagePick) >= 0) { pick = pagePick; by = "page"; }'), "red"))
+    out.append((names[17], "ties.js: one tie member in the party is still a tie", ties_mut(
+        "if (present.length < 2) {", "if (present.length < 1) {"), "red"))
+
+    # 18a-18d. F6: the tie button sends on the wrong channel; the filter is not saved; the selection does not resend
+    # on a new filter; a tie the wearer keeps offers buttons
+    out.append((names[18], "Window.lua: a tie pick is sent as a selection message", lua_mut(
+        "Window.lua", "PostMessageToServer, LA.CH_PICK,", "PostMessageToServer, LA.CH_SEL,"), "red"))
+    out.append((names[18], "Window.lua: the marker filter is not saved", lua_mut(
+        "Window.lua", "  LA.SaveSettings()\n  if LA.ResendSelection", "  if LA.ResendSelection"), "red"))
+    out.append((names[18], "Selected.lua: a new filter does not send the selection again", lua_mut(
+        "Selected.lua", ", tostring(ctx.filter) }", " }"), "red"))
+    out.append((names[18], "Window.lua: a tie the wearer keeps offers 'Give it to' buttons", lua_mut(
+        "Window.lua", '    if t.by ~= "wear" then', "    if true then"), "red"))
     return out, by
 
 

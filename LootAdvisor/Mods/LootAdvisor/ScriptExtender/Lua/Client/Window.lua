@@ -192,6 +192,69 @@ local function spoilerRow(h)
   try(function() h:AddSeparator() end)
 end
 
+-- Map marker filter: whose items get markers. Saved in the settings file and sent with the selection (Selected.lua).
+W.FILTER_TEXT = { all = "Everyone (party, camp, companions who may still join)", party = "The active party",
+                  selected = "The selected character" }
+local function filterRow(h, res)
+  local combo = h:AddCombo("Map markers for")
+  local opts, cur = {}, LA.Settings.MarkerFilter or "all"
+  for i, f in ipairs(LA.FILTERS) do
+    opts[i] = W.FILTER_TEXT[f]
+    if f == cur then try(function() combo.SelectedIndex = i - 1 end) end
+  end
+  try(function() combo.Options = opts end)
+  try(function() combo.ItemWidth = 420 end)
+  try(function() combo.OnChange = function(cb) W.SetFilter(LA.FILTERS[(cb.SelectedIndex or 0) + 1]) end end)
+  local names = {}
+  for _, p in ipairs(res.roster or {}) do
+    local where = p.party and "party" or p.camp and "camp" or "may still join"
+    names[#names + 1] = ("%s (%s): %s"):format(tostring(p.n), where, tostring(p.b))
+  end
+  tip(combo, #names > 0 and ("Markers also for:\n" .. table.concat(names, "\n")) or "Markers for the selected character only.")
+end
+
+function W.SetFilter(f)
+  if not W.FILTER_TEXT[f or ""] then return end
+  LA.Settings.MarkerFilter = f
+  LA.SaveSettings()
+  if LA.ResendSelection then LA.ResendSelection() end
+end
+
+-- Tie picks: an item that fits two party members exactly as well. The player picks who gets it here (or on the Sets
+-- page while the game has no pick); the one wearing it keeps it. The pick is kept when the party changes.
+local function namesOf(list)
+  local out = {}
+  for _, c in ipairs(list or {}) do out[#out + 1] = cname(c) end
+  return table.concat(out, ", ")
+end
+function W.Pick(id, c)
+  pcall(Ext.ClientNet.PostMessageToServer, LA.CH_PICK, Ext.Json.Stringify({ id = id, c = c }))
+end
+local function tieRows(c, res)
+  local ties = res.ties or {}
+  if #ties == 0 then return end
+  local open = 0
+  for _, t in ipairs(ties) do if not t.pick then open = open + 1 end end
+  local grp = open > 0 and c or c:AddCollapsingHeader(("Tie picks (%d)"):format(#ties))
+  if open > 0 then c:AddSeparatorText(("Tie picks - %d to decide"):format(open)) end
+  for _, t in ipairs(ties) do
+    local line
+    if not t.pick then line = ("%s: fits %s equally well - who gets it?"):format(t.n, namesOf(t.cands))
+    elseif t.by == "wear" then line = ("%s: %s wears it and keeps it."):format(t.n, cname(t.pick))
+    else line = ("%s: given to %s (your pick)."):format(t.n, cname(t.pick)) end
+    colored(grp:AddText(line), t.pick and GREY or AMBER)
+    if t.by ~= "wear" then
+      for i, who in ipairs(t.cands or {}) do
+        if who ~= t.pick then
+          local b = grp:AddButton(("Give it to %s##la_tie_%s_%s"):format(cname(who), t.id, who))
+          if i > 1 or t.pick then try(function() b.SameLine = true end) end
+          try(function() b.OnClick = function() W.Pick(t.id, who) end end)
+        end
+      end
+    end
+  end
+end
+
 W.dirCells = {}
 function W.Render(res)
   if not W.window then return end
@@ -205,19 +268,23 @@ function W.Render(res)
   end
   pageRow(h)
   if res.notCovered then
-    colored(h:AddText(("%s: not covered - Loot Advisor covers the origin characters only (Astarion, Gale, Karlach, " ..
-      "Lae'zel, Shadowheart, Wyll, the Dark Urge)."):format(tostring(res.name or "?"))), GREY)
+    colored(h:AddText(("%s: no build to recommend items for."):format(tostring(res.name or "?"))), GREY)
     return
   end
   local regName = (LA.Mod.regionName or {})[res.region] or "this region"
-  colored(h:AddText(("%s  -  Act %s  -  %s"):format(cname(res.char), tostring(res.act), tostring(res.build and res.build.n))), GOLD)
-  local sub = colored(h:AddText(("%s  -  %d items, %d marked on your map  -  %s shows / hides this list"):format(
-    regName, #res.rows, #(res.markers or {}), tostring(LA.Settings.Hotkey))), GREY)
+  local who = LA.CHAR_NAME[res.char] or res.name or tostring(res.char)
+  colored(h:AddText(("%s  -  Act %s  -  %s"):format(who, tostring(res.act), tostring(res.build and res.build.n))), GOLD)
+  local mine = 0
+  for _, m in ipairs(res.markers or {}) do if m.sel or not m.who then mine = mine + 1 end end
+  local sub = colored(h:AddText(("%s  -  %d items, %d marked on your map (%d for %s)  -  %s shows / hides this list"):format(
+    regName, #res.rows, #(res.markers or {}), mine, who, tostring(LA.Settings.Hotkey))), GREY)
   tip(sub, "Build picked: " .. tostring(res.build and res.build.why))
+  filterRow(h, res)
 
   local leg = c:AddCollapsingHeader("Legend")
   for _, l in ipairs({
-    "* = marked on your map (rainbow diamond; the 5 best also get an arrow at the map edge).",
+    "* = marked on your map (rainbow diamond; the 5 best for the selected character also get an arrow at the map edge).",
+    "The map also marks the items of everyone the filter above names; hover a marker for the items and who they are for.",
     "(!) = has a warning (theft, a kill, a story choice or a missable step) - hover the item name.",
     "On your map / Enter area / Way marked / Way out marked / Fast travel: where the marker leads you.",
     "Owned: you or the camp chest have it.  Set item: part of a set, not marked.",
@@ -227,6 +294,7 @@ function W.Render(res)
   }) do colored(leg:AddText(l), GREY) end
 
   local rows = displayRows(res)
+  tieRows(c, res)
 
   -- 1) Next: obtainable now, nearest first
   local nextRows = {}
