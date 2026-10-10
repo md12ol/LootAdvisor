@@ -1982,9 +1982,19 @@ def blocked_for(sid, cid, owners):
     return None
 
 
+def tie_keepers(owners):
+    """-> {stats id: owner} for items tied exactly between characters: the owner keeps one unless the player gives it
+    to another tied character (a pick or the one wearing it), so the owner needs an alternative too."""
+    return {sid: g["owners"][0] for g in owners.values() if g["kind"] == "unique" and g.get("exact_tie")
+            and g.get("owners") for sid in g["items"]}
+
+
 def party_alternatives(all_chars, owners, items, universe, warning_text=None, how_text=None):
     """Sets: an item owned by another character gets owner + party_alt (the best item for that slot that is not
-    owned elsewhere and fits the set). Best tables: party = the first pick not owned elsewhere."""
+    owned elsewhere and fits the set). The owner of an exactly tied item gets the party_alt alone (no owner, no
+    warning): it is used only when the item goes to another tied character. Best tables: party = the first pick not
+    owned elsewhere."""
+    keeps = tie_keepers(owners)
     for cid, c in all_chars.items():
         for bid, bo in c["builds"].items():
             reg = REG[(cid, bid)]
@@ -1993,13 +2003,14 @@ def party_alternatives(all_chars, owners, items, universe, warning_text=None, ho
                 for st in sts:
                     for slot, it in st["items"].items():
                         own = blocked_for(it["sid"], cid, owners)
-                        if not own:
+                        if not own and keeps.get(it["sid"]) != cid:
                             continue
-                        it["owner"] = own
-                        it.setdefault("warn_types", [])
-                        if "party conflict" not in it["warn_types"]:
-                            it["warn_types"].append("party conflict")
-                        it["severity"] = next(t for t in WARN_ORDER if t in it["warn_types"])
+                        if own:
+                            it["owner"] = own
+                            it.setdefault("warn_types", [])
+                            if "party conflict" not in it["warn_types"]:
+                                it["warn_types"].append("party conflict")
+                            it["severity"] = next(t for t in WARN_ORDER if t in it["warn_types"])
                         key = "Ring1" if slot == "Ring2" else slot
                         rest = {k: x for k, x in st["items"].items() if k != slot}
                         used = {x["sid"] for x in st["items"].values()}
@@ -2016,7 +2027,7 @@ def party_alternatives(all_chars, owners, items, universe, warning_text=None, ho
             for act, sl in bo["best"].items():
                 a = int(act)
                 for slot, v in sl.items():
-                    if not v.get("best") or not blocked_for(v["best"], cid, owners):
+                    if not v.get("best") or not (blocked_for(v["best"], cid, owners) or keeps.get(v["best"]) == cid):
                         continue
                     key = "Ring1" if slot == "Ring2" else slot
                     ranked = sorted(((reg["total"](x, key, a), x) for x in reg["scored"]), key=lambda t: -(t[0] or -99))
@@ -2575,7 +2586,7 @@ def write_lua(all_chars, item_info, universe, warning_text, how_text):
            "--   a={ [act]={ best={[slot]={best index, runner-up index}}, sets={ {id,n,why,w={item indices with warnings},",
            "--   it={[slot]=item index}, fb={[slot]=item index to use when that slot's item condition is not met;",
            "--     0 = leave the slot empty, nothing else is obtainable in that act},",
-           "--   pa={[slot]=item index to use because the set's item belongs to another character (o)},",
+           "--   pa={[slot]=item index to use because the set's item belongs to another character (o) or goes to one tied with it},",
            "--   ow={slots whose item is no longer obtainable in this act: counts only if the party owns it, no marker;",
            "--   fb holds the obtainable replacement}, oa={[slot]=earlier-act item that is a little better if owned},",
            "--   ca={[slot]=Dark-Urge-only item that beats the pick in a Dark Urge campaign},",
