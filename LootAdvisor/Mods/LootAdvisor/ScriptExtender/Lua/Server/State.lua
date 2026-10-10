@@ -101,7 +101,7 @@ function S.Companions()
       local a = r and LA.Mod.regionAct[r]
       if a and a < here then gone = true end
     end
-    out[name] = { team = inTeam and true or false, party = (c.npc ~= "" and inParty[c.npc]) or false, dead = d,
+    out[name] = { team = inTeam and true or false, party = (guid and (inParty[guid] or inParty[c.npc])) or false, dead = d,
                   gone = gone }
   end
   return out
