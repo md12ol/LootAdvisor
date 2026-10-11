@@ -129,8 +129,14 @@ and its fallback runs. A run is recorded as invalid, with the causes, when it en
 came after the recovery attempts, the prep timed out, ...), a round passes without a confirmed action, or the
 character casts something outside its plan. Before the fight every field of the setup is read back from the game
 and compared with the plan (items, proficiency as the game judges it for each item, the character's own classes,
-subclasses and feats, abilities, hit points, spells, slots, resources, buffs, reactions, enemies); one mismatch fails
-the run. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
+subclasses and feats, abilities, hit points, spells, slots, resources, buffs, reactions, enemies), and so are the
+effects the model credits: toggled passives such as Great Weapon Master's "All In" in the state the model assumes (prep
+sets them), every worn item's equip passives, statuses and unconditional boosts, the elixir's statuses, the weapons'
+dice, the item spells in the book and ready, no concentration or status left over from an earlier run (prep ends and
+removes them), and enemies that can be critically hit and carry no status; one mismatch fails the run. A rider the
+plan relies on (Hunter's Mark on the boss, Dread Ambusher's status) missing after its turn fails it too. The
+character's summon attacks the boss on its own turn and its damage counts for the set. Every hit is recorded with its
+spell, flags (hit, miss, critical) and the target's statuses. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
 the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
 damage taken (AC, hit points, saving throws, resistances, damage reduction; damage per round and damage taken within
 5%): `pairs.py --find-control char:build:act` searches for them, `--control` adds the chosen one.

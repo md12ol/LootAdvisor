@@ -16,8 +16,11 @@ Per set the spec holds
   slots      spell slots (multiclass caster level), resources (Rage, Channel Divinity, ...); item_resources = what
              the worn items add on top (a boost, or a status they put on: Amulet of the Devout's Channel Divinity)
   boosts     the armour / weapon proficiencies the class levels and feats grant (Proficiency(...))
-  items      root template per slot
-  plan       the scripted round plan + the item actions the shared adaptive rule may use
+  items      root template per slot; a weapon's dice as its sheet row has them
+  checks     what the setup check reads back besides: the toggled passives in the model's state (toggles), the worn
+             items' equip passives, equip statuses and unconditional boosts
+  plan       the scripted round plan + the item actions the shared adaptive rule may use (an action one only when
+             the model's plan uses it) + the riders checked after the turn that casts them
   expect     the model's numbers for the set (sheet AC / HP, DPR, rounds survived) to compare with
 """
 import argparse
@@ -199,12 +202,14 @@ def A(spell, group, target="@boss", why=None, **kw):
 
 
 def plan_spells(core):
-    """Every spell the round plan may cast, fallbacks included (the sheet must know them all)."""
+    """Every spell the round plan may cast, fallbacks included (the sheet must know them all). A spell a status grants
+    for the turn (Dread Ambusher's attack) is not in the book before the fight and is left out."""
     used = set()
     for r in core["rounds"] + [core["steady"]]:
         for a in r:
             while a:
-                used.add(a["spell"])
+                if not a.get("granted_by"):
+                    used.add(a["spell"])
                 a = a.get("alt")
     return used
 
@@ -345,7 +350,10 @@ def core_plan(model, st, stats):
             if cl.get("Rogue", 0) >= 3 and "Thief" in (st.subs.get("Rogue") or ""):
                 bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot (Fast Hands)"))
         if plan.get("dread") and cl.get("Ranger", 0) >= 3:
-            opening.append(A(spell, "free", "@boss", "Dread Ambusher attack", requires="action"))
+            # DREAD_AMBUSHER (put on as the first turn starts) grants a free attack spell and goes away on the first
+            # attack of any kind: the extra attack comes first, ahead of the action it would otherwise wait for
+            dread = "Projectile_DreadAmbusher" if mode == "ranged" else "Target_DreadAmbusher"
+            opening.insert(0, A(dread, "free", "@boss", "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))
     else:
         cantrip = plan.get("cantrip")
         nukes = [s_ for s_, lv in plan.get("nukes") or [] if st.level >= lv
@@ -374,7 +382,26 @@ def core_plan(model, st, stats):
         rounds.append(list(base) + bon)
     return {"rounds": rounds, "steady": steady + bonus_steady, "fight_rounds": 4, "mode": mode,
             "selfaoe": bool(plan.get("conc") or plan.get("rotd")),
-            "defence_opening": [a for a in bonus_open if a["target"] == "@self"]}
+            "defence_opening": [a for a in bonus_open if a["target"] == "@self"], "riders": plan_riders(rounds)}
+
+
+# Spells whose effect the run checks right after the turn that cast them: the status it must have put on, and on whom.
+RIDER_STATUS = {"Target_HuntersMark": ("HUNTERS_MARK", "@boss", "Hunter's Mark"),
+                "Projectile_DreadAmbusher": ("DREAD_AMBUSHER", "@self", "Dread Ambusher"),
+                "Target_DreadAmbusher": ("DREAD_AMBUSHER", "@self", "Dread Ambusher")}
+
+
+def plan_riders(rounds):
+    """[{round, status, on, why, spell}]: per planned rider spell, the status the in-game check expects after that
+    round's turn (Hunter's Mark on the boss; Dread Ambusher's status on the character as its first turn starts)."""
+    out, seen = [], set()
+    for i, r in enumerate(rounds):
+        for a in r:
+            hit = RIDER_STATUS.get(a["spell"])
+            if hit and (hit[0], hit[1]) not in seen:
+                seen.add((hit[0], hit[1]))
+                out.append({"round": i + 1, "status": hit[0], "on": hit[1], "why": hit[2], "spell": a["spell"]})
+    return out
 
 
 COMMON_ACTIONS = ["Throw_Throw", "Target_Shove", "Projectile_Jump", "Target_Dip", "Target_Help", "Shout_Dash",
@@ -615,11 +642,88 @@ def item_resources(stats, sids):
     return [total[k] for k in sorted(total)]
 
 
+# ------------------------------------------------------------------------------------------------ setup check data
+# The toggled attack passives the model weighs per attack (-5 to hit, +10 damage).
+TOGGLES = ("GreatWeaponMaster_BonusDamage", "Sharpshooter_AllIn")
+
+
+def model_toggles(passives, pred, plan_toggles=None):
+    """({passive: on}, source) for the toggled attack passives the build holds, in the state the model's attacks
+    assume: the test plan's list when it has one, else the model's choice on its events, else on (the model keeps the
+    better state per attack and did not export which)."""
+    held = [p for p in TOGGLES if p in passives]
+    if plan_toggles is not None:
+        return {p: p in plan_toggles for p in held}, "test plan"
+    evs = [e for e in (getattr(pred, "plan_events", None) or []) if not e.get("dropped")]
+    if any("toggle" in e for e in evs):
+        on = any(e.get("toggle") and e.get("n") for e in evs)
+        return {p: on for p in held}, "model events"
+    return {p: True for p in held}, "assumed on"
+
+
+def model_intends(pred, spell):
+    """Does the model's round plan use this item spell (an event for it, not dropped, used at least once)? None when
+    the model's events are not there to say."""
+    evs = getattr(pred, "plan_events", None)
+    if evs is None:
+        return None
+    return any(e.get("spell") == spell and not e.get("dropped") and (e.get("n") or 0) > 0 for e in evs)
+
+
+HAND_BOOSTS = {"MeleeMainHand": "BoostsOnEquipMainHand", "RangedMainHand": "BoostsOnEquipMainHand",
+               "MeleeOffHand": "BoostsOnEquipOffHand", "RangedOffHand": "BoostsOnEquipOffHand"}
+
+
+def _status_chain(stats, sid, seen):
+    """The statuses an equip status puts on in turn (as it goes on, or at a long rest), itself included."""
+    if sid in seen or len(seen) > 20:
+        return
+    seen.add(sid)
+    st = stats.get(sid) or {}
+    nxt = _applied_statuses(st.get("OnApplyFunctors"), stats)
+    if "OnLongRest" in (st.get("StatsFunctorContext") or ""):
+        nxt += _applied_statuses(st.get("StatsFunctors"), stats)
+    for s in nxt:
+        _status_chain(stats, s, seen)
+
+
+def item_checks(stats, items, attacks=None):
+    """What the worn items must show on the character as the fight starts: every equip passive, every equip status,
+    the boosts they give with no condition (the item's Boosts, its hand's BoostsOnEquip, its equip passives' Boosts),
+    and per weapon the dice its sheet row was built from. Statuses those statuses put on are allowed, not required.
+    -> {item_passives, item_statuses, item_statuses_allowed, item_boosts}; items[].weapon is set in place."""
+    rows = {r.get("sid"): r for r in attacks or [] if r.get("sid")}
+    passives, statuses, allowed, boosts = [], [], set(), []
+    for it in items:
+        if it.get("use"):
+            continue
+        sid = it["stats"]
+        st = stats.get(sid) or {}
+        for p in _split(st.get("PassivesOnEquip")):
+            passives.append({"passive": p, "item": sid})
+            boosts += [{"boost": b, "item": sid} for b in _split((stats.get(p) or {}).get("Boosts"))
+                       if not b.startswith("IF(")]
+        for s in _split(st.get("StatusOnEquip")):
+            statuses.append({"status": s, "item": sid})
+            _status_chain(stats, s, allowed)
+        for key in ("Boosts", HAND_BOOSTS.get(it["slot"])):
+            boosts += [{"boost": b, "item": sid} for b in _split(st.get(key) if key else None) if not b.startswith("IF(")]
+        if st.get("Damage"):
+            row = rows.get(sid) or {}
+            m = re.match(r"(\d+d\d+)\s+(\w+)", ((row.get("dmgf") or [""])[0]) or "")
+            it["weapon"] = {"dice": m.group(1) if m else st["Damage"],
+                            "type": m.group(2) if m else st.get("Damage Type"), "from": "sheet row" if m else "stats"}
+    return {"item_passives": passives, "item_statuses": statuses, "item_statuses_allowed": sorted(allowed),
+            "item_boosts": boosts}
+
+
 # ------------------------------------------------------------------------------------------------ specs
-def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None, maneuvers=None):
+def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None, maneuvers=None,
+             plan_toggles=None):
     """respec: the test plan's tuned respec (pairs.tuned_respec) the test character was given, or None for the
     build's own picks; the sheet, feats, styles, plan and the model's numbers follow it. maneuvers: the plan's Battle
-    Master picks (maneuver_picks)."""
+    Master picks (maneuver_picks). plan_toggles: the test plan's toggled passives the model assumes on (None: the
+    model's events decide)."""
     lo = {k: v["sid"] for k, v in (setrec.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
     bare = model.State(W, cid, bid, act, {}, {}, respec=respec)
     st = model.State(W, cid, bid, act, lo, {}, respec=respec)
@@ -653,6 +757,17 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
         else:
             keep.append(rec)
     acts = keep
+    # an action item spell takes the round's core action (and the Extra Attacks that come with it): only one the
+    # model's plan uses, i.e. one it found worth more than that action (a weapon action of 2.5 damage took a caster's
+    # whole action in every run before); a bonus-action one only fills a free bonus action and stays
+    keep = []
+    for rec in acts:
+        rec["model_kept"] = model_intends(pred, rec["spell"])
+        if rec["group"] == "action" and rec["model_kept"] is False:
+            skipped.append(dict(rec, reason="the model's plan does not use it (worth less than the action it takes)"))
+        else:
+            keep.append(rec)
+    acts = keep
     used = plan_spells(core)
     items = []
     for slot in EQUIP_ORDER:
@@ -676,6 +791,8 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
     # what the worn items add on top of the class levels (kind SpellSlot: slots of that level)
     item_res = item_resources(stats, [it["stats"] for it in items if not it.get("use")])
     set_interrupts = granted_interrupts([], [it["stats"] for it in items], stats)
+    toggles, toggles_from = model_toggles(g["passives"], pred, plan_toggles)
+    checks = item_checks(stats, items, st.sheet.get("attacks"))
     build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
     return {
         "char": cid, "build": bid, "act": act, "set": setrec.get("name"), "set_id": setrec.get("id"),
@@ -691,6 +808,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
         "slots": slots,
         "resources": g["resources"], "item_resources": item_res, "boosts": g["boosts"], "items": items,
         "statuses": sorted(set(choice.values())),
+        "toggles": toggles, "toggles_from": toggles_from, **checks,
         "plan": dict(core, item_actions=acts, item_skipped=skipped,
                      hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats),
                      reactions=reaction_policy(build_interrupts, set_interrupts), reactions_default="never",
@@ -729,7 +847,8 @@ def main(argv=None):
             r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
             mv = maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
             row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates,
-                                          respec=r, maneuvers=mv)
+                                          respec=r, maneuvers=mv,
+                                          plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None)
         row.pop("a"), row.pop("b")
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", row["specs"]["a"]["set"], "/", row["specs"]["b"]["set"])

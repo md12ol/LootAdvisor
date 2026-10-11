@@ -153,7 +153,8 @@ def lua_tests():
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
               rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
-              summon_turn_tests, npc_park_tests):
+              summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
+              carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -1401,6 +1402,428 @@ def npc_park_tests(L):
     check("npc park: a stopped run puts them back too", g.T_ahome == -157 and g.T_aleft is None, str(g.T_ahome))
 
 
+
+def summon_attack_tests(L):
+    """The character's summon attacks on its own turn: its basic attack on the boss, cast from where it stands, confirmed
+    by a cast event like a planned cast, then its turn ends; a refused attack fails the run; its damage is the side's,
+    counted apart as summon damage."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local active = { sw = true }
+      local ents, entOf = {}, {}
+      for _, u in ipairs({ "c1", "sw", "b1" }) do
+        local e = { Uuid = { EntityUuid = u },
+          IsSummon = (u == "sw") and { Owner = { Uuid = { EntityUuid = "c1" } } } or nil,
+          SpellBook = (u == "sw") and { Spells = { { Id = { Prototype = "Target_Hover" } },
+            { Id = { Prototype = "Target_MainHandAttack" } } } } or nil }
+        e.TurnBased = setmetatable({}, { __index = function(_, k)
+          if k == "IsActiveCombatTurn" then return active[u] == true end end })
+        ents[#ents + 1] = e
+        entOf[u] = e
+      end
+      local posOf = { c1 = { 6, 0, 0 }, sw = { 0, 0, 0 }, b1 = { 1, 0, 0 } }
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      Ext.Entity.Get = function(u) return entOf[u] end
+      Osi.GetPosition = function(u) local p = posOf[u] or { 0, 0, 0 }; return p[1], p[2], p[3] end
+      Osi.IsSummon = function(u) return u == "sw" and 1 or 0 end
+      Osi.IsDead = function() return 0 end
+      local used, ended = {}, {}
+      Osi.UseSpell = function(c, sp, t1, t2, nomove) used[#used + 1] = { c, sp, t1, nomove } end
+      Osi.EndTurn = function(u) ended[#ended + 1] = u; active[u] = false end
+      local F = { char = "c1", enemies = { "b1" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                  started = 1, state = "wait", deadline = 1e9 }
+      G.F = F
+      G.fighting, G.round = true, 1
+      G.rounds = { { r = 1, casts = {}, cast_fails = {}, actions = {}, done = {}, reactions_seen = {} } }
+      G.step(F, 10)
+      T_used = used[1]
+      T_pending = F.summon ~= nil
+      G._onCast("sw", "Target_MainHandAttack")
+      G.dmg[#G.dmg + 1] = { r = 1, source = "sw", owner = "sw", target = "b1", amount = 7 }
+      G.dmg[#G.dmg + 1] = { r = 1, source = "c1", owner = "c1", target = "b1", amount = 10 }
+      G.step(F, 20)
+      T_turn = G.results.summon_turns[1]
+      T_ended = { table.unpack and table.unpack(ended) or unpack(ended) }
+      T_sum = G._summarize(F)
+      -- the next round: the attack is refused
+      active.sw = true
+      G.round = 2
+      G.rounds[2] = { r = 2, casts = {}, cast_fails = {}, actions = {}, done = { action = true }, reactions_seen = {} }
+      F.summonCheck = 0
+      G.step(F, 2000)
+      G._onCastFailed("sw", "Target_MainHandAttack")
+      G.step(F, 2100)
+      T_turn2 = G.results.summon_turns[2]
+      G.results.summary = G._summarize(F)
+      T_j = G.judge({ { r = 1, done = { action = true } } }, "rounds done", G.results, { me = "c1" })
+      G.fighting, G.F = false, nil
+      Ext.Entity.GetAllEntitiesWithComponent = function() return {} end
+      Ext.Entity.Get = function() return nil end
+      Osi.GetPosition, Osi.IsSummon, Osi.IsDead, Osi.UseSpell, Osi.EndTurn = nil, nil, nil, nil, nil
+    """)
+    g = L.globals()
+    u = lst(g.T_used) or []
+    check("summon: its own turn is driven with its basic attack on the boss, cast from where it stands",
+          u[:3] == ["sw", "Target_MainHandAttack", "b1"] and u[3] == 1 and g.T_pending, str(u))
+    check("summon: the attack is confirmed by the summon's cast and its turn ends",
+          g.T_turn.result == "done" and g.T_turn.confirmed == "cast" and lst(g.T_ended) == ["sw"],
+          f"{g.T_turn.result} {lst(g.T_ended)}")
+    check("summon: its damage is the side's, counted apart as summon damage",
+          g.T_sum.summon_damage == 7 and g.T_sum.dealt[1] == 17, f"{g.T_sum.summon_damage} {g.T_sum.dealt[1]}")
+    causes = lst(g.T_j.causes)
+    check("summon: an attack the engine refused fails the run",
+          str(g.T_turn2.result).startswith("failed") and any("summon attack" in c for c in causes), str(causes))
+
+
+def item_rule_surge_tests(L):
+    """An item action in an Action Surge round takes the surge's action: the first action keeps its Extra Attack and
+    the Dread Ambusher attack stays first; without a surge it replaces the core action as before."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local F = { cooldown = {}, afford = function() return true end, plan = { item_actions = {
+        { spell = "Projectile_RoaringShot", item = "Bow", group = "action", per = "short" } } } }
+      local list = { { spell = "Projectile_DreadAmbusher", group = "free", cost = "free" },
+        { spell = "Shout_ActionSurge", group = "free", cost = "free" },
+        { spell = "Projectile_MainHandAttack", group = "action" },
+        { spell = "Projectile_MainHandAttack", group = "free", requires = "action", why = "Extra Attack" },
+        { spell = "Projectile_MainHandAttack", group = "free", requires = "surge", why = "s1" },
+        { spell = "Projectile_MainHandAttack", group = "free", requires = "surge", why = "s2" } }
+      T_s = G._itemRule(F, list, { done = {} })
+      T_n = G._itemRule(F, { list[3], list[4] }, { done = {} })
+    """)
+    g = L.globals()
+    s = [(g.T_s[i + 1].spell, g.T_s[i + 1].requires) for i in range(len(g.T_s))]
+    check("item rule: in a surge round the item spell takes the surge's action, the first action keeps its Extra Attack",
+          s == [("Projectile_DreadAmbusher", None), ("Shout_ActionSurge", None), ("Projectile_MainHandAttack", None),
+                ("Projectile_MainHandAttack", "action"), ("Projectile_RoaringShot", "surge")], str(s))
+    check("item rule: the surge's own attack is the item spell's fallback",
+          g.T_s[5].alt is not None and g.T_s[5].alt.why == "s1", str(s))
+    n = [g.T_n[i + 1].spell for i in range(len(g.T_n))]
+    check("item rule: without a surge the item spell still replaces the core action", n[0] == "Projectile_RoaringShot",
+          str(n))
+
+
+def toggle_tests(L):
+    """Toggled passives: prep sets each one the spec names to the model's state (Osi.TogglePassive, else the field
+    written), the setup check reads the state back, the run puts the character's own state back."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local pas = { { Passive = { PassiveId = "Sharpshooter_AllIn", ToggledOn = false } },
+                    { Passive = { PassiveId = "GreatWeaponMaster_BonusDamage", ToggledOn = true } } }
+      for _, p in ipairs(pas) do p.Replicate = function() end end
+      Ext.Entity.Get = function() return { PassiveContainer = { Passives = pas } } end
+      Osi.TogglePassive = function(_, id)
+        for _, p in ipairs(pas) do if p.Passive.PassiveId == id then p.Passive.ToggledOn = not p.Passive.ToggledOn end end
+      end
+      T_set = G.setToggles("c1", { Sharpshooter_AllIn = true, GreatWeaponMaster_BonusDamage = true })
+      T_on = pas[1].Passive.ToggledOn
+      local sc = G.setupCheck({ char = "c1" }, { toggles = { Sharpshooter_AllIn = true } }, "start")
+      T_ok = 0
+      for _, m in ipairs(sc.mismatches) do if m.field:find("^toggle") then T_ok = T_ok + 1 end end
+      T_rest = G.togglesRestore()
+      T_back = pas[1].Passive.ToggledOn
+      Osi.TogglePassive = function() error("no such call") end
+      G.setToggles("c1", { Sharpshooter_AllIn = true })
+      T_written = pas[1].Passive.ToggledOn
+      pas[1].Passive.ToggledOn = false
+      local bad = G.setupCheck({ char = "c1" }, { toggles = { Sharpshooter_AllIn = true, Missing_P = false } }, "start")
+      T_bad = {}
+      for _, m in ipairs(bad.mismatches) do if m.field:find("^toggle") then T_bad[#T_bad + 1] = m.field end end
+      table.sort(T_bad)
+      G.savedToggles = nil
+      Osi.TogglePassive = nil
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    check("toggles: a passive off is switched on, one already on is left alone",
+          g.T_on is True and g.T_set.Sharpshooter_AllIn.method == "TogglePassive" and
+          g.T_set.GreatWeaponMaster_BonusDamage.method is None, str(g.T_on))
+    check("toggles: the setup check reads the state back (no mismatch when it is the model's)", g.T_ok == 0, str(g.T_ok))
+    check("toggles: the character's own state is put back when the run ends", g.T_rest == 1 and g.T_back is False)
+    check("toggles: without Osi.TogglePassive the field is written", g.T_written is True)
+    check("toggles: a wrong or unreadable state is a mismatch",
+          lst(g.T_bad) == ["toggle Missing_P", "toggle Sharpshooter_AllIn"], str(lst(g.T_bad)))
+
+
+def carry_over_tests(L):
+    """Carried state: prep ends the concentration, takes HUNTERS_MARK off every creature and every status outside the
+    character's baseline off the character; the setup check fails a concentration or a carried status at the start."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.baseStatuses = nil
+      local st = { c1 = { a = "BASE_STATUS" }, x = { a = "HUNTERS_MARK" } }
+      local conc = {}
+      local ents = {}
+      for _, u in ipairs({ "c1", "x" }) do ents[#ents + 1] = { Uuid = { EntityUuid = u } } end
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      Ext.Entity.Get = function(u)
+        return { StatusContainer = { Statuses = st[u] or {} },
+          Concentration = conc[u] and { SpellId = { Prototype = conc[u] } } or nil }
+      end
+      Osi.HasActiveStatus = function(u, s)
+        for _, v in pairs(st[u] or {}) do if v == s then return 1 end end
+        return 0
+      end
+      local removed, applied = {}, {}
+      Osi.RemoveStatus = function(u, s)
+        removed[#removed + 1] = u .. ":" .. s
+        for k, v in pairs(st[u] or {}) do if v == s then st[u][k] = nil end end
+      end
+      Osi.ApplyStatus = function(u, s) applied[#applied + 1] = s end
+      T_first = G.removeCarryOver("c1")
+      T_removed0 = #removed
+      st.c1.b, st.c1.c, st.c1.d = "SCARLET_STACK", "AI_HELPER_X", "HUNTERS_MARK"
+      st.x.a = "HUNTERS_MARK"
+      conc.c1 = "Target_HuntersMark"
+      T_rm = G.removeCarryOver("c1")
+      T_applied = applied
+      -- the start: concentration still held, a carried status, an item status (allowed), a technical one (ignored)
+      st.c1 = { a = "BASE_STATUS", b = "MAG_CARRIED", c = "MAG_ITEM_STATUS", d = "AI_HELPER_Y" }
+      local sc = G.setupCheck({ char = "c1" }, { item_statuses = { { status = "MAG_ITEM_STATUS", item = "R" } } }, "start")
+      T_f = {}
+      for _, m in ipairs(sc.mismatches) do T_f[#T_f + 1] = m.field end
+      table.sort(T_f)
+      G.baseStatuses = nil
+      Ext.Entity.GetAllEntitiesWithComponent = function() return {} end
+      Ext.Entity.Get = function() return nil end
+      Osi.HasActiveStatus, Osi.RemoveStatus, Osi.ApplyStatus = nil, nil, nil
+    """)
+    g = L.globals()
+    check("carry-over: the first prep keeps the character's own statuses as its baseline",
+          g.T_first.baseline == 1 and g.T_removed0 == 1, f"{g.T_first.baseline} {g.T_removed0}")
+    rm = lst(g.T_rm.removed)
+    check("carry-over: the concentration is ended by the game's own status",
+          g.T_rm.concentration == "Target_HuntersMark" and "AI_HELPER_BREAKCONCENTRATION" in lst(g.T_applied))
+    check("carry-over: HUNTERS_MARK comes off every creature, statuses outside the baseline off the character",
+          "HUNTERS_MARK on x" in rm and "SCARLET_STACK on the character" in rm and
+          "HUNTERS_MARK on the character" in rm and not any("AI_HELPER_X" in r for r in rm), str(rm))
+    check("carry-over: the setup check fails a held concentration and a carried status (not the set's own, not technical)",
+          lst(g.T_f) == ["no carried status MAG_CARRIED", "no concentration"], str(lst(g.T_f)))
+
+
+def crit_tests(L):
+    """Critical hits: an enemy carrying CriticalHit(...,Never) in a passive, status or boost is cleared of what can be
+    taken off; the setup check reads what is left, and an enemy's statuses at the start."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local pas = { { Passive = { PassiveId = "NoCrits_P" } }, { Passive = { PassiveId = "Fine_P" } } }
+      local sts = { "IMMUNE_TO_CRITS" }
+      Ext.Stats.Get = function(id)
+        if id == "NoCrits_P" then return { Boosts = "CriticalHit(AttackTarget,Success,Never)" } end
+        if id == "IMMUNE_TO_CRITS" then return { Boosts = "CriticalHit(AttackTarget,Success,Never);AC(1)" } end
+        return { Boosts = "AC(1)" }
+      end
+      Ext.Entity.Get = function(u)
+        if u == "e1" then return { PassiveContainer = { Passives = pas }, StatusContainer = { Statuses = sts },
+          BoostsContainer = { Boosts = {} } } end
+      end
+      local gone = {}
+      Osi.RemovePassive = function(_, id) gone[#gone + 1] = id; table.remove(pas, 1) end
+      Osi.RemoveStatus = function(_, id) gone[#gone + 1] = id; sts[1] = nil end
+      T_nb = #G.critBlockers("e1")
+      T_fix = G.makeCritable("e1")
+      T_gone = gone
+      local function enemyFields(sc)
+        local out = {}
+        for _, m in ipairs(sc.mismatches) do
+          if m.field:find("critically") or m.field:find("statuses at start") then out[#out + 1] = m.field end
+        end
+        table.sort(out)
+        return out
+      end
+      T_after = enemyFields(G.setupCheck({ char = "c1" }, {}, "start", { enemies = { "e1" }, E = {}, encumbered = {} }))
+      sts[1] = "SOMETHING"
+      pas[#pas + 1] = { Passive = { PassiveId = "NoCrits_P" } }
+      T_after2 = enemyFields(G.setupCheck({ char = "c1" }, {}, "start", { enemies = { "e1" }, E = {}, encumbered = {} }))
+      Ext.Stats.Get = function() return nil end
+      Ext.Entity.Get = function() return nil end
+      Osi.RemovePassive, Osi.RemoveStatus = nil, nil
+    """)
+    g = L.globals()
+    check("crits: blockers found in a passive and a status", g.T_nb == 2, str(g.T_nb))
+    check("crits: the blocking passive and status are taken off the enemy",
+          sorted(lst(g.T_gone)) == ["IMMUNE_TO_CRITS", "NoCrits_P"], str(lst(g.T_gone)))
+    check("crits: a clean enemy passes", len(g.T_after) == 0, str(lst(g.T_after)))
+    check("crits: an enemy that cannot be critically hit, or carries a status, fails the setup check",
+          lst(g.T_after2) == ["enemy 1 can be critically hit", "enemy 1 statuses at start"], str(lst(g.T_after2)))
+
+
+def effect_check_tests(L):
+    """The setup check's effect fields: worn items' equip passives and statuses, the elixir's statuses, the items'
+    unconditional boosts (read from the boost container), the weapon's dice as its sheet row has them, the item spells
+    in the book and off cooldown."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.baseStatuses = nil
+      local have = { passives = { P_EQ = true }, statuses = { S_EQ = true, ELIXIR_S = true } }
+      Osi.HasPassive = function(_, p) return have.passives[p] and 1 or 0 end
+      Osi.HasActiveStatus = function(_, s) return have.statuses[s] and 1 or 0 end
+      Osi.GetEquippedItem = function(_, slot) if slot == "Ranged Main Weapon" then return "bow" end end
+      Osi.GetStatString = function(it) if it == "bow" then return "MAG_Bow" end end
+      Ext.Stats.Get = function(id) if id == "MAG_Bow" then return { Damage = "1d8", ["Damage Type"] = "Piercing" } end end
+      local boosts = { RollBonus = { { BoostInfo = { Params = { Boost = "RollBonus", Params = "Attack,2" } } } } }
+      local cds = { { SpellId = { Prototype = "Projectile_Cooling" }, Cooldown = 1 } }
+      Ext.Entity.Get = function(u)
+        if u == "c1" then return { BoostsContainer = { Boosts = boosts }, SpellBookCooldowns = { Cooldowns = cds },
+          SpellBook = { Spells = { { Id = { Prototype = "Projectile_Ready" } },
+            { Id = { Prototype = "Projectile_Cooling" } } } } } end
+      end
+      G.results = { prep = { items = { { stats = "ELIXIR", got = "used", statuses = { "ELIXIR_S" } } } } }
+      local spec = { items = { { slot = "RangedMainHand", stats = "MAG_Bow", weapon = { dice = "1d8", type = "Piercing" } } },
+        item_passives = { { passive = "P_EQ", item = "R" } }, item_statuses = { { status = "S_EQ", item = "R" } },
+        item_boosts = { { boost = "RollBonus(Attack, 2)", item = "G" } },
+        plan = { item_actions = { { spell = "Projectile_Ready" } } } }
+      local function fields(sc)
+        local out = {}
+        for _, m in ipairs(sc.mismatches) do if not m.field:find("^item MeleeMain") and not m.field:find("^item Ranged")
+          then out[#out + 1] = m.field end end
+        table.sort(out)
+        return out
+      end
+      T_ok = fields(G.setupCheck({ char = "c1" }, spec, "start"))
+      have = { passives = {}, statuses = {} }
+      spec.items[1].weapon.dice = "1d10"
+      spec.item_boosts[2] = { boost = "CharacterWeaponDamage(2)", item = "G" }
+      spec.plan.item_actions[2] = { spell = "Projectile_Cooling" }
+      spec.plan.item_actions[3] = { spell = "Projectile_Missing" }
+      T_bad = fields(G.setupCheck({ char = "c1" }, spec, "start"))
+      G.results = {}
+      Osi.HasPassive, Osi.HasActiveStatus, Osi.GetEquippedItem, Osi.GetStatString = nil, nil, nil, nil
+      Ext.Stats.Get = function() return nil end
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    check("effects: a set whose effects are all there passes", lst(g.T_ok) == [], str(lst(g.T_ok)))
+    check("effects: a missing equip passive / status / elixir status / boost, wrong weapon dice, an item spell missing "
+          "or on cooldown are each named",
+          lst(g.T_bad) == ["elixir status ELIXIR_S", "item boost CharacterWeaponDamage(2)",
+                           "item passive P_EQ", "item spell Projectile_Cooling ready",
+                           "item spell Projectile_Missing in the book", "item status S_EQ", "weapon dice RangedMainHand"],
+          str(lst(g.T_bad)))
+
+
+def rider_tests(L):
+    """Riders: after the turn that casts them, HUNTERS_MARK must be on the boss (on now or put on this round) and
+    DREAD_AMBUSHER on the character (there as the turn started); a missing one fails the run like a refused cast."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      Osi.IsDead = function() return 0 end
+      local F = { char = "c1", enemies = { "b1" }, plan = { riders = {
+        { round = 1, status = "HUNTERS_MARK", on = "@boss" }, { round = 1, status = "DREAD_AMBUSHER", on = "@self" } } } }
+      G.riderCheck(F, { r = 1, turn_statuses = { "DREAD_AMBUSHER" },
+        status_log = { { who = "b1", status = "HUNTERS_MARK", on = true } } })
+      T_none = G.results.rider_misses
+      G.riderCheck(F, { r = 1, turn_statuses = {}, status_log = {} })
+      T_miss = #G.results.rider_misses
+      T_j = G.judge({ { r = 1, done = { action = true } } }, "rounds done", G.results, { me = "c1" })
+      -- the status log: statuses put on the run's creatures are recorded in the round
+      G.F = F
+      G.fighting, G.round = true, 1
+      G.rounds = { { r = 1, casts = {}, actions = {}, done = {} } }
+      G._on.status_on("b1", "HUNTERS_MARK", "c1")
+      G._on.status_on("stranger", "BLESS", "c1")
+      T_log = G.rounds[1].status_log
+      G.fighting, G.F = false, nil
+      Osi.IsDead = nil
+    """)
+    g = L.globals()
+    check("riders: present riders pass", g.T_none is None)
+    causes = lst(g.T_j.causes)
+    check("riders: a missing rider fails the run, named",
+          g.T_miss == 2 and any("HUNTERS_MARK on @boss" in c for c in causes), str(causes))
+    check("riders: statuses put on the run's creatures are logged per round, others not",
+          g.T_log is not None and len(g.T_log) == 1 and g.T_log[1].status == "HUNTERS_MARK" and g.T_log[1].on is True)
+
+
+def hit_log_tests(L):
+    """Per-hit record (Script Extender DealDamage): spell, flags (hit / miss / critical), damage per type, the target's
+    statuses; only hits of the run's creatures; the first hit's description kept as a probe."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      Ext.Types = { Serialize = function() return { probe = true } end }
+      Ext.Entity.Get = function(u) if u == "b1" then return { StatusContainer = { Statuses = { "HUNTERS_MARK" } } } end end
+      local function ev(src, tgt, flags)
+        return { Caster = { Uuid = { EntityUuid = src } }, Target = { Uuid = { EntityUuid = tgt } },
+          SpellId = { Prototype = "Projectile_MainHandAttack" },
+          Hit = { TotalDamageDone = 12, EffectFlags = flags, DamageList = { { DamageType = "Piercing", Amount = 12 } } } }
+      end
+      G.F = { char = "c1", enemies = { "b1" } }
+      G.fighting, G.round = true, 3
+      G._onHit(ev("c1", "b1", { "Hit", "Critical" }))
+      G._onHit(ev("x", "y", { "Hit" }))
+      G._onHit(ev("b1", "c1", { "Miss" }))
+      T_hits = G.hits
+      T_probe = G.results.hit_probe
+      G.fighting, G.F = false, nil
+      Ext.Types = nil
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    h = g.T_hits
+    check("hits: a hit's spell, total, damage per type, critical flag and the target's statuses are recorded",
+          len(h) == 2 and h[1].crit is True and h[1].hit is True and h[1].total == 12 and h[1].spell ==
+          "Projectile_MainHandAttack" and h[1].damage[1].amount == 12 and h[1].target_statuses[1] == "HUNTERS_MARK"
+          and h[1].r == 3, str(len(h)))
+    check("hits: a miss is a miss, hits of other creatures are left out",
+          len(h) == 2 and h[2].miss is True and h[2].hit is False)
+    check("hits: the first hit's description is kept as a probe", g.T_probe is not None and g.T_probe.probe is True)
+
+
+def plan_effect_tests(P):
+    """plan.py: Dread Ambusher's own free attack first in round 1 (not an action-bound attack), riders listed, spells a
+    status grants not expected in the book, toggles in the model's state, action item spells only when the model's
+    plan uses them, the items' equip passives / statuses / boosts and weapon dice for the setup check."""
+    from types import SimpleNamespace as NS
+    model = NS(slots=lambda cl: [])
+    st = NS(plan={"mode": "ranged", "hunters_mark": True, "dread": True}, classes={"Ranger": 5, "Fighter": 3},
+            sheet={"nAtt": 2}, subs={}, level=8)
+    core = P.core_plan(model, st, {})
+    r1 = core["rounds"][0]
+    check("plan: Dread Ambusher's own free attack comes first in round 1, needing no action",
+          r1[0]["spell"] == "Projectile_DreadAmbusher" and r1[0]["cost"] == "free" and "requires" not in r1[0],
+          str([a["spell"] for a in r1]))
+    check("plan: a melee build's Dread Ambusher attack is the melee one",
+          P.core_plan(model, NS(plan={"mode": "melee", "dread": True}, classes={"Ranger": 3}, sheet={"nAtt": 1},
+                                subs={}, level=3), {})["rounds"][0][0]["spell"] == "Target_DreadAmbusher")
+    check("plan: riders listed for the round that casts them",
+          sorted((r["status"], r["round"], r["on"]) for r in core["riders"]) ==
+          [("DREAD_AMBUSHER", 1, "@self"), ("HUNTERS_MARK", 1, "@boss")], str(core["riders"]))
+    check("plan: a spell a status grants is not expected in the book", "Projectile_DreadAmbusher" not in
+          P.plan_spells(core) and "Projectile_MainHandAttack" in P.plan_spells(core))
+    pred = NS(plan_events=[{"spell": "Zone_Kept", "n": 0.2, "dropped": False},
+                           {"spell": "Projectile_RoaringShot", "n": 0.2, "dropped": True, "toggle": True}])
+    check("plan: an action item spell the model dropped or never used is not intended",
+          P.model_intends(pred, "Zone_Kept") is True and P.model_intends(pred, "Projectile_RoaringShot") is False and
+          P.model_intends(pred, "Target_Topple") is False and P.model_intends(NS(), "X") is None)
+    tg, src = P.model_toggles(["Sharpshooter_AllIn", "Other"], pred, ["Sharpshooter_AllIn"])
+    check("plan: toggles from the test plan", tg == {"Sharpshooter_AllIn": True} and src == "test plan", str(tg))
+    pred2 = NS(plan_events=[{"spell": None, "n": 2.0, "dropped": False, "toggle": False}])
+    tg2, src2 = P.model_toggles(["GreatWeaponMaster_BonusDamage"], pred2)
+    check("plan: toggles from the model's events when no test plan names them",
+          tg2 == {"GreatWeaponMaster_BonusDamage": False} and src2 == "model events", str(tg2))
+    stats = {"MAG_Bow": {"Damage": "1d8", "Damage Type": "Piercing", "PassivesOnEquip": "P1",
+                         "BoostsOnEquipMainHand": "UnlockSpell(Projectile_Roar)", "Boosts": "IF(x):AC(1);Initiative(1)",
+                         "StatusOnEquip": "S1"},
+             "P1": {"Boosts": "RollBonus(Attack, 2);IF(Combat()):CharacterWeaponDamage(1d6)"},
+             "S1": {"OnApplyFunctors": "ApplyStatus(S2,100,-1)"}, "S2": {}}
+    items = [{"slot": "RangedMainHand", "stats": "MAG_Bow"}, {"slot": "Elixir", "stats": "E", "use": True}]
+    ch = P.item_checks(stats, items, [{"sid": "MAG_Bow", "dmgf": ["1d8 Piercing", "DEX +4"]}])
+    check("plan: item checks list equip passives, equip statuses (and what they put on), unconditional boosts",
+          [x["passive"] for x in ch["item_passives"]] == ["P1"] and [x["status"] for x in ch["item_statuses"]] ==
+          ["S1"] and ch["item_statuses_allowed"] == ["S1", "S2"] and
+          sorted(x["boost"] for x in ch["item_boosts"]) ==
+          ["Initiative(1)", "RollBonus(Attack, 2)", "UnlockSpell(Projectile_Roar)"], str(ch))
+    check("plan: a weapon's dice come from its sheet row",
+          items[0].get("weapon") == {"dice": "1d8", "type": "Piercing", "from": "sheet row"}, str(items[0].get("weapon")))
+
+
 def item_resource_tests(P):
     """What the worn items add to the class resources (plan.py item_resources): a boost on the item, and a status its
     equip status or a long-rest passive puts on (Amulet of the Devout: one more Channel Divinity charge, reached both
@@ -1585,7 +2008,8 @@ def py_tests():
     import pairs as PA
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
-              lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P)):
+              lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
+              lambda: plan_effect_tests(P)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -2080,7 +2504,7 @@ MUTATIONS = [
     ("setup: the items' spell slots not expected", GL, ' + (fromItems["SpellSlot:" .. lv] or 0)', ""),
     ("setup: a resource only the items give not checked", GL,
      '    if r.kind ~= "SpellSlot" and not seen[k] then', '    if false then'),
-    ("summon: its turn left alone", GL, "    if not F.manual and not activeTurn(F.char) then G.endSummonTurns(F, t) end\n",
+    ("summon: its turn left alone", GL, "    if not activeTurn(F.char) then G.summonStep(F, t) end\n",
      ""),
     ("summon: not a turn holder for the watchdog", GL, "  for _, s in ipairs(summonsOnTurn(F)) do out[#out + 1] = s end\n",
      ""),
@@ -2280,6 +2704,68 @@ MUTATIONS = [
      "        if c.startswith("),
     ("rescore: down rounds fair", RN, "down = bool(R.get(\"downed\")) or (hp is not None and hp <= 0)",
      "down = False"),
+    ("summon: its turn ended instead of attacking", GL, "      return G.summonBegin(F, s, t)", "      G.endTurn(s)"),
+    ("summon: a refused attack does not fail the run", GL, "  if smiss > 0 then causes", "  if false then causes"),
+    ("summon: its damage not the side's", GL, '(F.summons or {})[row.source or ""] == true', "false"),
+    ("summon: an attack counted without evidence", GL, "  local ev = G.castEvidence(P, R.casts, G.dmg, nil)",
+     '  local ev = "cast"'),
+    ("summon: the engine moves it before the attack", GL, "pcall(Osi.UseSpell, S.u, S.spell, S.tgt, S.tgt, 1)",
+     "pcall(Osi.UseSpell, S.u, S.spell, S.tgt)"),
+    ("item rule: the item takes the first action in a surge round", GL,
+     '    elseif it.group == "action" and G.hasSurge(out) then', "    elseif false then"),
+    ("toggles: never switched", GL, "    if before ~= nil and before ~= on then rec.method = flip(u, id, on) end", ""),
+    ("toggles: not compared", GL,
+     '  for id, want in pairs(spec.toggles or {}) do cmp("toggle " .. id, want, G.toggleState(u, id)) end', ""),
+    ("toggles: never restored", GL, "      if now_ ~= nil and now_ ~= was then flip(key, id, was); n = n + 1 end", ""),
+    ("carry-over: concentration kept", GL, "  pcall(Osi.ApplyStatus, u, G.BREAK_CONCENTRATION, 0.1, 1, u)", ""),
+    ("carry-over: HUNTERS_MARK on others kept", GL, "    for _, st in ipairs(c and G.CARRY_STATUSES or {}) do",
+     "    for _, st in ipairs({}) do"),
+    ("carry-over: statuses outside the baseline kept", GL,
+     "    if not base[st] and not G.technicalStatus(st) then\n      pcall(Osi.RemoveStatus",
+     "    if false then\n      pcall(Osi.RemoveStatus"),
+    ("setup: concentration not compared", GL, '  cmp("no concentration", "none", G.concentration(u) or "none")', ""),
+    ("setup: carried statuses not compared", GL, 'cmp("no carried status " .. st, false, true)', ""),
+    ("crits: blockers left on the enemy", GL, 'if b.kind == "passive" and pcall(Osi.RemovePassive, d, b.id)',
+     'if false and pcall(Osi.RemovePassive, d, b.id)'),
+    ("crits: not in the setup check", GL,
+     '    cmp("enemy " .. i .. " can be critically hit", "yes", #bl == 0 and "yes" or table.concat(names, ", "))', ""),
+    ("enemy: statuses at the start not compared", GL,
+     '    cmp("enemy " .. i .. " statuses at start", "none", #sts == 0 and "none" or table.concat(sts, ", "))', ""),
+    ("effects: item passives not compared", GL,
+     '    cmp("item passive " .. x.passive, true, try(Osi.HasPassive, u, x.passive) == 1)', ""),
+    ("effects: item statuses not compared", GL,
+     '    cmp("item status " .. x.status, true, try(Osi.HasActiveStatus, u, x.status) == 1)', ""),
+    ("effects: elixir statuses not compared", GL,
+     '        cmp("elixir status " .. st, true, try(Osi.HasActiveStatus, u, st) == 1)', ""),
+    ("effects: item boosts not compared", GL,
+     'for _, x in ipairs(spec.item_boosts or {}) do cmp("item boost " .. x.boost, true, G.hasBoost(boosts, x.boost)) end',
+     ""),
+    ("effects: weapon dice not compared", GL, "    if it.weapon and eq[it.slot] then", "    if false then"),
+    ("effects: item spell cooldown not compared", GL,
+     '    cmp("item spell " .. a.spell .. " ready", false, onCooldown(u, a.spell))', ""),
+    ("effects: item spell book not compared", GL,
+     '    cmp("item spell " .. a.spell .. " in the book", true, (book or {})[a.spell] == true)', ""),
+    ("riders: a missing rider not recorded", GL, "      if not seen then\n        local miss",
+     "      if false then\n        local miss"),
+    ("riders: missing riders ignored by the verdict", GL, "  if results.rider_misses and #results.rider_misses > 0 then",
+     "  if false then"),
+    ("riders: the turn's starting statuses ignored", GL,
+     "for _, st in ipairs(R.turn_statuses or {}) do if st == rd.status then seen = true end end", ""),
+    ("status log: every creature logged", GL, "  if not G.member(F, obj) then return end", ""),
+    ("hits: critical flag ignored", GL, '  row.crit = f:find("Critical", 1, true) ~= nil', "  row.crit = false"),
+    ("hits: every creature's hits logged", GL, "  if not ms and not mt then return end", ""),
+    ("plan: Dread Ambusher waits for the action", PL,
+     'opening.insert(0, A(dread, "free", "@boss", "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))',
+     'opening.append(A(spell, "free", "@boss", "Dread Ambusher attack", requires="action"))'),
+    ("plan: status-granted spells expected in the book", PL, '                if not a.get("granted_by"):',
+     "                if True:"),
+    ("plan: item spells the model dropped are intended", PL,
+     'return any(e.get("spell") == spell and not e.get("dropped") and', 'return any(e.get("spell") == spell and'),
+    ("plan: the test plan's toggles ignored", PL, "    if plan_toggles is not None:", "    if False:"),
+    ("item checks: conditional boosts expected", PL, 'if not b.startswith("IF(")]', "]"),
+    ("item checks: weapon dice not from the sheet row", PL,
+     r'            m = re.match(r"(\d+d\d+)\s+(\w+)", ((row.get("dmgf") or [""])[0]) or "")', "            m = None"),
+    ("riders: none listed", PL, "            if hit and (hit[0], hit[1]) not in seen:", "            if False:"),
 ]
 
 

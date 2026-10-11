@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 4
+G.VERSION = 5
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -54,8 +54,8 @@ end
 -- far enough apart that nothing of one reaches the other. A run keeps its state in the fields below; each lane has its
 -- own copy. G.inLane(id, fn) puts that lane's copy in place, runs fn and puts the previous one back, so timers, the
 -- fight loop and the engine's events always work on the lane they belong to. A single run uses the "base" copy.
-G.LANE_FIELDS = { "F", "log", "rounds", "dmg", "results", "status", "t0", "round", "fighting", "prepGen", "origin",
-  "manualPrep", "spawned", "spawnedItems", "savedReactions" }
+G.LANE_FIELDS = { "F", "log", "rounds", "dmg", "hits", "results", "status", "t0", "round", "fighting", "prepGen",
+  "origin", "manualPrep", "spawned", "spawnedItems", "savedReactions" }
 G.ctx = G.ctx or {}
 G.curLane = G.curLane or "base"
 local function swapTo(id)
@@ -105,7 +105,7 @@ local function dist(a, b)
 end
 
 function G.reset()
-  G.log, G.rounds, G.dmg, G.results, G.status = {}, {}, {}, {}, "idle"
+  G.log, G.rounds, G.dmg, G.hits, G.results, G.status = {}, {}, {}, {}, {}, "idle"
   G.t0 = now()
 end
 if not G.log then G.reset() end
@@ -282,6 +282,9 @@ function G.sheet(u)
   s.statuses = {}
   for id in pairs(G.statusSet(u)) do s.statuses[#s.statuses + 1] = id end
   table.sort(s.statuses)
+  -- the boosts on the character and what it concentrates on, so a record shows which effects were there
+  s.boosts = G.boostList(u)
+  s.concentration = G.concentration(u)
   return s
 end
 local function boost(u, b)
@@ -348,13 +351,20 @@ local function equipAll(u, items, i, cb)
       local before = G.statusSet(u)
       pcall(Osi.Use, u, it, "")
       G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "used", uuid = it }
+      local rec = G.results.items[#G.results.items]
       return wait(G.USE_MS, function()
-        -- the statuses the elixir gave are taken off in the next run's prep, before the bare sheet is read
+        -- the statuses the elixir gave are taken off in the next run's prep, before the bare sheet is read; the setup
+        -- check finds them still on as the fight starts
         G.usedStatuses = G.usedStatuses or {}
         G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
+        rec.statuses = {}
         for st in pairs(G.statusSet(u)) do
-          if not before[st] then G.usedStatuses[uuid(u)][st] = true end
+          if not before[st] then
+            G.usedStatuses[uuid(u)][st] = true
+            rec.statuses[#rec.statuses + 1] = st
+          end
         end
+        table.sort(rec.statuses)
         equipAll(u, items, i + 1, cb)
       end)
     end
@@ -443,6 +453,7 @@ function G.prep(spec)
     G.results.items_deleted = G.dropSpawnedItems(u)
     G.unencumber(u, true)
     G.results.used_statuses_removed = G.removeUsedStatuses(u)
+    G.results.carry_over = G.removeCarryOver(u)
     for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -509,11 +520,196 @@ function G.removeUsedStatuses(u)
   table.sort(out)
   return out
 end
+
+-- ------------------------------------------------------------------------------------------------ carried state
+-- A run left state behind that the next run started with: the Hunter's Mark concentration was still held (Strange
+-- Conduit's concentration rider was on the next run's very first hit), kill stacks and consumable statuses last until
+-- a long rest. Prep ends the concentration and takes off what earlier runs left: HUNTERS_MARK on any creature, and
+-- every status on the character that its baseline does not have. The baseline is the character's statuses at its
+-- first prep in this game session (gear off, before any run), so what the passives and the save give stays.
+G.CARRY_STATUSES = { "HUNTERS_MARK" }
+-- the game ends a concentration by this status (its story procedure PROC_GLO_BreakConcentration does the same)
+G.BREAK_CONCENTRATION = "AI_HELPER_BREAKCONCENTRATION"
+-- engine helpers that come and go on their own and say nothing about the sheet
+G.TECHNICAL_STATUS = { "^AI_HELPER", "TECHNICAL" }
+function G.technicalStatus(st)
+  for _, pat in ipairs(G.TECHNICAL_STATUS) do if tostring(st):find(pat) then return true end end
+  return false
+end
+-- the spell the character concentrates on, or nil
+function G.concentration(u)
+  local e = ent(u)
+  local id = e and try(function() return e.Concentration.SpellId.Prototype end)
+  if id == nil or id == "" then return nil end
+  return id
+end
+function G.breakConcentration(u)
+  local was = G.concentration(u)
+  pcall(Osi.ApplyStatus, u, G.BREAK_CONCENTRATION, 0.1, 1, u)
+  return was
+end
+-- -> { concentration = spell or nil, removed = { "STATUS on who" }, baseline = n }
+function G.removeCarryOver(u)
+  local me = uuid(u)
+  local out = { concentration = G.breakConcentration(u), removed = {} }
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local c = try(function() return e.Uuid.EntityUuid end)
+    for _, st in ipairs(c and G.CARRY_STATUSES or {}) do
+      if try(Osi.HasActiveStatus, c, st) == 1 then
+        pcall(Osi.RemoveStatus, c, st, "")
+        out.removed[#out.removed + 1] = st .. " on " .. (c == me and "the character" or c)
+      end
+    end
+  end
+  G.baseStatuses = G.baseStatuses or {}
+  if not G.baseStatuses[me] then
+    local base = {}
+    for st in pairs(G.statusSet(u)) do if not G.technicalStatus(st) then base[st] = true end end
+    G.baseStatuses[me] = base
+  end
+  local base = G.baseStatuses[me]
+  for st in pairs(G.statusSet(u)) do
+    if not base[st] and not G.technicalStatus(st) then
+      pcall(Osi.RemoveStatus, u, st, "")
+      out.removed[#out.removed + 1] = st .. " on the character"
+    end
+  end
+  table.sort(out.removed)
+  out.baseline = 0
+  for _ in pairs(base) do out.baseline = out.baseline + 1 end
+  return out
+end
+
+-- ------------------------------------------------------------------------------------------------ boosts
+-- The boosts on a creature as "Type(params)" text, or nil when the container cannot be read. BoostsContainer maps a
+-- boost type to the boost entities of that type; each has its BoostInfo (the boost's name and its parameters).
+local function boostText(b, ty)
+  local txt = try(function()
+    local P = b.BoostInfo.Params
+    return tostring(P.Boost) .. "(" .. tostring(P.Params) .. ")"
+  end)
+  return txt or tostring(try(function() return b.BoostInfo.Type end) or ty)
+end
+function G.boostList(u)
+  local e = ent(u)
+  local bc = e and try(function() return e.BoostsContainer.Boosts end)
+  if not bc then return nil end
+  local out = {}
+  for ty, list in pairs(bc) do
+    -- either { [type] = { entity, ... } } or { { Type = type, Boosts = { entity, ... } }, ... }
+    local t2, l2 = ty, list
+    if type(ty) == "number" and try(function() return list.Boosts end) then t2, l2 = list.Type, list.Boosts end
+    for _, b in ipairs(l2 or {}) do out[#out + 1] = boostText(b, t2) end
+  end
+  table.sort(out)
+  return out
+end
+local function normBoost(s) return (tostring(s or ""):lower():gsub("%s", "")) end
+-- Is a boost given as "Type(params)" among the boosts read? A boost read without its parameters counts by its type.
+function G.hasBoost(list, want)
+  local w = normBoost(want)
+  local wtype = w:match("^([%w_]+)")
+  for _, b in ipairs(list or {}) do
+    local n = normBoost(b)
+    if n == w or (not n:find("(", 1, true) and n == wtype) then return true end
+  end
+  return false
+end
+
+-- ------------------------------------------------------------------------------------------------ toggled passives
+-- A toggled passive (Great Weapon Master / Sharpshooter "All In": -5 to hit, +10 damage) is on or off per character.
+-- The respecced test characters had them off while the model counted them on: no hit carried the +10. Prep puts each
+-- one the spec names (spec.toggles = { PassiveId = true | false }, the state the model assumes) in that state and the
+-- run puts the character's own state back when it ends. The state is the passive's ToggledOn field (read back in game
+-- once: ToggledOn = true after AddPassive); Osi.TogglePassive flips it, and where it is missing the field is written.
+local function passiveEntry(u, id)
+  local e = ent(u)
+  for _, p in ipairs(e and try(function() return e.PassiveContainer.Passives end) or {}) do
+    if try(function() return p.Passive.PassiveId end) == id then return p end
+  end
+  return nil
+end
+-- true / false, or nil when the character lacks the passive or the field cannot be read
+function G.toggleState(u, id)
+  local p = passiveEntry(u, id)
+  if not p then return nil end
+  local v = try(function() return p.Passive.ToggledOn end)
+  if v == nil then return nil end
+  return v == true
+end
+local function flip(u, id, on)
+  if pcall(Osi.TogglePassive, u, id) then return "TogglePassive" end
+  local p = passiveEntry(u, id)
+  if p and pcall(function() p.Passive.ToggledOn = on; p:Replicate("Passive") end) then return "ToggledOn written" end
+  return "no way to toggle"
+end
+-- -> { [id] = { want, before, method } }; the read back is the setup check's
+function G.setToggles(u, want)
+  local key = uuid(u)
+  G.savedToggles = G.savedToggles or {}
+  G.savedToggles[key] = G.savedToggles[key] or {}
+  local saved, out = G.savedToggles[key], {}
+  for id, on in pairs(want or {}) do
+    local before = G.toggleState(u, id)
+    if saved[id] == nil and before ~= nil then saved[id] = before end
+    local rec = { want = on, before = before }
+    if before ~= nil and before ~= on then rec.method = flip(u, id, on) end
+    out[id] = rec
+  end
+  return out
+end
+function G.togglesRestore()
+  local n = 0
+  for key, saved in pairs(G.savedToggles or {}) do
+    for id, was in pairs(saved) do
+      local now_ = G.toggleState(key, id)
+      if now_ ~= nil and now_ ~= was then flip(key, id, was); n = n + 1 end
+    end
+  end
+  G.savedToggles = nil
+  return n
+end
+
+-- ------------------------------------------------------------------------------------------------ critical hits
+-- No hit of the pilot was a critical one. A creature carrying CriticalHit(...,Never) (a passive, a status or a boost)
+-- cannot be critically hit; spawned enemies are cleared of such passives and statuses, and the setup check reads them.
+local function blocksCrit(s)
+  s = tostring(s or "")
+  return s:find("CriticalHit%(") ~= nil and s:find("Never", 1, true) ~= nil
+end
+-- -> { { kind = "passive" | "status" | "boost", id } }
+function G.critBlockers(d)
+  local out = {}
+  local e = ent(d)
+  for _, p in ipairs(e and try(function() return e.PassiveContainer.Passives end) or {}) do
+    local id = try(function() return p.Passive.PassiveId end)
+    local st = id and try(Ext.Stats.Get, id)
+    if st and blocksCrit(try(function() return st.Boosts end)) then out[#out + 1] = { kind = "passive", id = id } end
+  end
+  for id in pairs(G.statusSet(d)) do
+    local st = try(Ext.Stats.Get, id)
+    if st and blocksCrit(try(function() return st.Boosts end)) then out[#out + 1] = { kind = "status", id = id } end
+  end
+  for _, b in ipairs(G.boostList(d) or {}) do
+    if blocksCrit(b) then out[#out + 1] = { kind = "boost", id = b } end
+  end
+  return out
+end
+-- removes what it can (passives, statuses) -> { blockers before, removed }
+function G.makeCritable(d)
+  local found, removed = G.critBlockers(d), {}
+  for _, b in ipairs(found) do
+    if b.kind == "passive" and pcall(Osi.RemovePassive, d, b.id) then removed[#removed + 1] = b.kind .. " " .. b.id end
+    if b.kind == "status" and pcall(Osi.RemoveStatus, d, b.id, "") then removed[#removed + 1] = b.kind .. " " .. b.id end
+  end
+  return { found = found, removed = removed }
+end
 -- prep, last part: the bare sheet is read, then the set goes on, the fixed statuses, full resources
 function G.prepItems(u, spec, gen)
   G.results.bare = G.sheet(u)
   equipAll(u, spec.items or {}, 1, function()
     for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
+    if not G.manualPrep then G.results.toggles = G.setToggles(u, spec.toggles) end
     wait(G.SETTLE_MS, function()
       if G.prepGen ~= gen then return end
       G.refill(u, "long")
@@ -777,6 +973,9 @@ local function forceEnemy(d, E, tries)
       for i = 1, #r do r[i] = "None" end
       e:Replicate("Resistances")
     end)
+    -- a creature that cannot be critically hit takes no critical hits from either set: what blocks them is taken off
+    G.enemyCrit = G.enemyCrit or {}
+    G.enemyCrit[uuid(d)] = G.makeCritable(d)
     wait(300, function() pcall(Osi.SetHitpointsPercentage, d, 100) end)
   end)
 end
@@ -859,8 +1058,17 @@ function G.enemyReport(list)
     local e = ent(d)
     local res = {}
     for i, v in ipairs(e and try(function() return e.Resistances.Resistances end) or {}) do res[i] = tostring(v) end
+    -- what the template carries (stats, passives, statuses, boosts) and what could block a critical hit
+    local passives, statuses = {}, {}
+    for _, p in ipairs(e and try(function() return e.PassiveContainer.Passives end) or {}) do
+      passives[#passives + 1] = try(function() return p.Passive.PassiveId end)
+    end
+    for st in pairs(G.statusSet(d)) do statuses[#statuses + 1] = st end
+    table.sort(statuses)
     out[#out + 1] = { uuid = d, ac = e and try(function() return e.Resistances.AC end), hp = try(Osi.GetMaxHitpoints, d),
-      abilities = abilities(d), prof = e and try(function() return e.Stats.ProficiencyBonus end), res = res }
+      abilities = abilities(d), prof = e and try(function() return e.Stats.ProficiencyBonus end), res = res,
+      stats = try(Osi.GetStatString, d), passives = passives, statuses = statuses, boosts = G.boostList(d),
+      crit = (G.enemyCrit or {})[uuid(d)], crit_blockers = G.critBlockers(d) }
   end
   return out
 end
@@ -1024,7 +1232,85 @@ function G.setupCheck(F, spec, phase, extra)
       cmp("party member parked out of combat " .. tostring(m):sub(-12), 0, try(Osi.IsInCombat, m) or 0)
     end
   end
+  G.effectChecks(F, spec, cmp, book, extra, out)
   return out
+end
+
+-- The setup check's effect fields (start of the fight): are the effects the model credits there? The toggled passives
+-- in the model's state, every worn item's equip passives, equip statuses and unconditional boosts, the elixir's
+-- statuses, the weapons' dice as their sheet rows have them, the item spells in the book and ready; nothing carried
+-- over from an earlier run (no concentration, no status outside the baseline and what the set and the buffs put on);
+-- enemies that can be critically hit and carry no status. All of it is read before round 1, so a mismatch can stop
+-- the run before it is fought.
+function G.effectChecks(F, spec, cmp, book, extra, out)
+  local u = F.char
+  local function note_(s) out.notes = out.notes or {}; out.notes[#out.notes + 1] = s end
+  for id, want in pairs(spec.toggles or {}) do cmp("toggle " .. id, want, G.toggleState(u, id)) end
+  for _, x in ipairs(spec.item_passives or {}) do
+    cmp("item passive " .. x.passive, true, try(Osi.HasPassive, u, x.passive) == 1)
+  end
+  local allowed = {}
+  for _, x in ipairs(spec.item_statuses or {}) do
+    allowed[x.status] = true
+    cmp("item status " .. x.status, true, try(Osi.HasActiveStatus, u, x.status) == 1)
+  end
+  for _, st in ipairs(spec.item_statuses_allowed or {}) do allowed[st] = true end
+  for _, st in ipairs(spec.statuses or {}) do allowed[st] = true end
+  for _, st in ipairs((extra and extra.buffs) or {}) do allowed[st] = true end
+  for _, r in ipairs(((G.results.prep or {}).items) or {}) do
+    if r.got == "used" and r.statuses then
+      cmp("elixir " .. tostring(r.stats) .. " gave a status", true, #r.statuses > 0)
+      for _, st in ipairs(r.statuses) do
+        allowed[st] = true
+        cmp("elixir status " .. st, true, try(Osi.HasActiveStatus, u, st) == 1)
+      end
+    end
+  end
+  local boosts = G.boostList(u)
+  if boosts then
+    for _, x in ipairs(spec.item_boosts or {}) do cmp("item boost " .. x.boost, true, G.hasBoost(boosts, x.boost)) end
+  elseif spec.item_boosts and #spec.item_boosts > 0 then
+    note_("boosts not readable from the character: item boosts not compared")
+  end
+  local eq = G.equipped(u)
+  out.weapons = {}
+  for _, it in ipairs(spec.items or {}) do
+    if it.weapon and eq[it.slot] then
+      local sid = try(Osi.GetStatString, eq[it.slot])
+      local st = sid and try(Ext.Stats.Get, sid)
+      local dmg = st and try(function() return st.Damage end)
+      local vers = st and try(function() return st.VersatileDamage end)
+      local typ = st and try(function() return st["Damage Type"] end)
+      local itemEnt = ent(eq[it.slot])
+      out.weapons[it.slot] = { damage = dmg, versatile = vers, type = typ,
+        component = itemEnt and try(function() return Ext.Types.Serialize(itemEnt.Weapon) end) }
+      cmp("weapon dice " .. it.slot, it.weapon.dice, (vers ~= nil and vers == it.weapon.dice) and vers or dmg)
+      if it.weapon.type then cmp("weapon damage type " .. it.slot, it.weapon.type, typ) end
+    end
+  end
+  for _, a in ipairs(((F.plan or spec.plan or {}).item_actions) or {}) do
+    cmp("item spell " .. a.spell .. " in the book", true, (book or {})[a.spell] == true)
+    cmp("item spell " .. a.spell .. " ready", false, onCooldown(u, a.spell))
+  end
+  cmp("no concentration", "none", G.concentration(u) or "none")
+  local base = (G.baseStatuses or {})[uuid(u)]
+  if base then
+    for st in pairs(G.statusSet(u)) do
+      if not base[st] and not allowed[st] and not G.technicalStatus(st) then cmp("no carried status " .. st, false, true) end
+    end
+  else
+    note_("no status baseline for the character: carried statuses not compared")
+  end
+  for i, d in ipairs((extra and extra.enemies) or {}) do
+    local bl = G.critBlockers(d)
+    local names = {}
+    for _, b in ipairs(bl) do names[#names + 1] = b.kind .. " " .. b.id end
+    cmp("enemy " .. i .. " can be critically hit", "yes", #bl == 0 and "yes" or table.concat(names, ", "))
+    local sts = {}
+    for st in pairs(G.statusSet(d)) do if not G.technicalStatus(st) then sts[#sts + 1] = st end end
+    table.sort(sts)
+    cmp("enemy " .. i .. " statuses at start", "none", #sts == 0 and "none" or table.concat(sts, ", "))
+  end
 end
 
 -- ------------------------------------------------------------------------------------------------ events
@@ -1060,6 +1346,104 @@ local function onReaction(who, interrupt)
     R.reactions_seen[#R.reactions_seen + 1] = { who = uuid(who), interrupt = interrupt, t = now() - G.t0 }
   end
 end
+-- Who a fight's record follows: the character, its summons and the run's enemies.
+function G.member(F, u)
+  u = u and uuid(u)
+  if not F or not u then return false end
+  if u == uuid(F.char) then return "char" end
+  for _, d in ipairs(F.enemies or {}) do if uuid(d) == u then return "enemy" end end
+  if (F.summons or {})[u] then return "summon" end
+  return false
+end
+-- Statuses put on and taken off the run's creatures (Osiris StatusApplied / StatusRemoved), per round: the riders
+-- (HUNTERS_MARK on the boss, DREAD_AMBUSHER on the character) and the conditions are read from them.
+local function onStatus(on, obj, status, causee)
+  if not G.fighting then return end
+  local F = G.F
+  if not G.member(F, obj) then return end
+  local R = G.rounds[#G.rounds]
+  if not R then return end
+  R.status_log = R.status_log or {}
+  R.status_log[#R.status_log + 1] = { who = uuid(obj), status = status, on = on, cause = causee and uuid(causee),
+    t = now() - G.t0 }
+end
+-- Osiris CriticalHitBy (defender, attack owner, attacker): every critical hit in the fight, per round.
+local function onCrit(def, ownerAtt, att)
+  if not G.fighting then return end
+  local R = G.rounds[#G.rounds]
+  if R then
+    R.crits = R.crits or {}
+    R.crits[#R.crits + 1] = { target = uuid(def), owner = uuid(ownerAtt), source = uuid(att), t = now() - G.t0 }
+  end
+end
+-- One row per hit the run's creatures deal or take (Script Extender DealDamage): spell, the hit's flags (hit / miss /
+-- critical), the attack roll where the hit description carries it, damage per type, the target's statuses and the
+-- character's concentration at the hit. The field names are read defensively; the first hit's whole description is
+-- kept in results.hit_probe so the names can be checked against the game. At most HIT_LOG_MAX rows per run.
+G.HIT_LOG_MAX = 3000
+local function first(obj, paths)
+  for _, path in ipairs(paths) do
+    local v = try(function()
+      local x = obj
+      for k in path:gmatch("[^%.]+") do x = x[k] end
+      return x
+    end)
+    if v ~= nil then return v, path end
+  end
+  return nil
+end
+local function flagText(v)
+  if type(v) == "table" or type(v) == "userdata" then
+    local parts = {}
+    for k, x in pairs(v) do parts[#parts + 1] = (type(k) == "number") and tostring(x) or tostring(k) end
+    table.sort(parts)
+    return table.concat(parts, ",")
+  end
+  return v ~= nil and tostring(v) or nil
+end
+function G.hitRow(e)
+  local hit = try(function() return e.Hit end) or {}
+  local src = first(e, { "Caster.Uuid.EntityUuid", "Hit.Inflicter.Uuid.EntityUuid", "Hit.InflicterOwner.Uuid.EntityUuid" })
+  local tgt = first(e, { "Target.Uuid.EntityUuid", "Hit.Target.Uuid.EntityUuid" })
+  local flags = flagText(first(hit, { "EffectFlags", "HitFlags", "Flags" }))
+  local attack = flagText(first(hit, { "AttackFlags" }))
+  local row = { r = G.round, t = now() - G.t0, source = src and uuid(src), target = tgt and uuid(tgt),
+    spell = first(e, { "SpellId.Prototype", "Hit.SpellId.Prototype", "SpellId.OriginatorPrototype" }),
+    total = first(hit, { "TotalDamageDone", "TotalDamage" }), type = flagText(first(hit, { "DamageType" })),
+    flags = flags, attack_flags = attack, attack_type = flagText(first(e, { "AttackType", "Hit.AttackType" })),
+    roll = first(hit, { "AttackRoll.Result.NaturalRoll", "AttackRoll.NaturalRoll", "ConditionRoll.NaturalRoll",
+      "Roll.NaturalRoll" }),
+    roll_total = first(hit, { "AttackRoll.Result.Total", "AttackRoll.Total", "ConditionRoll.Total", "Roll.Total" }),
+    advantage = flagText(first(hit, { "AttackRoll.Advantage", "AttackRoll.RollType", "Roll.Advantage" })) }
+  local f = tostring(flags or "") .. "," .. tostring(attack or "")
+  row.crit = f:find("Critical", 1, true) ~= nil
+  row.miss = f:find("Miss", 1, true) ~= nil or f:find("Dodge", 1, true) ~= nil
+  row.hit = f:find("Hit", 1, true) ~= nil and not row.miss
+  local per = {}
+  for _, dmg in ipairs(first(hit, { "DamageList", "Damage.DamageList" }) or {}) do
+    per[#per + 1] = { type = tostring(try(function() return dmg.DamageType end)), amount = try(function() return dmg.Amount end) }
+  end
+  row.damage = per
+  return row
+end
+local function onHit(e)
+  if not G.fighting or #G.hits >= G.HIT_LOG_MAX then return end
+  local F = G.F
+  local row = G.hitRow(e)
+  local ms, mt = G.member(F, row.source), G.member(F, row.target)
+  if not ms and not mt then return end
+  if mt == "enemy" then
+    local sts = {}
+    for st in pairs(G.statusSet(row.target)) do sts[#sts + 1] = st end
+    table.sort(sts)
+    row.target_statuses = sts
+  end
+  row.concentration = G.concentration(F.char)
+  G.hits[#G.hits + 1] = row
+  if not G.results.hit_probe then G.results.hit_probe = try(function() return Ext.Types.Serialize(e.Hit) end) or "?" end
+end
+G._onHit = onHit
+
 -- Lanes: an event goes to the lane whose character or enemies it names (to each, when it names both lanes: one
 -- lane's spell hitting the other's enemies is a fault both must see); an event that names neither goes to every lane.
 function G.lanesFor(who)
@@ -1088,6 +1472,14 @@ G._on = {
   cast = function(caster, spell, ...) G.dispatch(onCast, { n = 1, caster }, caster, spell, ...) end,
   failed = function(caster, spell, ...) G.dispatch(onCastFailed, { n = 1, caster }, caster, spell, ...) end,
   reaction = function(who, interrupt, ...) G.dispatch(onReaction, { n = 1, who }, who, interrupt, ...) end,
+  status_on = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, true, obj, status, causee) end,
+  status_off = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, false, obj, status, causee) end,
+  crit = function(def, ownerAtt, att, ...) G.dispatch(onCrit, { n = 3, def, att, ownerAtt }, def, ownerAtt, att, ...) end,
+  hit = function(e)
+    local who = { n = 2, try(function() return e.Caster.Uuid.EntityUuid end),
+      try(function() return e.Target.Uuid.EntityUuid end) }
+    G.dispatch(onHit, who, e)
+  end,
 }
 if not G._listeners4 then
   local function on(k) return function(...) pcall(G._on[k], ...) end end
@@ -1099,6 +1491,16 @@ if not G._listeners4 then
   }
 end
 G._listeners = G._listeners4
+-- added in version 5: statuses, critical hits, the hit descriptions
+if not G._listeners5 then
+  local function on(k) return function(...) pcall(G._on[k], ...) end end
+  G._listeners5 = {
+    status_on = pcall(Ext.Osiris.RegisterListener, "StatusApplied", 4, "after", on("status_on")),
+    status_off = pcall(Ext.Osiris.RegisterListener, "StatusRemoved", 4, "after", on("status_off")),
+    crit = pcall(Ext.Osiris.RegisterListener, "CriticalHitBy", 4, "after", on("crit")),
+    hit = pcall(function() return Ext.Events.DealDamage:Subscribe(on("hit")) end),
+  }
+end
 
 -- ------------------------------------------------------------------------------------------------ fight
 local function activeTurn(u)
@@ -1343,15 +1745,17 @@ function G.cutAt(start, pts, tx, ty, tz, need, budget)
   end
   return nil
 end
+-- who: the creature that moves (default the character; the character's summon on its own turn)
 -- -> nil (cast from here), or { x, y, z, len, risk = name of the foe whose reach the route leaves | nil }
-function G.castSpot(F, tgt, range)
-  local x0, y0, z0 = xyz(F.char)
+function G.castSpot(F, tgt, range, who)
+  local me = who or F.char
+  local x0, y0, z0 = xyz(me)
   local tx, ty, tz = xyz(tgt)
   if not (x0 and tx) then return nil end
   local d = math.sqrt((x0 - tx) ^ 2 + (y0 - ty) ^ 2 + (z0 - tz) ^ 2)
-  if d <= range and try(Osi.CanSee, F.char, tgt) ~= 0 then return nil end
+  if d <= range and try(Osi.CanSee, me, tgt) ~= 0 then return nil end
   local need = math.max(1.2, range - (range > 3 and 1.0 or 0.3))
-  local budget = resAmount(F.char, "Movement") + 0.5
+  local budget = resAmount(me, "Movement") + 0.5
   local foes, names = {}, {}
   for _, e in ipairs(F.enemies or {}) do
     local ex, ey, ez = xyz(e)
@@ -1365,7 +1769,7 @@ function G.castSpot(F, tgt, range)
     goals[#goals + 1] = { tx + need * 0.8 * math.cos(a), ty, tz + need * 0.8 * math.sin(a) }
   end
   for _, g in ipairs(goals) do
-    local pts = G.route(F.char, g[1], g[2], g[3])
+    local pts = G.route(me, g[1], g[2], g[3])
     local poly, len = nil, nil
     if pts then poly, len = G.cutAt(start, pts, tx, ty, tz, need, budget) end
     if poly then
@@ -1530,12 +1934,17 @@ function G.settle(F, R, t)
 end
 
 -- The shared adaptive rule (identical for both sets of a pair): item actions from plan.item_actions, in their
--- priority order. A per-rest action spell not used since the last rest replaces the round's core action group; a
+-- priority order. A per-rest action spell not used since the last rest replaces the round's core action group (in a
+-- round with Action Surge, the surge's attacks instead, so the first action keeps its Extra Attacks); a
 -- bonus-action item spell fills the bonus action when the core plan leaves it free; reactions stay with the engine.
 -- An item spell is chosen only when the character can pay for it now (action / bonus action, resources, per-rest
 -- use, engine cooldown); otherwise the next candidate is tried and the core plan keeps its action. A chosen item
 -- action carries the replaced core action as its fallback. Every candidate is logged (used / skipped + reason) in
 -- R.item_rule.
+function G.hasSurge(list)
+  for _, a in ipairs(list) do if a.requires == "surge" then return true end end
+  return false
+end
 local function itemRule(F, list, R)
   local out = {}
   for _, a in ipairs(list) do out[#out + 1] = a end
@@ -1559,6 +1968,21 @@ local function itemRule(F, list, R)
       log.result = "skipped: the core plan uses the bonus action"
     elseif (it.group == "action" or it.group == "bonus") and not okp then
       log.result = "skipped: cannot pay (" .. tostring(why) .. ")"
+    elseif it.group == "action" and G.hasSurge(out) then
+      -- an Action Surge round: the item spell takes the surge's action, so the first action keeps its Extra Attacks
+      -- (the pilot's Roaring Shot took round 1's attack action and its Extra Attack every run); the surge's first
+      -- attack is the fallback
+      local keep, first = {}, nil
+      for _, a in ipairs(out) do
+        if a.requires == "surge" then
+          if not first then first = a; keep[#keep + 1] = entry end
+        else
+          keep[#keep + 1] = a
+        end
+      end
+      entry.alt, entry.done_key, entry.requires = first, "item", "surge"
+      out, replaced = keep, true
+      log.result = "used: takes Action Surge's action"
     elseif it.group == "action" then
       local keep, core = {}, nil
       for _, a in ipairs(out) do
@@ -1656,6 +2080,15 @@ function G.judge(rounds, why, results, opts)
   end
   local refused = (results.summary or {}).cast_misses or 0
   if refused > 0 then causes[#causes + 1] = refused .. " planned cast(s) refused or never seen" end
+  local smiss = (results.summary or {}).summon_misses or 0
+  if smiss > 0 then causes[#causes + 1] = smiss .. " summon attack(s) refused or never seen" end
+  if results.rider_misses and #results.rider_misses > 0 then
+    local parts = {}
+    for _, m in ipairs(results.rider_misses) do
+      parts[#parts + 1] = string.format("%s on %s after round %s", tostring(m.status), tostring(m.on), tostring(m.r))
+    end
+    causes[#causes + 1] = "rider(s) missing: " .. table.concat(parts, "; ")
+  end
   local unworn = G.unworn(results.prep)
   if #unworn > 0 then causes[#causes + 1] = "set items not worn: " .. table.concat(unworn, ", ") end
   if results.encumbered and #results.encumbered > 0 then
@@ -1888,6 +2321,10 @@ function G.planRound(F, R)
   local list = (plan.rounds or {})[k] or plan.steady or {}
   if S.char_acts == false then list = (k == 1) and (plan.defence_opening or {}) or {} end
   R.plan_skips = R.plan_skips or {}
+  -- the character's statuses as its turn starts (DREAD_AMBUSHER is there until the first attack takes it off)
+  R.turn_statuses = {}
+  for st in pairs(G.statusSet(F.char)) do R.turn_statuses[#R.turn_statuses + 1] = st end
+  table.sort(R.turn_statuses)
   local out = {}
   for _, a in ipairs(list) do
     local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
@@ -1897,18 +2334,50 @@ function G.planRound(F, R)
   return itemRule(F, out, R)
 end
 
+-- The riders the plan relies on (plan.riders: Hunter's Mark's HUNTERS_MARK on the boss, Dread Ambusher's
+-- DREAD_AMBUSHER on the character), checked as the turn that casts them ends: the status is on now, was on as the turn
+-- started, or was put on during the round. A missing one fails the run like a refused cast (results.rider_misses).
+function G.riderCheck(F, R)
+  if F.manual or R.downed then return end
+  for _, rd in ipairs((F.plan or {}).riders or {}) do
+    if rd.round == R.r then
+      local who = resolveTarget(F, rd.on or "@boss")
+      local seen = who ~= nil and try(Osi.HasActiveStatus, who, rd.status) == 1
+      if not seen and who == F.char then
+        for _, st in ipairs(R.turn_statuses or {}) do if st == rd.status then seen = true end end
+      end
+      for _, x in ipairs(R.status_log or {}) do
+        if who and x.on and x.status == rd.status and x.who == uuid(who) then seen = true end
+      end
+      if not seen then
+        local miss = { r = R.r, status = rd.status, on = rd.on, why = rd.why }
+        R.rider_misses = R.rider_misses or {}
+        R.rider_misses[#R.rider_misses + 1] = miss
+        G.results.rider_misses = G.results.rider_misses or {}
+        G.results.rider_misses[#G.results.rider_misses + 1] = miss
+        note("rider missing after round %d: %s on %s", R.r, rd.status, tostring(rd.on))
+      end
+    end
+  end
+end
+
 -- per-run numbers (the same for scripted and manual runs)
 local function summarize(F)
   local enemies = {}
   for i, d in ipairs(F.enemies or {}) do enemies[uuid(d)] = i end
   local me = uuid(F.char)
   local per = {}
-  for _, R in ipairs(G.rounds) do per[R.r] = { dealt = 0, taken = 0, hits_taken = 0, rows = 0 } end
+  for _, R in ipairs(G.rounds) do per[R.r] = { dealt = 0, summon = 0, taken = 0, hits_taken = 0, rows = 0 } end
+  -- the character's summons deal the side's damage too (counted in dealt; summon_dealt is their share)
+  local mine = function(row)
+    return row.source == me or row.owner == me or (F.summons or {})[row.source or ""] == true
+  end
   for _, row in ipairs(G.dmg) do
     local p = per[row.r]
     if p then
-      if enemies[row.target] and (row.source == me or row.owner == me) then
+      if enemies[row.target] and mine(row) then
         p.dealt = p.dealt + (row.amount or 0)
+        if row.source ~= me then p.summon = p.summon + (row.amount or 0) end
         p.rows = p.rows + 1
       elseif row.target == me then
         p.taken = p.taken + (row.amount or 0)
@@ -1916,9 +2385,10 @@ local function summarize(F)
       end
     end
   end
-  local dealt, taken = {}, {}
+  local dealt, taken, summon = {}, {}, {}
   for r = 1, #G.rounds do
     dealt[r] = per[r] and per[r].dealt or 0
+    summon[r] = per[r] and per[r].summon or 0
     taken[r] = per[r] and per[r].taken or 0
   end
   local function mean(t)
@@ -1929,15 +2399,19 @@ local function summarize(F)
   -- the sheet's hit points, without the run's HP buffer
   local hp = math.max(0, (try(Osi.GetMaxHitpoints, F.char) or 0) - (F.hpBuffer or 0))
   local tk = mean(taken)
-  local failed, misses, downed = 0, 0, 0
+  local failed, misses, downed, smisses, riders, total = 0, 0, 0, 0, 0, 0
   for _, R in ipairs(G.rounds) do
     for _, a in ipairs(R.actions) do if a.result ~= "done" then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
+    smisses = smisses + (R.summon_misses or 0)
+    riders = riders + #(R.rider_misses or {})
     if R.downed then downed = downed + 1 end
   end
+  for _, v in ipairs(summon) do total = total + v end
   return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
     turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
-    rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil }
+    rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil,
+    summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders }
 end
 
 function G.difficulty()
@@ -1963,6 +2437,7 @@ local function finish(F, why)
   F.state = "done"
   if not F.manual then
     G.results.reactions_restored = G.reactionsRestore()
+    G.results.toggles_restored = G.togglesRestore()
     if not F.lane then
       G.unparkOthers()
       G.results.hostility_restored = G.laneFactionsRestore(F.hostility)
@@ -1972,7 +2447,13 @@ local function finish(F, why)
   -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
   local gone = {}
   for _, d in ipairs(F.enemies or {}) do gone[#gone + 1] = d end
-  if F.char then for _, d in ipairs(G.leftoverSummons(uuid(F.char), F.A)) do gone[#gone + 1] = d end end
+  if F.char then
+    for _, d in ipairs(G.leftoverSummons(uuid(F.char), F.A)) do
+      gone[#gone + 1] = d
+      F.summons = F.summons or {}
+      F.summons[d] = true
+    end
+  end
   for _, d in ipairs(gone) do G.removeCreature(d) end
   wait(G.CLEANUP_MS, function()
     for _, d in ipairs(gone) do if standing(d) then pcall(Osi.Die, d, 0, NULL_GUID, 0, 0) end end
@@ -1984,6 +2465,7 @@ local function finish(F, why)
     G.results.setup["end"] = G.setupCheck(F, F.spec, "end", { buffs = F.setupExtra and F.setupExtra.buffs })
   end
   G.results.summary = summarize(F)
+  G.results.summon_damage = G.results.summary.summon_damage
   G.results.ended = why or "rounds done"
   local downed = {}
   for _, R in ipairs(G.rounds) do if R.downed then downed[#downed + 1] = R.r end end
@@ -2011,7 +2493,7 @@ local function finish(F, why)
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = F.req.haste and true or false,
     respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
-    log = G.log, valid = G.results.valid, invalid = G.results.invalid }
+    hits = G.hits, log = G.log, valid = G.results.valid, invalid = G.results.invalid }
   rec.req.spec = nil
   try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d%s.json", F.started, G.runSeq,
     F.lane and ("_" .. F.lane.id) or ""), Ext.Json.Stringify(rec))
@@ -2246,33 +2728,133 @@ function G.recoverTurn(F, inCombat, holders)
   G.enterCombat(F)
   return "nobody holds the turn: entered combat again"
 end
--- The character's own summon (Spiritual Weapon) gets a turn of its own after the character's, and nothing drives it:
--- the fight waited for a turn the summon never gave back (the watchdog found "nobody holds the turn", the character
--- still in combat). Its turn is ended as soon as it comes (looked for once a second while waiting); the record counts
--- these turns in summon_turns_ended, so the summon's own attacks are not in the run's damage.
+-- The character's own summon (Spiritual Weapon) gets a turn of its own after the character's, and nothing in a scripted
+-- run drives it (the fight once waited for a turn the summon never gave back). The harness drives it: its basic
+-- attack on the boss, moving first within its own Movement when out of reach and cast from where it then stands,
+-- confirmed like a planned cast (a cast, or its damage to the target); an attack asked for and never seen fails the
+-- run like a refused cast. A summon with no usable attack, or out of reach, has its turn ended (results.summon_turns
+-- says why; summon_turns_ended counts them). Its damage is the side's: results.summon_damage, part of the damage per
+-- round.
 G.SUMMON_CHECK_MS = 1000
+G.SUMMON_ATTACKS = { "Target_MainHandAttack", "Projectile_MainHandAttack", "Target_UnarmedAttack" }
 local function summonsOnTurn(F)
   local out = {}
   for _, s in ipairs(F.char and G.leftoverSummons(uuid(F.char), nil) or {}) do
+    F.summons = F.summons or {}
+    if not F.summons[s] then
+      F.summons[s] = true
+      local m = F.lane and G.LANES and G.LANES.members[F.lane.id]
+      if m then m[s] = true end
+    end
     if activeTurn(s) then out[#out + 1] = s end
   end
   return out
 end
-function G.endSummonTurns(F, t)
-  if t < (F.summonCheck or 0) then return 0 end
-  F.summonCheck = t + G.SUMMON_CHECK_MS
-  local n = 0
-  for _, s in ipairs(summonsOnTurn(F)) do
-    G.endTurn(s)
-    local key = tostring(G.round) .. ":" .. s
-    F.summonEnded = F.summonEnded or {}
-    if not F.summonEnded[key] then
-      F.summonEnded[key] = true
-      G.results.summon_turns_ended = (G.results.summon_turns_ended or 0) + 1
+-- the summon's attack: the first of SUMMON_ATTACKS in its book, else any attack in its book paid with an action point
+-- -> spell, or nil and why
+function G.summonAttack(s)
+  local book = G.spellBook(s)
+  if not book then return nil, "no spell book" end
+  for _, sp in ipairs(G.SUMMON_ATTACKS) do if book[sp] and not onCooldown(s, sp) then return sp end end
+  local ids = {}
+  for id in pairs(book) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local costs = tostring(try(function() return Ext.Stats.Get(id).UseCosts end) or "")
+    if id:find("Attack", 1, true) and not id:find("^Interrupt_") and costs:find("ActionPoint", 1, true)
+      and not costs:find("SpellSlot", 1, true) and not onCooldown(s, id) then
+      return id
     end
-    n = n + 1
   end
-  return n
+  return nil, "no usable attack"
+end
+local function summonDone(F, S, result, miss, t)
+  S.rec.result, S.rec.ms = result, t and (t - S.t0) or nil
+  if miss then
+    local R = G.rounds[#G.rounds]
+    if R then R.summon_misses = (R.summon_misses or 0) + 1 end
+  end
+  F.summon = nil
+  G.endTurn(S.u)
+end
+local function summonCast(F, S, t)
+  local R = G.rounds[#G.rounds] or { casts = {} }
+  S.P = { who = uuid(S.u), spell = S.spell, target = uuid(S.tgt), casts0 = #(R.casts or {}), dmg0 = #G.dmg,
+    fails0 = #(R.cast_fails or {}), t0 = t }
+  local ok, err = pcall(Osi.UseSpell, S.u, S.spell, S.tgt, S.tgt, 1)
+  if not ok then return summonDone(F, S, "failed: engine refused " .. tostring(err), true, t) end
+  S.rec.result = "pending"
+end
+function G.summonBegin(F, s, t)
+  local rec = { r = G.round, summon = s }
+  G.results.summon_turns = G.results.summon_turns or {}
+  G.results.summon_turns[#G.results.summon_turns + 1] = rec
+  local spell, why = G.summonAttack(s)
+  local tgt = resolveTarget(F, "@boss")
+  local range = spell and (spellRange(spell) or 1.5)
+  if spell and tgt and dist(s, tgt) > range + resAmount(s, "Movement") + 1.0 then why = "out of reach"; spell = nil end
+  if not spell or not tgt then
+    rec.result = "turn ended: " .. (tgt and why or "no target")
+    G.results.summon_turns_ended = (G.results.summon_turns_ended or 0) + 1
+    G.endTurn(s)
+    return
+  end
+  rec.spell = spell
+  local S = { u = s, rec = rec, spell = spell, tgt = tgt, t0 = t }
+  F.summon = S
+  local spot = G.castSpot(F, tgt, range, s)
+  if spot then
+    local x, y, z = xyz(s)
+    rec.move = { x = spot.x, z = spot.z, len = spot.len, aoo_risk = spot.risk }
+    if pcall(Osi.CharacterMoveToPosition, s, spot.x, spot.y, spot.z, "Run", "LA_gauntlet_summon") then
+      S.moving = { spot = spot, t0 = t, last = { x, y, z }, lastT = t }
+      return
+    end
+  end
+  summonCast(F, S, t)
+end
+function G.summonAdvance(F, S, t)
+  if S.moving then
+    local M = S.moving
+    local x, _, z = xyz(S.u)
+    local there = x ~= nil and math.sqrt((x - M.spot.x) ^ 2 + (z - M.spot.z) ^ 2) < 0.5
+    if x and math.sqrt((x - M.last[1]) ^ 2 + (z - M.last[3]) ^ 2) > 0.05 then M.last, M.lastT = { x, 0, z }, t end
+    if not there and t - M.lastT < 800 and t - M.t0 < G.MOVE_MAX_MS then return end
+    S.rec.move.result = there and "there" or "stalled"
+    S.moving = nil
+    return summonCast(F, S, t)
+  end
+  local P = S.P
+  if not P then return end
+  local R = G.rounds[#G.rounds] or {}
+  local ev = G.castEvidence(P, R.casts, G.dmg, nil)
+  if ev then
+    S.rec.confirmed = ev
+    return summonDone(F, S, "done", false, t)
+  end
+  local waited = t - P.t0
+  local refused = G.castRefused(P, R.cast_fails)
+  if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(S.u))) then return end
+  summonDone(F, S, refused and "failed: refused by the engine"
+    or string.format("failed: no attack seen within %.1f s", waited / 1000), true, t)
+end
+-- Called while the fight waits for the character's turn: drives the summon whose turn it is (looked for once a
+-- second), one attack per summon and round; a summon still holding its turn after that is asked to end it again.
+function G.summonStep(F, t)
+  if F.manual then return end
+  if F.summon then return G.summonAdvance(F, F.summon, t) end
+  if t < (F.summonCheck or 0) then return end
+  F.summonCheck = t + G.SUMMON_CHECK_MS
+  F.summonDone = F.summonDone or {}
+  for _, s in ipairs(summonsOnTurn(F)) do
+    local key = tostring(G.round) .. ":" .. s
+    if F.summonDone[key] then
+      G.endTurn(s)
+    else
+      F.summonDone[key] = true
+      return G.summonBegin(F, s, t)
+    end
+  end
 end
 local function turnHolders(F)
   local out = {}
@@ -2303,7 +2885,7 @@ function G.step(F, t)
     if miss then return finish(F, "reaction prompt " .. tostring(miss) .. " not covered by the policy") end
   end
   if F.state == "wait" then
-    if not F.manual and not activeTurn(F.char) then G.endSummonTurns(F, t) end
+    if not activeTurn(F.char) then G.summonStep(F, t) end
     if activeTurn(F.char) then
       F.recoveries = 0
       if G.round >= F.rounds then return finish(F) end
@@ -2357,8 +2939,9 @@ function G.step(F, t)
     end
   elseif F.state == "ending" and t >= F.next then
     if casting(F.char) then F.next = t + 200; return end
-    G.endTurn(F.char)
     local R = G.rounds[#G.rounds]
+    if R then G.riderCheck(F, R) end
+    G.endTurn(F.char)
     if R and R.tm then R.tm.end_asked = t - G.t0 end
     F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
   elseif F.state == "ended" then
