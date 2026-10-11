@@ -34,8 +34,10 @@ Layers
 
 Assumptions shared with the companion analyses (analysis/*_model.py): 4 rounds per fight, 4 fights per long rest,
 3 short-rest windows per long rest, 4 enemies per fight; enemy AC / saves / attacks per act in ENEMY.
+scenario("boss") swaps them for the in-game gauntlet's boss fight (SCENARIOS) to score the fight it measures.
 Unverified mechanics are SWITCHES (both results are reported by run.py).
 """
+import contextlib
 import math
 import re
 
@@ -51,6 +53,17 @@ ENEMY = {1: dict(ac=15, save=2, atk=5, dmg=9.0, dc=13, save_dmg=7.0),
 CTRL_EQ = 2.0                                   # rounds of one enemy's damage a successful control spell prevents
 HIT_REMOVED = 0.6                               # uptime of a "until you are hit" status
 R_SAT = 3.0 * ROUNDS                            # durability saturation (rounds), see sat()
+STEALTH_OPENERS = True
+INCOMING_ATTACKS_ONLY = False                   # True: one attacker's weapon hits only (no save damage, no conditions)
+ENEMY_DMG_SCALE = 1.0                           # enemy damage per hit x this, rounded to whole points
+# The encounter a score is for. "day": the assumptions above, an act's typical day. "boss": the in-game gauntlet's
+# boss fight (tools/gauntlet "boss" scenario): one enemy that never dies, one 16-round fight, no short rest (a
+# per-short-rest feature once in 16 rounds), no stealth opener; it only attacks (weapon hits, no saves, no
+# conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE). Used through scenario().
+SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
+                         stealth=True, attacks_only=False, dmg_scale=1.0),
+             "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
+                          attacks_only=True, dmg_scale=0.5)}
 
 # ----------------------------------------------------------------------------------- encounter assumptions
 # Everything situational is an uptime taken from these tables (model assumptions, not game data; the game data
@@ -280,7 +293,7 @@ class State:
             if x["cond"] == bc:
                 x["cond"] = None
             x["bw"] = mech.cond_p(bc, mech.Ctx(self, {}, "self"))
-        self.p_open = self._stealth_open()
+        self.p_open = self._stealth_open() if STEALTH_OPENERS else 0.0
         dex_init = self.sheet.get("init") or self.mods.get("DEX", 0)
         p_first = min(0.95, max(0.05, 0.5 + 0.05 * (dex_init - ENEMY_INIT)))
         # an attack lands before the target's first turn: round 1, acting first (or the enemies are Surprised)
@@ -793,7 +806,7 @@ def make_caster_events(st):
             casts = min(FIGHTS, big)
             big -= casts
             per_round = casts / FIGHTS * (ROUNDS - 1) / ROUNDS   # ticks from round 2 on
-            evs.append(spell_event(st, sp, per_round, "Spirit Guardians", dict(targets=2.0, conc_tick=True)))
+            evs.append(spell_event(st, sp, per_round, "Spirit Guardians", dict(targets=min(2.0, ENEMIES), conc_tick=True)))
             used += casts / FIGHTS / ROUNDS
     # nukes: best available, highest slots first
     cands = []
@@ -828,7 +841,7 @@ def make_caster_events(st):
         sp = mech.read_spell(W, "Shout_RadianceOfTheDawn", lvl)
         if sp:
             lv_for = lvl if st.sw["rotd_char_level"] else st.classes.get("Cleric", 0)
-            sp = dict(sp, dmg=[(e.replace("Level", str(lv_for)), t) for e, t in sp["dmg"]], targets=3.0)
+            sp = dict(sp, dmg=[(e.replace("Level", str(lv_for)), t) for e, t in sp["dmg"]], targets=min(3.0, ENEMIES))
             evs.append(spell_event(st, sp, cd_per_round, "Radiance of the Dawn", dict(a_cost=1.0, b_cost=0.0,
                                                                                       budget=True)))
     if plan.get("spiritual") and lvl >= 3:
@@ -1236,6 +1249,48 @@ def reset_caches():
     _CHOICE.clear()
 
 
+def _caches():
+    return (_OPT, _CHOICE, _R0, mech._COND_CACHE, mech._MECH)
+
+
+@contextlib.contextmanager
+def scenario(name):
+    """Evaluate under SCENARIOS[name] inside the block: swaps this module's encounter constants and caps the targets
+    of an area spell (mech.MAX_TARGETS). The caches start empty inside and get their day contents back after, so no
+    result crosses over and an optimizer run outside the block is unchanged."""
+    g = globals()
+    names = ("ROUNDS", "FIGHTS", "SR_WINDOWS", "SR_COVER", "ENEMIES", "STEALTH_OPENERS", "INCOMING_ATTACKS_ONLY",
+             "ENEMY_DMG_SCALE")
+    keep, keep_hp, keep_tg = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS
+    kept = [dict(c) for c in _caches()]
+    s = SCENARIOS[name]
+    g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
+             SR_COVER=min(1.0, s["sr_windows"] / s["fights"]), ENEMIES=s["enemies"], STEALTH_OPENERS=s["stealth"],
+             INCOMING_ATTACKS_ONLY=s["attacks_only"], ENEMY_DMG_SCALE=s["dmg_scale"])
+    if s["enemy_hp"]:
+        ENEMY_HP.update({a: s["enemy_hp"] for a in ENEMY_HP})
+    mech.MAX_TARGETS = s["enemies"] if name != "day" else None
+    for c in _caches():
+        c.clear()
+    try:
+        yield s
+    finally:
+        g.update(keep)
+        ENEMY_HP.update(keep_hp)
+        mech.MAX_TARGETS = keep_tg
+        for c, k in zip(_caches(), kept):
+            c.clear()
+            c.update(k)
+
+
+def scenario_numbers(W, cid, bid, act, loadout, name, respec=None, choice=None):
+    """Damage per round, damage taken per round and rounds survived of one loadout under SCENARIOS[name], with the
+    choice items' options fixed (choice: the day's pick, so both numbers describe the same set)."""
+    with scenario(name):
+        r = _evaluate(W, cid, bid, act, loadout, None, False, choice or None, respec)
+    return {"dpr": round(r.dpr, 2), "taken": round(r.dur["incoming"], 3), "R": round(r.R, 2)}
+
+
 def _options(W, sid):
     if sid not in _OPT:
         _OPT[sid] = mech.ItemMech(W, sid).options
@@ -1464,8 +1519,13 @@ def durability(st, E, boosts, names, tgt, heal):
         return best
 
     hp = sh["hp"] + hp_bonus
+    if ENEMY_DMG_SCALE != 1.0:
+        E = dict(E, dmg=max(1.0, math.floor(E["dmg"] * ENEMY_DMG_SCALE + 0.5)),
+                 save_dmg=max(1.0, math.floor(E["save_dmg"] * ENEMY_DMG_SCALE + 0.5)))
+    if INCOMING_ATTACKS_ONLY:
+        E = dict(E, save_dmg=0.0)
     mix = INCOMING[act]
-    n_att = 1.0 * st.exposure
+    n_att = 1.0 if INCOMING_ATTACKS_ONLY else st.exposure
     atk = E["atk"] - tgt["atk_pen"]
     adv_enemy = 0.0
     if st.rages and st.plan["mode"] == "melee":
@@ -1473,7 +1533,7 @@ def durability(st, E, boosts, names, tgt, heal):
     # ---- conditions: chance per round each lands
     rows = []
     failed_day = 0.0
-    for name, ids, abil, per_fight, lost, xdmg, spell in THREATS:
+    for name, ids, abil, per_fight, lost, xdmg, spell in ([] if INCOMING_ATTACKS_ONLY else THREATS):
         att = per_fight[act] / ROUNDS * st.exposure
         imm = 0.0
         for i in ids:

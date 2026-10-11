@@ -25,7 +25,10 @@ sets), written by run.py to tools/optimizer/.cache/test_plans.json. Format "loot
     "rounds": [{"round": n, "actions": [{"resource": "Action" | "BonusAction" | "Reaction" | "Free",
                                          "id": spell / action id, "slot": weapon slot or null, "repeat": n}]}],
     "expected": {"dpr": model damage per round (long-rest average), "score",
-                 "per_use": [{"name", "id", "per_round", "damage_per_use", "damage_per_round"}]},
+                 "per_use": [{"name", "id", "per_round", "damage_per_use", "damage_per_round"}],
+                 "scenarios": {"boss": {"dpr", "taken", "R"}}: the same set scored for the gauntlet's boss fight
+                 (model.SCENARIOS: one enemy that never dies, one 16-round fight, no short rest, no stealth opener),
+                 the number a boss run's damage per round compares with},
     "enemy": {ac, save, atk, dmg, dc, hp} of the act,
     "kept_by_threshold": optimizer plans only: [{"item", "name", "keeps": this character keeps it, "owner",
                          "other", "margin", "close"}] of the contested list above that this plan's gear holds
@@ -176,5 +179,7 @@ def test_plan(W, r, set_id, loadout, source, ownership=None, tuning=None):
             "ownership": ownership, "classes": classes, "level_sequence": st.BI["seq"][:lvl], "respec": out_respec,
             "gear": {s: {"id": sid, "name": W.items[sid]["name"]} for s, sid in loadout.items()},
             "choices": dict(r.choice), "buffs": buffs, "toggles": toggles, "rounds": rounds_plan(W, r),
-            "expected": {"dpr": round(r.dpr, 2), "score": round(r.score, 2), "per_use": per_use},
+            "expected": {"dpr": round(r.dpr, 2), "score": round(r.score, 2), "per_use": per_use,
+                         "scenarios": {"boss": model.scenario_numbers(W, cid, bid, act, loadout, "boss",
+                                                                      tuning.get("respec"), dict(r.choice))}},
             "enemy": dict(model.ENEMY[act], hp=model.ENEMY_HP[act])}
