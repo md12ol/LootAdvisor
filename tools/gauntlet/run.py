@@ -35,6 +35,11 @@ the same script, enemies and buffs; every run appends one record to results.json
 window are written as one JSON file each to the Script Extender folder's LootAdvisor_gauntlet/; append those records
 to a results file by hand to include them in a report.
 
+Rolls: scripted casts roll like a player's (attack rolls miss and crit, saving throws are made, and what hangs on a
+roll applies: Sharpshooter's +10, Hunter's Mark, Sneak Attack); --no-real-rolls keeps the older casts that always hit
+and skip saves, for comparison. Every record carries real_rolls (older records without it ran without rolls); runs of
+the other kind are not counted for --repeats and are left out of the report, since the two are not comparable.
+
 Validity: a run the game marks invalid (ended early, a cast never confirmed in a round, a reaction outside the plan,
 ...) or that never finished is kept in results.jsonl with its causes and left out of the report. Control gate: a
 control pair (two sets the model rates alike) must measure alike in the game too; when its two sets differ by more
@@ -171,8 +176,14 @@ def same_set(rec, p, side):
         str(sid.get("act")) == str(p.get("act"))
 
 
-def prior_runs(path, i, p, scen):
-    """The usable runs already in the results file, per side of pair i: {side: [run]} (run: [(round key, damage)])."""
+def rolls_of(rec):
+    """Did the run roll like a player? Records older than the field ran without rolls."""
+    return rec.get("real_rolls", (rec.get("req") or {}).get("real_rolls", False)) is not False
+
+
+def prior_runs(path, i, p, scen, real_rolls=True):
+    """The usable runs already in the results file with the same rolls, per side of pair i: {side: [run]}
+    (run: [(round key, damage)])."""
     out = {"a": [], "b": []}
     if not path or not os.path.exists(path):
         return out
@@ -180,6 +191,8 @@ def prior_runs(path, i, p, scen):
         recs = [json.loads(x) for x in f if x.strip()]
     for r in recs:
         if r.get("pair") != i or r.get("side") not in out or r.get("scenario") not in scen or not same_set(r, p, r["side"]):
+            continue
+        if rolls_of(r) != real_rolls:
             continue
         run = usable_run(r)
         if run:
@@ -239,7 +252,7 @@ def do_runs(a):
     arenas = load_arenas()
     print(engine.load())
     todo = [i for i in range(len(pairs)) if only is None or i in only]
-    got = {i: prior_runs(a.results, i, pairs[i], scen) for i in todo}
+    got = {i: prior_runs(a.results, i, pairs[i], scen, not a.no_real_rolls) for i in todo}
     for i in todo:
         if got[i]["a"] or got[i]["b"]:
             print(f"pair {i}: usable runs in the results already: a {len(got[i]['a'])}, b {len(got[i]['b'])}")
@@ -402,12 +415,14 @@ def _req(a, i, p, side, sc, haste, char):
         arena = ((load_arenas().get(a.lanes) or {}).get("lanes") or {}).get("A", {}).get("arena")
     return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds, "arena": arena,
             "char": char, "label": f"pair{i}:{side}", "respec": getattr(a, "respec", "real"),
-            "retry_any_refusal": True if getattr(a, "retry_any_refusal", False) else None}
+            "retry_any_refusal": True if getattr(a, "retry_any_refusal", False) else None,
+            "real_rolls": not getattr(a, "no_real_rolls", False)}
 
 
 def _record(a, rec, i, side, t0, extra=None):
     rec["pair"], rec["side"], rec["secs"] = i, side, round(time.time() - t0, 1)
     rec.update({k: v for k, v in (extra or {}).items() if v is not None})
+    rec.setdefault("real_rolls", (rec.get("req") or {}).get("real_rolls", True) is not False)
     rec["valid"], rec["invalid"] = run_validity(rec)
     if not rec["valid"]:
         print(f"  {side}: INVALID: " + "; ".join(rec["invalid"]))
@@ -640,9 +655,13 @@ def report(a):
     with open(a.specs, encoding="utf-8") as f:
         pairs = json.load(f)
     recs = [json.loads(x) for x in open(a.report, encoding="utf-8") if x.strip()]
-    by, invalid = {}, []
+    by, invalid, other_rolls = {}, [], 0
+    want_rolls = not getattr(a, "no_real_rolls", False)
     for r in recs:
         if r.get("mode") != "scripted" and "error" not in r:
+            continue
+        if rolls_of(r) != want_rolls:
+            other_rolls += 1
             continue
         ok, causes = run_validity(r)
         if not ok:
@@ -712,6 +731,9 @@ def report(a):
         "\n".join(summary) + "\n"
     if invalid:
         text += "\nInvalid runs (left out):\n" + "\n".join(invalid) + "\n"
+    if other_rolls:
+        text += (f"\n{other_rolls} run(s) {'without' if want_rolls else 'with'} real rolls left out (not comparable; "
+                 f"{'drop' if want_rolls else 'use'} --no-real-rolls to report them).\n")
     print(text)
     if a.md:
         with open(a.md, "w", encoding="utf-8") as f:
@@ -743,6 +765,9 @@ def main(argv=None):
     ap.add_argument("--retry-any-refusal", action="store_true",
                     help="ask again for any cast the engine refused, not only one an Attack of Opportunity interrupted "
                     "(off by default; the control passed without it)")
+    ap.add_argument("--no-real-rolls", action="store_true",
+                    help="scripted casts never roll (always hit, saves skipped), as runs before rolls did; only for "
+                    "comparison with those runs. Also picks which runs --report and --repeats count")
     ap.add_argument("--report")
     ap.add_argument("--rescore", help="older run records (comma-separated files): re-judge them and run the gate")
     ap.add_argument("--md")

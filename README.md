@@ -130,7 +130,21 @@ Scripted runs park the rest of the party 40 m away and set every party character
 ("Use reaction?" would stop a scripted turn): the reactions the build and the set grant (`plan.reactions`, written by
 `plan.py`) fire on their own; every other reaction the character has (racial, tadpole, its own class and items) is
 off. The player's own reaction settings are put back when the run ends; manual runs never change them. A prompt that
-still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record.
+still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record. Reactions are set this
+way before every fight (an "ask" answer becomes "never"), also for the character's summon, and a party member left
+holding a turn outside the fight has it ended at the start and after every round (an open party turn stops the next
+round and the refill of the character's resources).
+
+Scripted casts roll like a player's: an attack can miss or score a critical hit, a save spell gets its saving throw,
+and what hangs on the roll applies (Sharpshooter's and Great Weapon Master's +10, Hunter's Mark, Sneak Attack). The
+game queues a script's casts with an option that skips every roll; the harness takes that one option off the queued
+casts of the character and its summons just before the game reads them, and leaves every other option (the cast
+still does not move the character or check its resources: the harness moves it and pays the costs itself). A missed
+attack is a confirmed cast like a hit: the round is not idle and nothing is retried; each cast's outcome (hit, critical
+hit, miss) is in the record, and every hit row carries its natural roll, total and the AC or DC it was rolled against.
+`run.py --no-real-rolls` runs the older way (every attack hits, no saves) for comparison. Every run record says which
+in `real_rolls`; results from runs without rolls (records without the field) are not comparable with rolled ones, so
+`--repeats` and `--report` count only runs of the kind asked for.
 
 Each turn is planned from the resources the character has at that moment (an upcast falls back to a lower slot, then
 the base spell, then the cantrip; an item spell is used only when it can be paid), and a scripted action counts as done
@@ -148,7 +162,9 @@ effects the model credits: toggled passives such as Great Weapon Master's "All I
 sets them), every worn item's equip passives, statuses and unconditional boosts, the elixir's statuses, the weapons'
 dice, the item spells in the book and ready, no concentration or status left over from an earlier run (prep ends and
 removes them), and enemies that can be critically hit and carry no status; one mismatch fails the run. A rider the
-plan relies on (Hunter's Mark on the boss, Dread Ambusher's status) missing after its turn fails it too. The
+plan relies on (Hunter's Mark on the boss, Dread Ambusher's status) missing after its turn fails it too, unless the
+rider's own cast missed; riders that hang on a hit (Hunter's Mark's die, Sneak Attack) are counted over landed hits
+only (`hit_riders` in the record). The
 character's summon attacks the boss on its own turn and its damage counts for the set. Every hit is recorded with its
 spell, flags (hit, miss, critical) and the target's statuses. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
 the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
