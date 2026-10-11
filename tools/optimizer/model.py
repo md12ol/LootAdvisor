@@ -584,8 +584,10 @@ def make_weapon_events(st):
         if mm:
             base["dtypes"] = set(base["dtypes"]) | {mm.group(1)}
         mx = re.match(r"([A-Za-z]+Modifier)\s+(\w+)$", e)
-        if mx:
-            # an ability-modifier rider (Balduran's Giantslayer: STR again): the sheet engine reads only dice riders
+        label = mx and re.sub(r"(?<=[a-z])(?=[A-Z])", " ", mx.group(1)).lower()
+        if mx and not any(f"(weapon, {label})" in f for f in row.get("dmgf") or []):
+            # an ability-modifier rider (Balduran's Giantslayer: STR again) that the sheet row does not already
+            # count; the sheet lists one it counted as "+8 Slashing (weapon, strength modifier)"
             base["base_dmg"] += max(0, mech.avg_expr(mx.group(1), lmv_names(st)))
             st.notes.append(f"{rec.get('name')}: {mx.group(1)} rider added (not on the sheet)")
     if plan["mode"] == "ranged":
@@ -1549,7 +1551,8 @@ class Result:
             else None
         self.plan_events = [dict(name=ev.get("name"), n=ev.get("n"), slot=ev.get("slot"), spell=ev.get("spell_id"),
                                  kind=ev.get("kind"), cost=ev.get("cost"), dropped=bool(ev.get("dropped")),
-                                 dmg=round(r["dmg"], 2)) for ev, r in zip(evs, results)] if detail else None
+                                 dmg=round(r["dmg"], 2), toggle=bool(r.get("toggle")))
+                            for ev, r in zip(evs, results)] if detail else None
 
     def raw_value(self):
         return self.offence * (1.0 - self.lost) * math.sqrt(sat(self.R))

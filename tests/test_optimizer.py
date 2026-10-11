@@ -14,8 +14,9 @@ one set per origin x first two Build Advisor builds x act, proficiency, Rage + h
 obtainability, story-path families, Dark-Urge-only items, local optimality (no single swap improves the score) and
 the unverified-mechanics switches, party ownership (owners.json read here), defensive value (status immunities
 read from the game stats here), creature-type / wearer conditions, stealth openers, the action economy of per-rest
-item spells, The Dead Shot's crit range, the respec tuning (re-scored and re-checked against the point-buy rules
-here) and the test-plan export. A test with nothing to check fails.
+item spells, The Dead Shot's crit range, a weapon's ability-modifier rider counted once, the respec tuning
+(re-scored and re-checked against the point-buy rules here) and the test-plan export, with the toggles it assumes.
+A test with nothing to check fails.
 """
 import itertools
 import json
@@ -927,6 +928,48 @@ def check_dead_shot(out=None):
     return fails, 1
 
 
+def check_weapon_riders(out=None):
+    """An ability-modifier rider counts once per hit: Balduran's Giantslayer (its "StrengthModifier Slashing" rider
+    read here from the item record) hits for its dice + enchantment + the STR modifier twice, no more."""
+    import model
+    W = _world()
+    rec = next(r for r in _items().values() if r.get("name") == "Balduran's Giantslayer")
+    w = W.items[rec["stats_id"]]["weapon"]
+    if "StrengthModifier Slashing" not in (w.get("extra_damage") or []):
+        return ["Balduran's Giantslayer has no StrengthModifier rider in the data - expectation changed"], 1
+    nd, sides = (int(x) for x in w["damage"].split("d"))
+    st = model.State(W, "laezel", "bmgiant", 3, {"MainHand": rec["stats_id"]}, None)
+    evs, _special = model.make_weapon_events(st)
+    main = next(e for e in evs if e.get("name") == "attack")
+    want = nd * (sides + 1) / 2 + w["enchantment"] + 2 * st.mods["STR"]
+    if abs(main["base_dmg"] - want) > 1e-9:
+        return [f"Giantslayer hit before conditional boosts: {main['base_dmg']}, want {want} (STR {st.mods['STR']:+d} "
+                f"twice)"], 1
+    return [], 1
+
+
+def check_plan_toggles(out=None):
+    """A test plan lists the toggled passives its attacks assume (the harness sets them; a character can have them
+    off): each is a toggle in the game stats (read here) and is listed exactly when the model's attacks used it.
+    Lae'zel with Balduran's Giantslayer swings with Great Weapon Master's -5 / +10; Gale has no such passive."""
+    import gauntlet
+    import model
+    W = _world()
+    S = _stats()
+    gs = next(r for r in _items().values() if r.get("name") == "Balduran's Giantslayer")["stats_id"]
+    fails = []
+    for cid, bid, lo, want in (("laezel", "bmgiant", {"MainHand": gs}, ["GreatWeaponMaster_BonusDamage"]),
+                               ("gale", "tempestevoker", {}, [])):
+        r = model.score(W, cid, bid, 3, lo, None, detail=True)
+        got = gauntlet.test_plan(W, r, "check", lo, "research")["toggles"]
+        if got != want:
+            fails.append(f"{cid} {bid}: toggles {got}, want {want}")
+        for t in got:
+            if "IsToggled" not in ((S.get(t) or {}).get("Properties") or ""):
+                fails.append(f"{cid} {bid}: {t} is not a toggled passive in the game stats")
+    return fails, 2
+
+
 _COST = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
 
 
@@ -1158,6 +1201,8 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("wearer conditions (BoostConditions)", check_wearer_conditions),
                 ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
                 ("The Dead Shot crit range", check_dead_shot),
+                ("weapon ability-modifier rider counted once", check_weapon_riders),
+                ("test plans list the toggles the model assumes", check_plan_toggles),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
                 ("test plans", check_test_plans), ("party assignment of unique items", check_party),
                 ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
@@ -1481,6 +1526,32 @@ def mutations():
         finally:
             model.all_extra_boosts = old
     out.append(("The Dead Shot's crit range only on its own weapon", m_deadshot))
+
+    def m_rider_twice():
+        old = model.make_weapon_events
+
+        def twice(st):
+            evs, special = old(st)
+            for ev in evs:
+                if ev.get("slot") == "MainHand":
+                    ev["base_dmg"] += max(0, st.mods.get("STR", 0))     # the sheet's rider added again
+            return evs, special
+        model.make_weapon_events = twice
+        try:
+            return check_weapon_riders()[0]
+        finally:
+            model.make_weapon_events = old
+    out.append(("weapon ability-modifier rider counted twice", m_rider_twice))
+
+    def m_no_toggles():
+        import gauntlet
+        old = gauntlet.TOGGLES
+        gauntlet.TOGGLES = ()
+        try:
+            return check_plan_toggles()[0]
+        finally:
+            gauntlet.TOGGLES = old
+    out.append(("test plans drop the toggles the model assumes", m_no_toggles))
 
     def m_respec():
         import respec
