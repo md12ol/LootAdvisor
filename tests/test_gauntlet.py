@@ -29,7 +29,10 @@
 - a real respec: nothing emulated in prep, classes / subclasses / feats compared; the game's proficiency answer;
 - what the worn items add to the resources (a status an item puts on), spells allowed only out of combat never
   planned, the character's own summon's turn ended, bystanders in a lane moved away and back;
-- the control pair: equal damage and equal damage taken in the model, and the search for one.
+- the control pair: equal damage and equal damage taken in the model, and the search for one;
+- real rolls: the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
+  reaction queue), on by default and recorded per run; a missed cast is done, with its outcome; riders and the turns
+  of party members outside the fight; run.py counts and reports only runs of the same kind.
 """
 import contextlib
 import io
@@ -157,7 +160,7 @@ def lua_tests():
               rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
-              plan_gap_lua_tests):
+              plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -2114,6 +2117,330 @@ def hit_log_tests(L):
     check("hits: the first hit's description is kept as a probe", g.T_probe is not None and g.T_probe.probe is True)
 
 
+def real_roll_tests(L):
+    """Real rolls: the queued Osiris casts of the run's casters lose IgnoreSpellRolls and nothing else (other casters,
+    the reaction queue untouched); on by default, off per request or switch; the character joins at the fight's start,
+    its summons as they come, both leave at the end (one lane never drops the other's); the run record says whether
+    the run rolled."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.realCasters = {}
+      local OPTS = "CastOptions(IgnoreSpellRolls,AvoidDangerousAuras,IgnoreCastChecks,IgnoreTargetChecks,NoMovement,IgnoreHasSpell)"
+      local function req(u, spell, opts)
+        return { Caster = { Uuid = { EntityUuid = u } }, Spell = { Prototype = spell }, CastOptions = opts or OPTS }
+      end
+      T_names = G.castOptionNames(OPTS)
+      T_names2 = G.castOptionNames({ "NoMovement", "IgnoreSpellRolls" })
+      local osi = { req("c1", "Projectile_MainHandAttack"), req("b1", "Target_MainHandAttack"),
+                    req("c1", "Target_X", "CastOptions(NoMovement)") }
+      local reac = { req("c1", "Interrupt_SneakAttack", "CastOptions(IgnoreSpellRolls,IsInterrupt,IsReaction)") }
+      Ext.System.ServerCastRequest = { OsirisCastRequests = osi, ReactionStartRequests = reac }
+      local F1 = { char = "c1", realRolls = true }
+      G.addRealCaster(F1, "c1")
+      G._on.cast_requests()
+      T_c1 = osi[1].CastOptions
+      T_b1 = osi[2].CastOptions
+      T_x = osi[3].CastOptions
+      T_reac = reac[1].CastOptions
+      T_edits = G.realCasters.c1 and G.realCasters.c1.edits
+      -- the switch: on by default, off per request or for every run, a person's casts always roll
+      T_on = { G.realRollsFor({ mode = "scripted" }), G.realRollsFor({ mode = "scripted", real_rolls = false }),
+               G.realRollsFor({ mode = "manual", real_rolls = false }) }
+      G.REAL_ROLLS = false
+      T_on[4] = G.realRollsFor({ mode = "scripted" })
+      G.REAL_ROLLS = true
+      -- two lanes: each run drops only its own casters
+      local F2 = { char = "c2", realRolls = true }
+      G.addRealCaster(F2, "c2")
+      G.addRealCaster({ char = "c3", realRolls = false }, "c3")
+      G.addRealCaster({ char = "c4", realRolls = true, manual = true }, "c4")
+      T_drop1 = G.dropRealCasters(F1)
+      T_after1 = { c1 = G.realCasters.c1 ~= nil, c2 = G.realCasters.c2 ~= nil, c3 = G.realCasters.c3 ~= nil,
+                   c4 = G.realCasters.c4 ~= nil }
+      G.dropRealCasters(F2)
+      T_empty = next(G.realCasters) == nil
+      Ext.System.ServerCastRequest = nil
+    """)
+    g = L.globals()
+    check("rolls: the cast options read from the engine's text form and from a list",
+          lst(g.T_names)[0] == "IgnoreSpellRolls" and len(lst(g.T_names)) == 6 and
+          sorted(lst(g.T_names2)) == ["IgnoreSpellRolls", "NoMovement"], str(lst(g.T_names)))
+    c1 = lst(g.T_c1) if not isinstance(g.T_c1, str) else [g.T_c1]
+    check("rolls: the character's queued Osiris cast loses IgnoreSpellRolls, keeps every other option",
+          c1 == ["AvoidDangerousAuras", "IgnoreCastChecks", "IgnoreTargetChecks", "NoMovement", "IgnoreHasSpell"],
+          str(c1))
+    check("rolls: other casters' requests and the reaction queue are left alone",
+          isinstance(g.T_b1, str) and "IgnoreSpellRolls" in g.T_b1 and isinstance(g.T_reac, str) and
+          "IgnoreSpellRolls" in g.T_reac and g.T_x == "CastOptions(NoMovement)", f"{g.T_b1} {g.T_reac} {g.T_x}")
+    check("rolls: each edit counted per spell", g.T_edits is not None and g.T_edits["Projectile_MainHandAttack"] == 1
+          and g.T_edits["Target_X"] is None)
+    check("rolls: on by default, off per request or with G.REAL_ROLLS, a person's own casts always roll",
+          [g.T_on[i + 1] for i in range(4)] == [True, False, True, False], str([g.T_on[i + 1] for i in range(4)]))
+    a1 = g.T_after1
+    check("rolls: a run drops only its own casters (the other lane keeps rolling); no caster without rolls or for a "
+          "person", a1.c1 is False and a1.c2 is True and a1.c3 is False and a1.c4 is False and g.T_empty is True and
+          g.T_drop1.c1["Projectile_MainHandAttack"] == 1, str(dict(a1)))
+    # the fight's start adds the character, the run's end removes it and records the run's rolls
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.realCasters = {}
+      local saved
+      local stringify = Ext.Json.Stringify
+      Ext.Json.Stringify = function(t) if t.spec_id then saved = t end return "{}" end
+      local F = { char = "c1", enemies = { "e1" }, req = { scenario = "boss", label = "x" }, plan = {}, S = {},
+                  started = 1, cooldown = {}, tRun = 0, realRolls = G.realRollsFor({ mode = "scripted" }) }
+      G.F = F
+      G.goFight(F)
+      T_start = G.realCasters.c1 ~= nil
+      T_res = G.results.real_rolls
+      G._finish(F, "aborted")
+      T_end = G.realCasters.c1 == nil
+      T_rec = saved and saved.real_rolls
+      local F2 = { char = "c1", enemies = { "e1" }, req = { scenario = "boss", label = "y", real_rolls = false },
+                   plan = {}, S = {}, started = 1, cooldown = {}, tRun = 0,
+                   realRolls = G.realRollsFor({ real_rolls = false }) }
+      G.F = F2
+      G.goFight(F2)
+      T_start2 = G.realCasters.c1 ~= nil
+      G._finish(F2, "aborted")
+      T_rec2 = saved and saved.real_rolls
+      Ext.Json.Stringify = stringify
+      G.F = nil
+      G.fighting = false
+    """)
+    g = L.globals()
+    check("rolls: the character rolls from the fight's start, not after its end", g.T_start is True and g.T_end is True
+          and g.T_res is True, f"{g.T_start} {g.T_end}")
+    check("rolls: every run record says whether the run rolled", g.T_rec is True and g.T_rec2 is False and
+          g.T_start2 is False, f"{g.T_rec} {g.T_rec2}")
+    # a summon joining a scripted run rolls too and gets the run's reaction policy
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.realCasters = {}
+      local F = { char = "c1", realRolls = true, plan = {} }
+      G.summonJoins(F, "sw")
+      T_sw = G.realCasters.sw ~= nil
+      T_swr = G.results.reactions and G.results.reactions.sw ~= nil
+      G.dropRealCasters(F)
+    """)
+    g = L.globals()
+    check("rolls: a summon of the character rolls too and gets the run's reaction policy", g.T_sw is True and
+          g.T_swr is True, f"{g.T_sw} {g.T_swr}")
+
+
+def outcome_tests(L):
+    """With real rolls a confirmed cast may miss: it is done (never refused, the round not idle) and gets its outcome
+    from the hit log or a 0 damage row; a rider whose own cast missed is not missing; riders that hang on a hit are
+    counted over landed hits only; the hit row carries the natural roll, total, AC or DC and advantage."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local R = { r = 1, actions = {
+        { spell = "Projectile_MainHandAttack", result = "done", cast_t = 1, target_u = "b1" },
+        { spell = "Projectile_MainHandAttack", result = "done", cast_t = 3, target_u = "b1" },
+        { spell = "Target_HuntersMark", result = "done", cast_t = 5, target_u = "b1" },
+        { spell = "Projectile_X", result = "done", cast_t = 7, target_u = "b1" },
+        { spell = "Projectile_Y", result = "failed: refused", cast_t = 9, target_u = "b1" } }, done = { action = true } }
+      local hits = { { r = 1, t = 1.5, source = "c1", spell = "Projectile_MainHandAttack", hit = true, crit = true },
+                     { r = 1, t = 3.2, source = "c1", spell = "Projectile_MainHandAttack", hit = false, miss = true },
+                     { r = 1, t = 3.3, source = "b1", spell = "Target_MainHandAttack", hit = true } }
+      local dmg = { { r = 1, t = 7.1, source = "c1", target = "b1", amount = 0 },
+                    { r = 1, t = 9.1, source = "c1", target = "b1", amount = 9 } }
+      T_tally = G.castOutcomes(R, hits, dmg, "c1")
+      T_out = {}
+      for i, a in ipairs(R.actions) do T_out[i] = a.outcome or "-" end
+      -- a missed attack confirmed by its 0 damage row: done, and the round is no idle round
+      T_ev = G.castEvidence({ who = "c1", spell = "Projectile_X", target = "b1", casts0 = 0, dmg0 = 0 }, {},
+        { { target = "b1", source = "c1", amount = 0 } })
+      T_j = G.judge({ { r = 1, done = { action = true }, actions = { { result = "done", outcome = "miss" } } } },
+        "rounds done", { summary = { cast_misses = 0 } }, { me = "c1" })
+      -- riders: the rider's cast missed -> no rider expected; it landed -> the missing rider fails the run
+      Osi.IsDead = function() return 0 end
+      local F = { char = "c1", enemies = { "b1" }, plan = { riders = {
+        { round = 1, status = "MARKED", on = "@boss", spell = "Projectile_Y" } } } }
+      local Rm = { r = 1, turn_statuses = {}, status_log = {},
+        actions = { { spell = "Projectile_Y", result = "done", outcome = "miss" } } }
+      G.riderCheck(F, Rm)
+      T_rm = G.results.rider_misses
+      T_rs = Rm.rider_skips and #Rm.rider_skips
+      G.riderCheck(F, { r = 1, turn_statuses = {}, status_log = {},
+        actions = { { spell = "Projectile_Y", result = "done", outcome = "hit" } } })
+      T_rm2 = G.results.rider_misses and #G.results.rider_misses
+      Osi.IsDead = nil
+      -- riders on hits: misses carry none
+      local rounds = { { r = 1, status_log = { { who = "b1", status = "PASSIVE_HUNTERS_MARK", on = true } },
+          reactions_seen = { { who = "c1", interrupt = "Interrupt_SneakAttack" } }, casts = {} },
+        { r = 2, status_log = {}, reactions_seen = {}, casts = {} } }
+      local hh = { { r = 1, source = "c1", hit = true, flags = "AttackAdvantage,Hit", target_statuses = { "HUNTERS_MARK" } },
+        { r = 1, source = "c1", hit = false, miss = true, flags = "AttackAdvantage,Miss", target_statuses = { "HUNTERS_MARK" } },
+        { r = 2, source = "c1", hit = true, flags = "AttackAdvantage,Hit", target_statuses = {} },
+        { r = 2, source = "b1", hit = true, flags = "AttackAdvantage,Hit", target_statuses = { "HUNTERS_MARK" } } }
+      T_hr = G.hitRiders(rounds, hh, "c1")
+      -- the hit row: the first condition roll
+      G.reset()
+      G.F = { char = "c1", enemies = { "b1" } }
+      G.fighting, G.round = true, 2
+      Ext.Types = { Serialize = function() return {} end }
+      G._onHit({ Caster = { Uuid = { EntityUuid = "c1" } }, Target = { Uuid = { EntityUuid = "b1" } },
+        SpellId = { Prototype = "Projectile_MainHandAttack" },
+        Hit = { EffectFlags = { "Hit", "AttackAdvantage" }, ConditionRolls = { { Difficulty = 16, SavingThrowRoll = false,
+          Roll = { Result = { NaturalRoll = 17, Total = 25 }, Roll = { Advantage = true, RollType = "RangedWeaponAttack" } } } } } })
+      T_row = G.hits[1]
+      G.fighting, G.F = false, nil
+      Ext.Types = nil
+      -- the summary counts the outcomes
+      G.rounds = { { r = 1, actions = {}, attacks = { hit = 2, crit = 1, miss = 3 } } }
+      T_sum = G._summarize({ char = "c1", enemies = {} })
+    """)
+    g = L.globals()
+    out = [g.T_out[i + 1] for i in range(5)]
+    check("outcome: a critical hit, a miss flag, a cast without hits (none), a 0 damage row (miss), a failed cast "
+          "(none)", out == ["crit", "miss", "-", "miss", "-"], str(out))
+    t = g.T_tally
+    check("outcome: the round's tally", t.crit == 1 and t.miss == 2 and t.hit == 0, f"{t.crit} {t.miss} {t.hit}")
+    check("outcome: a missed attack with a 0 damage row is a confirmed cast, its round not idle",
+          g.T_ev == "damage" and g.T_j.valid is True, f"{g.T_ev} {lst(g.T_j.causes)}")
+    check("riders: a rider whose own cast missed is not missing (noted as skipped); one that landed is",
+          g.T_rm is None and g.T_rs == 1 and g.T_rm2 == 1, f"{g.T_rm} {g.T_rs} {g.T_rm2}")
+    hr = g.T_hr
+    check("riders on hits: Hunter's Mark and Sneak Attack counted over the character's landed hits only",
+          hr.hunters_mark.hits == 1 and hr.hunters_mark.rider == 1 and hr.sneak_attack.turns == 2 and
+          hr.sneak_attack.rider == 1, f"{hr.hunters_mark.hits} {hr.hunters_mark.rider} {hr.sneak_attack.turns} "
+                                      f"{hr.sneak_attack.rider}")
+    r = g.T_row
+    check("hits: the natural roll, the total, the AC it was rolled against, the roll type and advantage",
+          r is not None and r.roll == 17 and r.roll_total == 25 and r.roll_against == 16 and
+          r.roll_type == "RangedWeaponAttack" and r.advantage == "true" and r.saving_throw is False,
+          str(r and (r.roll, r.roll_total, r.roll_against, r.roll_type, r.advantage)))
+    a = g.T_sum.attacks
+    check("summary: hits, critical hits and misses of the run", a.hit == 2 and a.crit == 1 and a.miss == 3)
+
+
+def idle_turn_tests(L):
+    """Turns: a party member outside the fight holding a turn is ended at the fight's start and after each of the
+    character's turns; the character, its summons and every lane's fighters are left alone. Reactions: an "ask" answer
+    is applied as "never" in scripted runs, and a prompt for the character's summon ends the run like the character's."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local active = { c1 = true, p2 = true, p3 = false, lb = true, sw = true }
+      local ents = {}
+      for u in pairs(active) do
+        ents[u] = { TurnBased = setmetatable({}, { __index = function(_, k)
+          if k == "IsActiveCombatTurn" then return active[u] end end }) }
+      end
+      Ext.Entity.Get = function(u) return ents[u] end
+      Osi.DB_Players = { Get = function() return { { "c1" }, { "p2" }, { "p3" }, { "lb" }, { "sw" } } end }
+      local ended = {}
+      Osi.EndTurn = function(u) ended[#ended + 1] = u; active[u] = false end
+      G.LANES = { on = true, members = { B = { lb = true } } }
+      local F = { char = "c1", enemies = { "e1" }, req = { scenario = "boss" }, plan = {}, S = {}, cooldown = {},
+                  summons = { sw = true }, realRolls = false, tRun = 0 }
+      G.F = F
+      G.goFight(F)
+      T_start = ended
+      ended = {}
+      active.p2 = true
+      -- after the character's turn ("ending"): its own turn and the idle member's are ended
+      G.round = 1
+      G.rounds = { { r = 1, actions = {}, casts = {}, done = { action = true }, cast_fails = {}, reactions_seen = {} } }
+      F.state, F.next = "ending", 0
+      G.step(F, 10)
+      T_round = ended
+      T_log = G.results.idle_turns_ended
+      T_att = G.rounds[1].attacks
+      G.LANES = nil
+      Osi.DB_Players, Osi.EndTurn = nil, nil
+      Ext.Entity.Get = function() return nil end
+      G.F, G.fighting = nil, false
+    """)
+    g = L.globals()
+    st, rd = lst(g.T_start), lst(g.T_round)
+    check("turns: at the fight's start only the idle party member's turn is ended (not the character, its summon, "
+          "the other lane's fighter)", st == ["p2"], str(st))
+    check("turns: after the character's turn the idle member's turn is ended too, and logged",
+          "p2" in rd and "c1" in rd and "lb" not in rd and "sw" not in rd and len(g.T_log) == 2, str(rd))
+    check("outcome: each round's casts get their outcomes as the turn ends", g.T_att is not None)
+    L.execute(r"""
+      local G = GAUNTLET
+      local store = { Interrupt_Charm = { "Ask", "Enabled" } }
+      local prefs
+      prefs = setmetatable({}, {
+        __index = function(_, k) local f = store[k]; return f and ("InterruptInteractionTypes(" .. table.concat(f, ",") .. ")") end,
+        __newindex = function(_, k, v) store[k] = v end,
+        __pairs = function() local k; return function() k = next(store, k); if k then return k, prefs[k] end end end })
+      local ent = { InterruptPreferences = { Preferences = prefs }, Replicate = function() end }
+      Ext.Entity.Get = function(u) if u == "c1" then return ent end end
+      Osi.GetDisplayName = function() return nil end
+      G.savedReactions = nil
+      local rep = G.reactionsApply({ reactions = { Interrupt_Charm = "ask" } }, { "c1" })
+      T_ask = table.concat(store.Interrupt_Charm, ",")
+      T_askpol = rep.c1.reactions.Interrupt_Charm
+      G.reactionsRestore()
+      -- a prompt for the summon
+      Ext.Entity.GetAllEntitiesWithComponent = function()
+        return { { InterruptActionState = { SpellCastGuid = "g", Actions = { { Observer = { Uuid = { EntityUuid = "sw" } },
+          Interrupt = { InterruptData = { Interrupt = "Interrupt_X" } } } } } } }
+      end
+      G.results = {}
+      T_sguard = G.reactionGuard({ char = "c1", summons = { sw = true } })
+      Ext.Entity.GetAllEntitiesWithComponent = function() return {} end
+      Ext.Entity.Get = function() return nil end
+      Osi.GetDisplayName = nil
+    """)
+    g = L.globals()
+    check("reactions: an 'ask' answer is applied as 'never' (a prompt would stop the scripted cast)",
+          g.T_ask == "" and g.T_askpol == "never", f"{g.T_ask!r} {g.T_askpol}")
+    check("reactions: a prompt for the character's summon ends the run too", g.T_sguard == "Interrupt_X",
+          str(g.T_sguard))
+
+
+def real_rolls_py_tests(R):
+    """run.py: every record says whether it rolled (older ones did not); --repeats and the report count only runs of
+    the same kind; --no-real-rolls goes into the request."""
+    check("rolls: older records ran without rolls, new ones say so",
+          R.rolls_of({}) is False and R.rolls_of({"real_rolls": True}) is True and
+          R.rolls_of({"req": {"real_rolls": True}}) is True and R.rolls_of({"real_rolls": False}) is False)
+    A_ = type("A", (), {"arena": "x", "rounds": 16, "lanes": None})
+    p = {"specs": {"a": {"act": 3}}}
+    on, off = A_(), A_()
+    off.no_real_rolls = True
+    check("rolls: requests roll unless --no-real-rolls", R._req(on, 0, p, "a", "boss", False, "c")["real_rolls"] is True
+          and R._req(off, 0, p, "a", "boss", False, "c")["real_rolls"] is False)
+    d = tempfile.mkdtemp(prefix="gauntlet_rolls_")
+    try:
+        pr = {"char": "c", "build": "cb", "act": 3, "specs": {x: {"set": f"c {x}", "act": 3} for x in ("a", "b")}}
+        res = os.path.join(d, "res.jsonl")
+        with open(res, "w", encoding="utf-8") as f:
+            old = _sched_rec(pr, "a", [60.0] * 16)
+            old.pop("real_rolls")
+            f.write(json.dumps(dict(old, pair=0, side="a")) + "\n")
+            f.write(json.dumps(dict(_sched_rec(pr, "a", [50.0] * 16), pair=0, side="a")) + "\n")
+        n_on = len(R.prior_runs(res, 0, pr, ["boss"])["a"])
+        n_off = len(R.prior_runs(res, 0, pr, ["boss"], False)["a"])
+        check("rolls: --repeats counts only runs of the same kind", n_on == 1 and n_off == 1, f"{n_on} {n_off}")
+        pairs = [_pair("x", 100, 101)]
+        sp, rs = os.path.join(d, "specs.json"), os.path.join(d, "r.jsonl")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        with open(rs, "w", encoding="utf-8") as f:
+            f.write(json.dumps(_rec(0, "a", [100] * 16)) + "\n")
+            old = _rec(0, "b", [777] * 16)
+            old.pop("real_rolls")
+            f.write(json.dumps(old) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            R.main(["--report", rs, "--specs", sp])
+        text = buf.getvalue()
+        check("rolls: the report leaves runs without rolls out, and says so",
+              "777" not in text and "1 run(s) without real rolls left out" in text, text[-300:])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def plan_effect_tests(P):
     """plan.py: Dread Ambusher's own free attack first in round 1 (not an action-bound attack), riders listed, spells a
     status grants not expected in the book, toggles in the model's state, action item spells only when the model's
@@ -2442,7 +2769,8 @@ def py_tests():
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
-              lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P)):
+              lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
+              lambda: real_rolls_py_tests(R)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -2594,7 +2922,7 @@ def reach_tests(P):
 
 def _sched_rec(p, side, dealt, invalid=None):
     """A run record as the game writes it (spec ids, rounds with their confirmed action, the summary)."""
-    return {"mode": "scripted", "scenario": "boss", "haste": False,
+    return {"mode": "scripted", "scenario": "boss", "haste": False, "real_rolls": True,
             "spec_id": {"build": p["build"], "act": p["act"], "set_name": p["specs"][side]["set"]},
             "rounds": [{"r": r + 1, "done": {"action": True}} for r in range(len(dealt))],
             "results": {"summary": {"dealt": dealt, "taken": [0] * len(dealt), "max_hp": 100}},
@@ -2786,7 +3114,8 @@ def engine_lane_tests():
 
 
 def _rec(pair, side, dealt, valid=True, invalid=None, scenario="boss"):
-    return {"mode": "scripted", "pair": pair, "side": side, "scenario": scenario, "haste": False, "valid": valid,
+    return {"mode": "scripted", "pair": pair, "side": side, "scenario": scenario, "haste": False, "real_rolls": True,
+            "valid": valid,
             "invalid": invalid or [], "results": {"summary": {"dealt": dealt, "taken": [0] * len(dealt), "max_hp": 100}}}
 
 
@@ -2838,7 +3167,7 @@ def gate_tests(R):
         with open(rs, "w", encoding="utf-8") as f:
             for r in (_rec(0, "a", [100] * 16), _rec(0, "b", [60] * 16), _rec(1, "a", pilot_a), _rec(1, "b", pilot_b),
                       _rec(1, "b", [999] * 16, False, ["ended: aborted"]),
-                      {"error": "the run did not finish", "pair": 1, "side": "a", "req": {"scenario": "boss"}}):
+                      {"error": "the run did not finish", "pair": 1, "side": "a", "req": {"scenario": "boss", "real_rolls": True}}):
                 f.write(json.dumps(r) + "\n")
         import contextlib
         import io
@@ -3341,7 +3670,8 @@ MUTATIONS = [
      "    return true"),
     ("stopping: rounds pooled, not compared by number", RN, "    mk = {k: mean(v) for k, v in pool.items()}",
      "    mk = {k: 0.0 for k in pool}"),
-    ("scheduling: the results file not read", RN, "    got = {i: prior_runs(a.results, i, pairs[i], scen) for i in todo}",
+    ("scheduling: the results file not read", RN,
+     "    got = {i: prior_runs(a.results, i, pairs[i], scen, not a.no_real_rolls) for i in todo}",
      '    got = {i: {"a": [], "b": []} for i in todo}'),
     ("scheduling: another set's runs counted", RN, ' or not same_set(r, p, r["side"]):', ":"),
     ("scheduling: a deterministic failure repeated", RN, "                    if why and k == 0:",
@@ -3382,6 +3712,54 @@ MUTATIONS = [
      "            if knows(name):"),
     ("plan gaps: Destructive Wrath on every damage type", PL,
      'for e, t in sp["dmg"] if t in ("Lightning", "Thunder")', 'for e, t in sp["dmg"]'),
+    ("rolls: IgnoreSpellRolls kept", GL, "if f == G.ROLL_OPTION then had = true else keep[#keep + 1] = f end",
+     "keep[#keep + 1] = f; had = true"),
+    ("rolls: every caster's requests edited", GL, "    local c = cu and casters[cu]\n",
+     "    local c = cu and (casters[cu] or { edits = {} })\n"),
+    ("rolls: the reaction queue edited instead", GL, "Ext.System.ServerCastRequest.OsirisCastRequests end)",
+     "Ext.System.ServerCastRequest.ReactionStartRequests end)"),
+    ("rolls: off by default", GL, "G.REAL_ROLLS = true\n", "G.REAL_ROLLS = false\n"),
+    ("rolls: the request's switch ignored", GL, "  return G.REAL_ROLLS ~= false and (req or {}).real_rolls ~= false",
+     "  return G.REAL_ROLLS ~= false"),
+    ("rolls: the character never rolls", GL, "  G.addRealCaster(F, F.char)\n", ""),
+    ("rolls: summons never roll", GL, "  G.addRealCaster(F, s)\n", ""),
+    ("rolls: casters kept after the run", GL, "    if G.realCasters[u] == c then G.realCasters[u] = nil end\n", ""),
+    ("rolls: one lane drops the other's casters", GL,
+     "    if G.realCasters[u] == c then G.realCasters[u] = nil end\n", "    G.realCasters = {}\n"),
+    ("rolls: not in the run record", GL, "    real_rolls = F.realRolls == true,\n", ""),
+    ("outcome: a miss flag ignored", GL, "        if h.miss then missed = true elseif", "        if false then elseif"),
+    ("outcome: a 0 damage row counted as a hit", GL, "        if dealt > 0 then landed = true else missed = true end",
+     "        landed = true"),
+    ("evidence: a missed attack's 0 damage row is no evidence", GL,
+     "    if P.target and P.target ~= P.who and d.target == P.target and (d.source == P.who or d.owner == P.who)",
+     "    if P.target and P.target ~= P.who and d.target == P.target and (d.source == P.who or d.owner == P.who)"
+     " and (d.amount or 0) > 0"),
+    ("riders: a rider whose cast missed fails the run", GL, "      if not seen and riderMissed(R, rd.spell) then",
+     "      if false then"),
+    ("riders on hits: misses counted", GL,
+     "      if h.r == R.r and h.source == me and (h.hit or h.crit) and not h.miss then",
+     "      if h.r == R.r and h.source == me then"),
+    ("hits: the natural roll not read", GL, '"ConditionRolls.1.Roll.Result.NaturalRoll", ', ""),
+    ("hits: numbered steps of a path read as names", GL, "do x = x[tonumber(k) or k] end", "do x = x[k] end"),
+    ("reactions: an ask answer kept", GL, '      if pol[k] == "ask" then pol[k] = "never" end\n', ""),
+    ("reactions: the summon's prompts unguarded", GL, "  for s in pairs(F.summons or {}) do\n    for _, p in ipairs",
+     "  for s in pairs({}) do\n    for _, p in ipairs"),
+    ("reactions: a summon keeps the player's settings", GL,
+     "  for u, rep in pairs(G.reactionsApply(F.plan, { s })) do G.results.reactions[u] = rep end\n", ""),
+    ("turns: idle party turns left open at the start", GL, "  if not F.manual then G.endIdleTurns(F) end\n", ""),
+    ("outcome: never read as the turn ends", GL, "      G.castOutcomes(R, G.hits, G.dmg, uuid(F.char))\n", ""),
+    ("turns: idle party turns left open after a round", GL, "    G.endIdleTurns(F)\n", ""),
+    ("turns: the fighting character's turn ended", GL, "  local fighting = { [uuid(F.char)] = true }",
+     "  local fighting = {}"),
+    ("turns: the other lane's fighter ended", GL, "    for u in pairs(m) do fighting[u] = true end\n", ""),
+    ("turns: the summon's turn ended", GL, "  for s in pairs(F.summons or {}) do fighting[s] = true end\n", ""),
+    ("rolls: runs without rolls counted for repeats", RN, "        if rolls_of(r) != real_rolls:\n            continue\n",
+     ""),
+    ("rolls: the report mixes runs without rolls", RN,
+     "        if rolls_of(r) != want_rolls:\n            other_rolls += 1\n            continue\n", ""),
+    ("rolls: --no-real-rolls ignored", RN, '"real_rolls": not getattr(a, "no_real_rolls", False)}', '"real_rolls": True}'),
+    ("rolls: older records read as rolled", RN, '.get("real_rolls", False)) is not False',
+     '.get("real_rolls", True)) is not False'),
     ("boss: full hit points at our turn", GL, "pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT)",
      "pcall(Osi.SetHitpointsPercentage, d, 100)"),
 ]

@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 5
+G.VERSION = 6
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -916,8 +916,10 @@ local function partyMembers()
   return out
 end
 G.partyMembers = partyMembers
--- Scripted runs only. Saves each character's own settings once (a second call keeps the first copy), applies the
--- plan's policy and reads it back. Returns { [uuid] = { name, reactions = { Interrupt_X = policy }, verified } }.
+-- Scripted runs only, before every fight. Saves each character's own settings once (a second call keeps the first
+-- copy), applies the plan's policy and reads it back. An "ask" answer is applied as "never": with real rolls many more
+-- reactions trigger, and a prompt stops the scripted cast that caused it.
+-- Returns { [uuid] = { name, reactions = { Interrupt_X = policy }, verified } }.
 function G.reactionsApply(plan, chars)
   G.savedReactions = G.savedReactions or {}
   local report = {}
@@ -927,6 +929,7 @@ function G.reactionsApply(plan, chars)
     local want, pol = {}, {}
     for _, k in ipairs(G.knownInterrupts(u)) do
       pol[k] = G.reactionPolicy(k, plan)
+      if pol[k] == "ask" then pol[k] = "never" end
       want[k] = G.reactionFlags(pol[k])
     end
     setPrefs(u, want)
@@ -965,12 +968,15 @@ function G.pendingReactions(u)
   end
   return out
 end
--- The in-turn guard. Scripted turns only: a prompt the policy did not cover is logged as a miss (so the reaction list
--- can be completed) and ends the run, because the engine offers no safe way to answer it (writing the server's
--- interrupt decision crashed the game). When a person has control it does nothing.
+-- The in-turn guard. Scripted turns only: a prompt for the character or its summon that the policy did not cover is
+-- logged as a miss (so the reaction list can be completed) and ends the run, because the engine offers no safe way to
+-- answer it (writing the server's interrupt decision crashed the game). When a person has control it does nothing.
 function G.reactionGuard(F)
   if not F or F.manual then return nil end
   local open = G.pendingReactions(F.char)
+  for s in pairs(F.summons or {}) do
+    for _, p in ipairs(G.pendingReactions(s)) do open[#open + 1] = p end
+  end
   if #open == 0 then return nil end
   G.results.reaction_misses = G.results.reaction_misses or {}
   for _, p in ipairs(open) do
@@ -1505,7 +1511,8 @@ local function onCrit(def, ownerAtt, att)
   end
 end
 -- One row per hit the run's creatures deal or take (Script Extender DealDamage): spell, the hit's flags (hit / miss /
--- critical), the attack roll where the hit description carries it, damage per type, the target's statuses and the
+-- critical), the roll where the hit description carries it (its first condition roll: the natural d20, the total, the
+-- AC or DC it was rolled against, advantage, a saving throw), damage per type, the target's statuses and the
 -- character's concentration at the hit. The field names are read defensively; the first hit's whole description is
 -- kept in results.hit_probe so the names can be checked against the game. At most HIT_LOG_MAX rows per run.
 G.HIT_LOG_MAX = 3000
@@ -1513,7 +1520,7 @@ local function first(obj, paths)
   for _, path in ipairs(paths) do
     local v = try(function()
       local x = obj
-      for k in path:gmatch("[^%.]+") do x = x[k] end
+      for k in path:gmatch("[^%.]+") do x = x[tonumber(k) or k] end
       return x
     end)
     if v ~= nil then return v, path end
@@ -1539,10 +1546,13 @@ function G.hitRow(e)
     spell = first(e, { "SpellId.Prototype", "Hit.SpellId.Prototype", "SpellId.OriginatorPrototype" }),
     total = first(hit, { "TotalDamageDone", "TotalDamage" }), type = flagText(first(hit, { "DamageType" })),
     flags = flags, attack_flags = attack, attack_type = flagText(first(e, { "AttackType", "Hit.AttackType" })),
-    roll = first(hit, { "AttackRoll.Result.NaturalRoll", "AttackRoll.NaturalRoll", "ConditionRoll.NaturalRoll",
-      "Roll.NaturalRoll" }),
-    roll_total = first(hit, { "AttackRoll.Result.Total", "AttackRoll.Total", "ConditionRoll.Total", "Roll.Total" }),
-    advantage = flagText(first(hit, { "AttackRoll.Advantage", "AttackRoll.RollType", "Roll.Advantage" })) }
+    roll = first(hit, { "ConditionRolls.1.Roll.Result.NaturalRoll", "AttackRoll.Result.NaturalRoll",
+      "AttackRoll.NaturalRoll" }),
+    roll_total = first(hit, { "ConditionRolls.1.Roll.Result.Total", "AttackRoll.Result.Total", "AttackRoll.Total" }),
+    roll_against = first(hit, { "ConditionRolls.1.Difficulty" }),
+    roll_type = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.RollType", "ConditionRolls.1.RollType" })),
+    saving_throw = first(hit, { "ConditionRolls.1.SavingThrowRoll" }),
+    advantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Advantage", "AttackRoll.Advantage" })) }
   local f = tostring(flags or "") .. "," .. tostring(attack or "")
   row.crit = f:find("Critical", 1, true) ~= nil
   row.miss = f:find("Miss", 1, true) ~= nil or f:find("Dodge", 1, true) ~= nil
@@ -1628,6 +1638,89 @@ if not G._listeners5 then
     crit = pcall(Ext.Osiris.RegisterListener, "CriticalHitBy", 4, "after", on("crit")),
     hit = pcall(function() return Ext.Events.DealDamage:Subscribe(on("hit")) end),
   }
+end
+
+-- ------------------------------------------------------------------------------------------------ real rolls
+-- Osiris casts (UseSpell, UseSpellAtPosition) are queued with the cast option IgnoreSpellRolls: no attack roll and no
+-- saving throw, so nothing gated on either applies (misses, critical hits, Sharpshooter's and Great Weapon Master's
+-- +10, Hunter's Mark, Sneak Attack). Just before the game's cast-request system reads its queue, the queued Osiris
+-- requests of the run's casters (G.realCasters: the character and its summons) lose that one option, and the cast rolls
+-- like a player's. Every other option stays: no movement, no resource or "has spell" check (the harness pays the costs
+-- itself), and IgnoreTargetChecks (range and sight stay the harness's job, G.castSpot). Only the Osiris queue is
+-- edited: reaction casts are queued elsewhere with options of their own. The enemies are not in the set: they act
+-- through the game's AI, whose casts roll already. G.REAL_ROLLS = false, or a request with real_rolls = false
+-- (run.py --no-real-rolls), keeps the casts that never roll, for comparison with older runs.
+G.REAL_ROLLS = true
+G.ROLL_OPTION = "IgnoreSpellRolls"
+G.realCasters = G.realCasters or {}
+-- The cast options as names: a list or set from Lua, or the engine's text form "CastOptions(A,B)".
+function G.castOptionNames(v)
+  local out = {}
+  if type(v) == "table" then
+    for k, x in pairs(v) do out[#out + 1] = type(k) == "number" and tostring(x) or tostring(k) end
+    table.sort(out)
+    return out
+  end
+  for f in (tostring(v or ""):match("%((.*)%)") or ""):gmatch("[%w_]+") do out[#out + 1] = f end
+  return out
+end
+-- Takes ROLL_OPTION off every request in list whose caster is in casters ({ [uuid] = { edits = { [spell] = n } } }),
+-- counting each edit per spell for the run record. -> the number of requests edited
+function G.rollRequests(list, casters)
+  local n = 0
+  for i = 1, (try(function() return #list end) or 0) do
+    local r = list[i]
+    local cu = r and try(function() return r.Caster.Uuid.EntityUuid end)
+    local c = cu and casters[cu]
+    if c then
+      local keep, had = {}, false
+      for _, f in ipairs(G.castOptionNames(try(function() return r.CastOptions end))) do
+        if f == G.ROLL_OPTION then had = true else keep[#keep + 1] = f end
+      end
+      if had and pcall(function() r.CastOptions = keep end) then
+        n = n + 1
+        local sp = try(function() return r.Spell.Prototype end) or "?"
+        c.edits[sp] = (c.edits[sp] or 0) + 1
+      end
+    end
+  end
+  return n
+end
+G._on.cast_requests = function()
+  if next(G.realCasters) == nil then return end
+  local list = try(function() return Ext.System.ServerCastRequest.OsirisCastRequests end)
+  if list then G.rollRequests(list, G.realCasters) end
+end
+-- added in version 6: registered once per game session like the listeners above
+if not G._listeners6 then
+  G._listeners6 = {
+    cast_requests = pcall(function()
+      return Ext.Entity.OnSystemUpdate("ServerCastRequest", function() pcall(G._on.cast_requests) end)
+    end),
+  }
+end
+-- Does the run roll? Scripted runs do unless asked not to; a person's own casts always roll.
+function G.realRollsFor(req)
+  if (req or {}).mode == "manual" then return true end
+  return G.REAL_ROLLS ~= false and (req or {}).real_rolls ~= false
+end
+-- The caster u rolls for this run (F.realCasters keeps the run's own, so two lanes never drop each other's).
+function G.addRealCaster(F, u)
+  u = uuid(u)
+  if not u or F.manual or not F.realRolls or (F.realCasters or {})[u] then return end
+  local c = { edits = {} }
+  F.realCasters = F.realCasters or {}
+  F.realCasters[u], G.realCasters[u] = c, c
+end
+-- At the run's end: its casters leave the set. -> { [uuid] = { [spell] = requests edited } }
+function G.dropRealCasters(F)
+  local out = {}
+  for u, c in pairs(F.realCasters or {}) do
+    if G.realCasters[u] == c then G.realCasters[u] = nil end
+    out[u] = c.edits
+  end
+  F.realCasters = nil
+  return out
 end
 
 -- ------------------------------------------------------------------------------------------------ fight
@@ -1999,6 +2092,8 @@ local function doAction(F, a, R, rec0)
     okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)
   end
   if not okc then return fallback("engine refused " .. tostring(err)) end
+  -- when and at whom it was cast: G.castOutcomes reads the cast's hits from there
+  rec.cast_t, rec.target_u = now() - (G.t0 or 0), uuid(tgt)
   rec.result = "pending"
   F.pending = P
 end
@@ -2511,9 +2606,58 @@ function G.planRound(F, R)
   return itemRule(F, out, R)
 end
 
+-- Hit or miss per confirmed cast of the round, with real rolls: a cast the game confirmed that missed (a miss, or 0
+-- damage) is done all the same, never refused and the round not idle; only its outcome differs. Read from the hit log
+-- (the cast's own spell from the character, between its cast and the next one asked for), else from the damage rows
+-- to its target (a miss shows as a 0 damage row). Casts with neither (a buff, Hunter's Mark) get no outcome.
+-- Sets rec.outcome ("hit" / "crit" / "miss") and returns R.attacks = { hit, crit, miss }.
+function G.castOutcomes(R, hits, dmg, me)
+  local asked = {}
+  for _, a in ipairs(R.actions or {}) do if a.cast_t then asked[#asked + 1] = a end end
+  table.sort(asked, function(x, y) return x.cast_t < y.cast_t end)
+  local tally = { hit = 0, crit = 0, miss = 0 }
+  local function outcome(a, t1)
+    local function inWindow(row) return row.r == R.r and (row.t or 0) >= a.cast_t and (row.t or 0) < t1 end
+    local landed, missed, crit = false, false, false
+    for _, h in ipairs(hits or {}) do
+      if inWindow(h) and h.source == me and (h.spell == nil or baseSpell(h.spell) == baseSpell(a.spell)) then
+        if h.miss then missed = true elseif h.hit or h.crit then landed, crit = true, crit or h.crit end
+      end
+    end
+    if not landed and not missed then
+      local rows, dealt = 0, 0
+      for _, d in ipairs(dmg or {}) do
+        if inWindow(d) and (d.source == me or d.owner == me) and d.target == a.target_u then
+          rows, dealt = rows + 1, dealt + (d.amount or 0)
+        end
+      end
+      if rows > 0 then
+        if dealt > 0 then landed = true else missed = true end
+      end
+    end
+    return (crit and "crit") or (landed and "hit") or (missed and "miss") or nil
+  end
+  for i, a in ipairs(asked) do
+    if a.result == "done" then
+      a.outcome = outcome(a, asked[i + 1] and asked[i + 1].cast_t or math.huge)
+      if a.outcome then tally[a.outcome] = tally[a.outcome] + 1 end
+    end
+  end
+  R.attacks = tally
+  return tally
+end
+
 -- The riders the plan relies on (plan.riders: Hunter's Mark's HUNTERS_MARK on the boss, Dread Ambusher's
 -- DREAD_AMBUSHER on the character), checked as the turn that casts them ends: the status is on now, was on as the turn
--- started, or was put on during the round. A missing one fails the run like a refused cast (results.rider_misses).
+-- started, or was put on during the round. A missing one fails the run like a refused cast (results.rider_misses),
+-- unless the rider's own cast missed (G.castOutcomes): a miss puts no rider on, so it goes to R.rider_skips instead.
+local function riderMissed(R, spell)
+  if not spell then return false end
+  for _, a in ipairs(R.actions or {}) do
+    if a.outcome == "miss" and baseSpell(a.spell) == baseSpell(spell) then return true end
+  end
+  return false
+end
 function G.riderCheck(F, R)
   if F.manual or R.downed then return end
   for _, rd in ipairs((F.plan or {}).riders or {}) do
@@ -2526,6 +2670,11 @@ function G.riderCheck(F, R)
       for _, x in ipairs(R.status_log or {}) do
         if who and x.on and x.status == rd.status and x.who == uuid(who) then seen = true end
       end
+      if not seen and riderMissed(R, rd.spell) then
+        R.rider_skips = R.rider_skips or {}
+        R.rider_skips[#R.rider_skips + 1] = { status = rd.status, on = rd.on, why = "its cast missed" }
+        seen = true
+      end
       if not seen then
         local miss = { r = R.r, status = rd.status, on = rd.on, why = rd.why }
         R.rider_misses = R.rider_misses or {}
@@ -2536,6 +2685,40 @@ function G.riderCheck(F, R)
       end
     end
   end
+end
+
+-- The riders that hang on a hit, counted over the character's landed hits only (a miss carries none): Hunter's Mark
+-- (the game puts PASSIVE_HUNTERS_MARK on the marked target with each hit it adds its die to) and Sneak Attack (at most
+-- once a turn, on a hit with Advantage: the character's Sneak Attack cast or reaction in that turn). Reported in
+-- results.hit_riders, not judged: whether a hit qualifies takes more than the hit log shows (finesse or ranged
+-- weapon, an ally next to the target, the charge left).
+-- -> { hunters_mark = { hits, rider }, sneak_attack = { turns, rider } }
+function G.hitRiders(rounds, hits, me)
+  local out = { hunters_mark = { hits = 0, rider = 0 }, sneak_attack = { turns = 0, rider = 0 } }
+  for _, R in ipairs(rounds or {}) do
+    local marked, adv = 0, false
+    for _, h in ipairs(hits or {}) do
+      if h.r == R.r and h.source == me and (h.hit or h.crit) and not h.miss then
+        for _, st in ipairs(h.target_statuses or {}) do if st == "HUNTERS_MARK" then marked = marked + 1 end end
+        if tostring(h.flags or ""):find("AttackAdvantage", 1, true) then adv = true end
+      end
+    end
+    local hm, sneak = 0, false
+    for _, x in ipairs(R.status_log or {}) do if x.on and x.status == "PASSIVE_HUNTERS_MARK" then hm = hm + 1 end end
+    for _, c in ipairs(R.casts or {}) do
+      if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) then sneak = true end
+    end
+    for _, x in ipairs(R.reactions_seen or {}) do
+      if x.who == me and tostring(x.interrupt):find("SneakAttack", 1, true) then sneak = true end
+    end
+    out.hunters_mark.hits = out.hunters_mark.hits + marked
+    out.hunters_mark.rider = out.hunters_mark.rider + math.min(hm, marked)
+    if adv then
+      out.sneak_attack.turns = out.sneak_attack.turns + 1
+      if sneak then out.sneak_attack.rider = out.sneak_attack.rider + 1 end
+    end
+  end
+  return out
 end
 
 -- per-run numbers (the same for scripted and manual runs)
@@ -2587,7 +2770,9 @@ local function summarize(F)
   for _, v in ipairs(taken) do sum = sum + v end
   local tk = turns > 0 and sum / turns or 0
   local failed, misses, downed, smisses, riders, total = 0, 0, 0, 0, 0, 0
+  local attacks = { hit = 0, crit = 0, miss = 0 }
   for _, R in ipairs(G.rounds) do
+    for k, n in pairs(R.attacks or {}) do attacks[k] = (attacks[k] or 0) + n end
     for _, a in ipairs(R.actions) do if a.result ~= "done" and not a.optional then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
     smisses = smisses + (R.summon_misses or 0)
@@ -2599,7 +2784,7 @@ local function summarize(F)
     turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
     rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil,
     summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders,
-    enemy_turns = turns, taken_before_round1 = pre }
+    enemy_turns = turns, taken_before_round1 = pre, attacks = attacks }
 end
 
 function G.difficulty()
@@ -2623,6 +2808,7 @@ end
 local function finish(F, why)
   G.fighting = false
   F.state = "done"
+  G.results.real_roll_edits = G.dropRealCasters(F)
   if not F.manual then
     G.results.reactions_restored = G.reactionsRestore()
     G.results.toggles_restored = G.togglesRestore()
@@ -2653,6 +2839,7 @@ local function finish(F, why)
     G.results.setup["end"] = G.setupCheck(F, F.spec, "end", { buffs = F.setupExtra and F.setupExtra.buffs })
   end
   G.results.summary = summarize(F)
+  if F.char then G.results.hit_riders = G.hitRiders(G.rounds, G.hits, uuid(F.char)) end
   G.results.summon_damage = G.results.summary.summon_damage
   G.results.ended = why or "rounds done"
   local downed = {}
@@ -2679,6 +2866,7 @@ local function finish(F, why)
   local rec = { run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
     lane = F.lane and F.lane.id, lanes_run = F.lane and F.lane.run, first_lane = F.lane and F.lane.first,
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = F.req.haste and true or false,
+    real_rolls = F.realRolls == true,
     respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
     hits = G.hits, log = G.log, valid = G.results.valid, invalid = G.results.invalid }
@@ -2729,7 +2917,7 @@ function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
   if G.LANES and G.LANES.on and not req.lane then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
-    state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"] }
+    state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"], realRolls = G.realRollsFor(req) }
   G.F = F
   G.reset()
   G.status = "starting"
@@ -2908,7 +3096,10 @@ function G.goFight(F)
   G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }
   F.tFight = now()
   F.hpChar = try(Osi.GetHitpoints, F.char)
+  G.results.real_rolls = F.realRolls
+  G.addRealCaster(F, F.char)
   G.enterCombat(F)
+  if not F.manual then G.endIdleTurns(F) end
   F.inCombatAt = now()
   F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
   if F.manual then
@@ -2975,6 +3166,14 @@ end
 -- says why; summon_turns_ended counts them). Its damage is the side's: results.summon_damage, part of the damage per
 -- round.
 G.SUMMON_CHECK_MS = 1000
+-- A summon of the character joins the run (scripted runs): its scripted attacks roll like the character's, and its
+-- reactions follow the run's policy, since a prompt for the summon would stop the fight as one for the character does.
+function G.summonJoins(F, s)
+  if F.manual then return end
+  G.addRealCaster(F, s)
+  G.results.reactions = G.results.reactions or {}
+  for u, rep in pairs(G.reactionsApply(F.plan, { s })) do G.results.reactions[u] = rep end
+end
 G.SUMMON_ATTACKS = { "Target_MainHandAttack", "Projectile_MainHandAttack", "Target_UnarmedAttack" }
 local function summonsOnTurn(F)
   local out = {}
@@ -2984,6 +3183,7 @@ local function summonsOnTurn(F)
       F.summons[s] = true
       local m = F.lane and G.LANES and G.LANES.members[F.lane.id]
       if m then m[s] = true end
+      G.summonJoins(F, s)
     end
     if activeTurn(s) then out[#out + 1] = s end
   end
@@ -3095,6 +3295,28 @@ function G.summonStep(F, t)
     end
   end
 end
+-- A party member outside the fight that holds a turn (one left in the combat) keeps the shared party turn open: no
+-- new turn comes and no resource refills (actions, Sneak Attack's charge). At the fight's start and after each of the
+-- character's turns every such turn is ended; the fighting characters of every lane and their summons are left alone.
+-- -> the members whose turn was ended (also in results.idle_turns_ended with the round)
+function G.endIdleTurns(F)
+  local fighting = { [uuid(F.char)] = true }
+  for s in pairs(F.summons or {}) do fighting[s] = true end
+  for _, u in pairs(F.lane and F.lane.others or {}) do fighting[uuid(u)] = true end
+  for _, m in pairs((G.LANES and G.LANES.on and G.LANES.members) or {}) do
+    for u in pairs(m) do fighting[u] = true end
+  end
+  local out = {}
+  for _, m in ipairs(partyMembers()) do
+    if not fighting[m] and activeTurn(m) then
+      G.endTurn(m)
+      out[#out + 1] = m
+      G.results.idle_turns_ended = G.results.idle_turns_ended or {}
+      G.results.idle_turns_ended[#G.results.idle_turns_ended + 1] = { r = G.round, who = m }
+    end
+  end
+  return out
+end
 local function turnHolders(F)
   local out = {}
   for _, d in ipairs(F.enemies or {}) do if activeTurn(d) then out[#out + 1] = uuid(d) end end
@@ -3195,10 +3417,14 @@ function G.step(F, t)
   elseif F.state == "ending" and t >= F.next then
     if casting(F.char) then F.next = t + 200; return end
     local R = G.rounds[#G.rounds]
-    if R then G.riderCheck(F, R) end
+    if R then
+      G.castOutcomes(R, G.hits, G.dmg, uuid(F.char))
+      G.riderCheck(F, R)
+    end
     local fault = R and G.roundFault(F, R)
     if fault then return finish(F, fault) end
     G.endTurn(F.char)
+    G.endIdleTurns(F)
     if R and R.tm then R.tm.end_asked = t - G.t0 end
     F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
   elseif F.state == "ended" then
@@ -3247,6 +3473,7 @@ function G.abort()
     G.lanesDone()
   end
   if G.F and G.F.state ~= "done" then finish(G.F, "aborted") end
+  G.realCasters = {}
   -- bystanders a lanes' run moved and did not put back (it stopped before its last lane ended) go back now
   if G.movedNpcs and not (G.LANES and G.LANES.on) then G.npcsBack() end
   if G.barSaved then G.hotbarRestore() end
@@ -3422,6 +3649,7 @@ function G.lanesDone()
   L.restored = G.laneFactionsRestore(L.factions)
   L.npcs_restored = G.npcsBack()
   G.unparkOthers()
+  G.realCasters = {}
   L.on = false
 end
 
