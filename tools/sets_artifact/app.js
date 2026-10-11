@@ -1264,20 +1264,10 @@
   window.addEventListener("scroll", function () { if (!pinned || (isTouch && window.innerWidth > 560)) hideTip(!!pinned); }, { passive: true });
   window.addEventListener("resize", function () { hideTip(true); });
 
-  // ---- hook for a future 3D model viewer: window.LootAdvisorSets.mountModel(fn(container, setId, charId))
-  var mounters = [];
-  function runMounters() {
-    mounters.forEach(function (fn) {
-      document.querySelectorAll('figure.capture[data-capture="model"]').forEach(function (f) { var m = f.querySelector(".media"); fn(m, f.dataset.set, S.char); f.classList.add("has"); });
-    });
-  }
-  var render0 = render;
-  render = function () { render0(); runMounters(); };
   window.LootAdvisorSets = {
     data: DATA,
     sheetFor: function (setId, level, asListed) { var f = findSet(setId); return f ? sheetFor(f.c, f.s, { level: level, asListed: asListed !== false }) : null; },
     filters: function () { return Object.assign({}, F); },
-    mountModel: function (fn) { mounters.push(fn); runMounters(); },
     // local page only: the running game's state (written by the mod, passed in by the page loader)
     live: function (st) { applyLive(st); }
   };
