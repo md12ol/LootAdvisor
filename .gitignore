@@ -1,5 +1,5 @@
 # LootAdvisor - PUBLIC repo. No extracted game files; they are rebuilt locally from the
-# player's own BG3 install (README "Rebuild"). Allowed: our code, the mod source (LootAdvisor/Mods, Public, Localization),
+# player's own BG3 install (CONTRIBUTING.md "Rebuild"). Allowed: our code, the mod source (LootAdvisor/Mods, Public, Localization),
 # tests, own art, the package sources (package/: INSTALL.md, Media/). Built paks and packages never: they go to dist/.
 
 # local builds: dist/LootAdvisor.pak, the player package dist/LootAdvisor/ and its zip
@@ -50,5 +50,5 @@ node_modules/
 Thumbs.db
 desktop.ini
 
-# Script Extender IDE helpers (README "Lua tooling"), fetched locally
+# Script Extender IDE helpers (CONTRIBUTING.md "Lua tooling"), fetched locally
 .ide/

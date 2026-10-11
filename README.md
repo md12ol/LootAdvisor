@@ -13,261 +13,71 @@ Build Advisor build: most alike in class levels, then subclass, main ability, ca
 list names that build and how alike it is, and the item tooltips say the pick is for the closest build. Build
 Advisor's window shows the sets of the build picked there when both mods are installed.
 
-**Players:** download `LootAdvisor-X.Y.Z.zip` from the [Releases](https://github.com/md12ol/LootAdvisor/releases)
-page (or the mod's Nexus Mods page). It holds the built `LootAdvisor.pak`, [`INSTALL.md`](package/INSTALL.md),
-`Handbook.html` (the player handbook, works offline), `Page/Sets.html` and `Media/` (banner, thumbnail, logo marks,
-screenshots). Built paks are not committed to this repository.
+## Requirements
+- Baldur's Gate 3 (Patch 8).
+- [BG3 Script Extender](https://github.com/Norbyte/bg3se). It is a separate project and is not included;
+  [BG3 Mod Manager](https://github.com/LaughingLeader/BG3ModManager) installs it in one click.
 
-**Script Extender:** item frames and map painting (and the tooltip lines) need
-[BG3 Script Extender](https://github.com/Norbyte/bg3se) v33 or newer; on v32 the F6 list, the map markers in the
+Item frames and map painting (and the tooltip lines) need
+Script Extender v33 or newer; on v32 the F6 list, the map markers in the
 game's own style and the Sets page work. Until v33 is a normal release, get it from the Devel channel: create a file
 `ScriptExtenderUpdaterConfig.json` in the game's `bin` folder containing `{"UpdateChannel": "Devel"}`,
 then start the game once. Delete that file to go back to normal releases.
 
-## Repository layout
-| Path | What |
-|---|---|
-| `LootAdvisor/` | the mod source as in other BG3 mod repositories: `LootAdvisor/Mods/LootAdvisor/` (meta.lsx, Lua, GUI, journal markers, the shippable Sets page); `Public/` and `Localization/` next to it when the mod needs them. This folder is what gets packed |
-| `package/` | the hand-made part of the player package: `INSTALL.md` and `Media/` (banner, thumbnail, marks, screenshots) |
-| `dist/` | local builds (gitignored): `LootAdvisor.pak` and the assembled player package `dist/LootAdvisor/` |
-| `.luarc.json` | Lua language server settings (Script Extender API, see [Lua tooling](#lua-tooling)) |
-| `nexus_description.bb` | the Nexus Mods page text (BBCode) |
-| `LICENSE` | MIT |
-| `tools/` | game-file parsers ([`tools/PARSERS.md`](tools/PARSERS.md)), the item/set pipeline, page builders, save backup ([`tools/BACKUP_RESTORE.md`](tools/BACKUP_RESTORE.md)), the [optimizer and gauntlet](#gauntlet-and-optimizer) |
-| `tests/` | regression suite and optimizer / gauntlet tests (see [Tests](#tests)) |
-| `data/research/` | build research notes the pipeline reads |
-| `design/` | design generators |
+## Install
+Download `LootAdvisor-X.Y.Z.zip` from the [Releases](https://github.com/md12ol/LootAdvisor/releases)
+page (or the mod's Nexus Mods page). It holds the built `LootAdvisor.pak`, [`INSTALL.md`](package/INSTALL.md),
+`Handbook.html` (the player handbook, works offline), `Page/Sets.html` and `Media/` (banner, thumbnail, logo marks,
+screenshots). Built paks are not committed to this repository.
 
-## Game data is never in this repository
-Extracted game files (item texts, loca, stats, level data, icons/textures) are not committed. They are
-rebuilt on your machine from your own BG3 install (read-only on the game folder). The game folder is taken from
-the environment variable `BG3_DIR` if set, otherwise the first of `D:\SteamLibrary\steamapps\common\Baldurs Gate 3`
-and `C:\Program Files (x86)\Steam\steamapps\common\Baldurs Gate 3` that exists (`tools/game_paths.py`). Needs
-Python 3.12 with `lz4`, `zstandard`, `Pillow` and `lupa` (`pip install lz4 zstandard pillow lupa`).
+Install with BG3 Mod Manager: install Script Extender (*Tools > Download and Extract the Script Extender*), drag
+`LootAdvisor.pak` into the mod manager, move Loot Advisor to the active mods, then *Save Load Order* and *Export Load
+Order to Game*. [`INSTALL.md`](package/INSTALL.md) has the steps, installing by hand and uninstalling.
 
-### Rebuild (in this order, from the repo root)
-Checked end to end from empty `data/cache`, `data/items_all` and `data/scores` (about 3 minutes).
-```bash
-python tools/build_cache.py            # data/cache/: loca, root templates, level item index
-python tools/stats.py --dump data/cache/stats_resolved.json   # resolved stats (all later steps read it)
-python tools/class_progressions.py     # data/cache/class_progressions.json
-python tools/global_items.py           # global item placements -> data/cache
-python tools/characters.py             # NPC placements -> data/cache
-python tools/extract_weapons.py && python tools/extract_armour.py && python tools/extract_accessories.py
-python tools/extract_sources.py        # data/items_all/ (sources, levels, recipes; format: data/items_all/SCHEMA.md)
-python tools/level_links.py && python tools/entrances.py   # teleporters, zones + entrances (needs items_all/levels.json)
-python tools/match_research.py         # research names -> game ids
-python tools/score_items.py            # data/scores/ (+ lua/LootData.lua)
-python tools/gen_mod_data.py           # derived data into LootAdvisor/Mods/LootAdvisor
-python tools/build_sets_ship.py        # LootAdvisor/Mods/LootAdvisor/Page/Sets.html + ShipManifest.lua (no game art/text inside)
-python tests/run.py                    # regression suite
-```
-`python tools/build_sets_artifact.py` builds the private preview page `artifact/sets.html` (it embeds game icons, so
-it is gitignored too).
+**Linux and Steam Deck (Proton):** not covered yet. The install notes assume Windows; instructions for Linux are
+planned in [#80](https://github.com/md12ol/LootAdvisor/issues/80).
 
-Two of the files the Rebuild writes are tracked and carry the build time (`Page/Sets.html` and `ShipManifest.lua`'s
-`version`), so a Rebuild always shows them as changed; commit them only with a change that needs them.
+## How to use it
+- Items the advisor recommends get a rainbow frame and an extra tooltip line; their spots are marked on the map.
+- **F6** opens the list of recommended items with direction and distance, including items that have no fixed spot.
+- **The Sets page:** load a save once. The mod writes the live page to
+  `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\LootAdvisor\Sets.html` (the Script Extender console
+  prints the path; **F6**, then **Open Sets page**, shows it too). Open it in Chrome, Edge or Firefox and bookmark it:
+  it follows the running game by itself.
 
-## Tests
-```bash
-python tests/run.py [--mutate] [--ci]     # regression suite; --mutate proves every check can fail, --ci = no game data
-python tests/test_optimizer.py [--ci] [--mutate]   # optimizer maths (CI) + checks of its output (run the optimizer first)
-python tests/test_gauntlet.py [--mutate]  # gauntlet harness without the game; --mutate proves each test can fail
-python tools/leak_scan.py                 # no game text in shipped files
-```
-CI runs the `--ci` parts; the pre-push hook from BG3Tools runs the full suite. How to add a check: CONTRIBUTING in
-BG3Tools, "Extending the mods".
+`Handbook.html` in the download explains every sign in the game, the F6 list and the Sets page.
 
-## Gauntlet and optimizer
-The **optimizer** (`tools/optimizer/`) searches an "Optimized" set per origin, build and act under the same scoring
-model as the research sets. It needs the Rebuild outputs and writes only to `tools/optimizer/.cache/` (gitignored):
-```bash
-python tools/optimizer/run.py --jobs 8      # all origins, builds, acts (--only gale[:build[:act]] for one)
-python tests/test_optimizer.py              # checks its output against the game data
-```
-The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it takes a character levelled to the
-build (a test save per build; `--respec emulated` rebuilds the sheet with boosts instead), spawns the items and
-enemies, fights scripted rounds and records damage and survival. It changes the loaded save, so use a test save and
-never save afterwards. It talks to the game through Loot Advisor's dev eval hook
-(`"Dev": true` in `LootAdvisor_settings.json`; setup in BG3Tools `tools/testing/README.md`, whose `cheat.py` gives the
-same engine shortcuts for other tests).
-```bash
-python tools/gauntlet/engine.py load        # load gauntlet.lua (server) and the F9 window gauntlet_ui.lua (client)
-python tools/gauntlet/engine.py probe       # API check, party, position, difficulty
-# manual runs: build the catalogue, then press F9 in the game and pick build, set, act and scenario
-python tools/gauntlet/catalog.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json
-# scripted runs: pick pairs (optimizer set vs research set), write specs, run, report
-python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --control --select shadowheart:lightcleric:3 --out pairs.json
-python tools/gauntlet/plan.py --optimizer tools/optimizer --pairs pairs.json --out specs.json
-python tools/gauntlet/run.py specs.json --results results.jsonl --char UUID
-python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md report.md
-# both sides of a pair at once: two party members levelled to the same build, two lanes (arenas.json)
-python tools/gauntlet/engine.py survey undercity_lanes
-python tools/gauntlet/run.py specs.json --results results.jsonl --lanes undercity_lanes --char UUID_A --char-b UUID_B
-# one save per side (one character per build): the same side of two pairs at once, then the other save
-python tools/gauntlet/run.py specs.json --results results.jsonl --sides a --repeats 2 --lanes undercity_lanes --chars laezel=UUID,shadowheart=UUID
-```
-While a run is active nothing else may use the eval hook (the run's own status reads would lose answers): the run
-holds a lock file and `engine.py` refuses other commands until it ends.
+## Settings
+Settings live in `LootAdvisor_settings.json` in the Script Extender folder
+(`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Script Extender\`). The mod re-reads the file every few seconds;
+only keys you want to change need to be in it.
 
-**Two lanes** run both sets of a pair at the same time in two separate combats: each lane has its own character, set,
-enemies and arena spot. Each lane's enemies get their own faction, hostile to that lane's character and neutral to the
-other lane; the lanes lie farther apart than the farthest spell of either set reaches (from anywhere inside one lane
-to anywhere inside the other, plus a margin), the sides swap lanes and the first lane alternates every repeat. A hit
-from one lane on the other, a shared combat, or an enemy hostile to the other lane's character fails the run. With one
-character, or lanes too close for the pair's spells, the sides run one after the other. When each save holds one
-character per build, the lanes take the same side of two different pairs at once instead (`--chars`), under the same
-spacing rule.
-`--repeats` counts the usable runs already in `--results` for the same pair and set, so the side run from the second
-save sees the first save's runs and a pair is not run again once it is decided. A pair is decided when the 95%
-interval of the ratio of its two sides' damage per round excludes 1 or lies within the control tolerance; rounds are
-compared by their number, since a round's damage depends on its number (Action Surge, item spells, slots running out)
-far more than on the dice. A side whose first run failed for a reason every run would meet (a setup mismatch at the
-start, a combat that ended) is not repeated; the results file says why.
-The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
-through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
-Scripted runs park the rest of the party 40 m away and set every party character's reactions so the game never asks
-("Use reaction?" would stop a scripted turn): the reactions the build and the set grant (`plan.reactions`, written by
-`plan.py`) fire on their own; every other reaction the character has (racial, tadpole, its own class and items) is
-off. The player's own reaction settings are put back when the run ends; manual runs never change them. A prompt that
-still opens in a scripted turn ends the run and is listed under `reaction_misses` in the record. Reactions are set this
-way before every fight (an "ask" answer becomes "never"), also for the character's summon, and a party member left
-holding a turn outside the fight has it ended at the start and after every round (an open party turn stops the next
-round and the refill of the character's resources).
+| Key | Default | Meaning |
+|---|---|---|
+| `Enabled` | `true` | Master switch. `false` hides all markers, restores frames and tooltip texts. |
+| `Hotkey` | `"F6"` | Key for the item list. |
+| `Frames`, `Markers`, `Tooltips` | `true` | Rainbow frames on items, map markers, the "why" text in item tooltips. |
+| `Arrows` | `5` | How many off-screen markers keep a rainbow arrow. |
+| `MarkerFilter` | `"all"` | Whose items get map markers: `"all"`, `"party"` or `"selected"`. The F6 list sets it. |
+| `Page` | `true` | `false` stops writing the Sets page. |
 
-Scripted casts roll like a player's: an attack can miss or score a critical hit, a save spell gets its saving throw,
-and what hangs on the roll applies (Sharpshooter's and Great Weapon Master's +10, Hunter's Mark, Sneak Attack). The
-game queues a script's casts with an option that skips every roll; the harness takes that one option off the queued
-casts of the character and its summons just before the game reads them, and leaves every other option (the cast
-still does not move the character or check its resources: the harness moves it and pays the costs itself). A missed
-attack is a confirmed cast like a hit: the round is not idle and nothing is retried; each cast's outcome (hit, critical
-hit, miss) is in the record, and every hit row carries its natural roll, total and the AC or DC it was rolled against.
-`run.py --no-real-rolls` runs the older way (every attack hits, no saves) for comparison. Every run record says which
-in `real_rolls`; results from runs without rolls (records without the field) are not comparable with rolled ones, so
-`--repeats` and `--report` count only runs of the kind asked for.
+The handbook, chapter "Settings and the dev toggle", lists every key.
 
-Each turn is planned from the resources the character has at that moment (an upcast falls back to a lower slot, then
-the base spell, then the cantrip; an item spell is used only when it can be paid), and a scripted action counts as done
-only when the game shows it (a cast event, damage to its target, or its cost spent); otherwise it is logged as failed
-and its fallback runs. A run is recorded as invalid, with the causes, when it ends early (the character's turn never
-came after the recovery attempt, the combat ended, the prep timed out, ...), a round passes without a confirmed action,
-or the character casts something outside its plan. Such a run ends as soon as it is known to be invalid: a setup
-mismatch before round 1, a round without a confirmed action or with a refused cast after that round. The run ends as
-the last round's turn is released; damage taken is counted per enemy turn fought (one before round 1 included). The
-enemies are reset to 99% of their hit points at each of the character's turns, so effects that need a hurt target
-work while "below half" and kill effects do not. Before the fight every field of the setup is read back from the game
-and compared with the plan (items, proficiency as the game judges it for each item, the character's own classes,
-subclasses and feats, abilities, hit points, spells, slots, resources, buffs, reactions, enemies), and so are the
-effects the model credits: toggled passives such as Great Weapon Master's "All In" in the state the model assumes (prep
-sets them), every worn item's equip passives, statuses and unconditional boosts, the elixir's statuses, the weapons'
-dice, the item spells in the book and ready, no concentration or status left over from an earlier run (prep ends and
-removes them), and enemies that can be critically hit and carry no status; one mismatch fails the run. A rider the
-plan relies on (Hunter's Mark on the boss, Dread Ambusher's status) missing after its turn fails it too, unless the
-rider's own cast missed; riders that hang on a hit (Hunter's Mark's die, Sneak Attack) are counted over landed hits
-only (`hit_riders` in the record). The
-character's summon attacks the boss on its own turn and its damage counts for the set. Every hit is recorded with its
-spell, flags (hit, miss, critical) and the target's statuses. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
-the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
-damage taken (AC, hit points, saving throws, resistances, damage reduction; damage per round and damage taken within
-5%): `pairs.py --find-control char:build:act` searches for them, `--control` adds the chosen one.
-Each side of a pair names its test plan (`--select char:build:act:N` compares with research set N): the optimizer tunes
-ability scores, feats and fighting styles to each set, the test character is respecced to that plan, and `plan.py`
-builds the expected sheet and the model's numbers from the same respec.
-The round plan follows the model's decisions for the boss fight: a buff item spell (an extra action, weapon dice) is
-cast when the model finds it worth the action it takes, with the extra action's attacks while its status is on; a
-Battle Master whose every attack has Advantage keeps the superiority dice for Riposte instead of Trip; the off-hand
-weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
-lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
-replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
-adds most to.
+## Known limits
+- Scored builds are Build Advisor's builds for the origins; every other character gets the closest of those builds,
+  named in the F6 header.
+- Some items have no fixed spot (quest rewards, boss drops, forge results) and appear in the F6 list only.
+- Map markers may be stored in a save made while they were shown; removing the mod from a save is not tested yet
+  (see the uninstall steps in `INSTALL.md`).
+- Controller mode and the low-resolution interface are not tested. Linux and Steam Deck are not tested.
+- Advice texts are English. Item names and game texts on the Sets page follow your game language.
+- In multiplayer only the host writes the Sets page.
 
-## Build and install
-The pak builder is shared by all mods and lives in the sibling repository
-[BG3Tools](https://github.com/md12ol/BG3Tools), checked out next to this one (`../BG3Tools`):
-```bash
-python ../BG3Tools/tools/build_pak.py LootAdvisor     # -> dist/LootAdvisor.pak + the player package dist/LootAdvisor/
-python ../BG3Tools/tools/install_mods.py              # copies the paks into the game and enables them
-python ../BG3Tools/tools/ci_release.py check LootAdvisor   # what CI runs: build, zip the package, check it against INSTALL.md
-```
-Every build assembles the player package `dist/LootAdvisor/` from scratch: the pak, `INSTALL.md` and `Media/` from
-`package/`, `Page/` from `LootAdvisor/Mods/LootAdvisor/Page`, and `Handbook.html` generated by
-`../BuildAdvisor/docs_site/build_player_handbook.py`. See `../BG3Tools/tools/release_files.py`. Local builds are
-also archived in `../BG3Tools/builds/` (`python ../BG3Tools/tools/builds.py list`).
-Some tools read Build Advisor's build list from the sibling repository `../BuildAdvisor`.
+## Support
+Bugs and questions: [open an issue](https://github.com/md12ol/LootAdvisor/issues). Say which version of Loot Advisor
+and of Script Extender you run, and what the F6 header shows for the character.
 
-### Lua tooling
-`.luarc.json` configures [Lua Language Server](https://luals.github.io/) (the VS Code "Lua" extension) for Script
-Extender's Lua 5.4 and its globals. For completion of `Ext.*`, `Osi.*` and the entity types, fetch Script Extender's
-IDE helpers ([`ExtIdeHelpers.lua`](https://github.com/Norbyte/bg3se/blob/main/BG3Extender/IdeHelpers/ExtIdeHelpers.lua)
-from the bg3se repository) into `.ide/`, which `.luarc.json` already lists as a library:
-```bash
-curl -L --create-dirs -o .ide/ExtIdeHelpers.lua https://raw.githubusercontent.com/Norbyte/bg3se/main/BG3Extender/IdeHelpers/ExtIdeHelpers.lua
-```
-`.ide/` is gitignored: the helpers are Script Extender's own file under its own license, so they are not copied here.
-
-The paks contain textures we recoloured from the game's own frame and marker textures (Larian's modding terms; the
-mod is free).
-
-## Releases
-Versions are SemVer tags `vX.Y.Z`; the first release is `v0.9.0` (set by `release-as` in
-`release-please-config.json`; delete that line once v0.9.0 is out). The release workflow
-(`.github/workflows/release.yml`) runs release-please on every push to `main`: it keeps one open pull request
-"chore: release vX.Y.Z" with the next version and the `CHANGELOG.md` entry built from the Conventional Commit
-messages. **Nothing is tagged until you merge that PR.** Merging it creates the tag and the GitHub Release; the
-workflow then stamps the version into `meta.lsx` (Version64), builds the pak, zips the player package as
-`LootAdvisor-X.Y.Z.zip`, checks the zip against `INSTALL.md` and attaches it to the Release. A manual run of the workflow
-(`gh workflow run release.yml -f tag=vX.Y.Z`) rebuilds and re-attaches the zip of an existing tag.
-The release PR is opened by the workflow token, so GitHub does not run CI on it: merge it as an admin (branch
-protection lets admins through) after checking the CHANGELOG.
-
-**Nexus Mods upload** (optional, skipped until configured) uses Nexus Mods' official
-[upload-action](https://github.com/Nexus-Mods/upload-action) and Upload API. Setup, once the mod page exists:
-1. Create the mod page on Nexus Mods and upload the first file by hand (the API adds new *versions* of an existing
-   file).
-2. Note the mod ID (in the page URL) and the file ID (Files tab, "Advanced", or the Manage Files edit menu).
-3. Create an API key at <https://www.nexusmods.com/settings/api-keys>.
-4. In this repository: `gh secret set NEXUS_API_KEY`, `gh variable set NEXUS_MOD_ID --body <mod id>`,
-   `gh variable set NEXUS_FILE_ID --body <file id>`.
-From then on every release also uploads the zip to Nexus as a new version of that file (the old version is archived,
-the Release notes become the Nexus changelog).
-
-**mod.io release through Larian's Toolkit** (by hand, next to the GitHub and Nexus release; the Toolkit builds and
-uploads its own pak, so this is done once per version from the released source):
-1. Install the Baldur's Gate 3 Toolkit app and its data DLC (Steam). On the first start, type the game's `Data`
-   folder into the "Enter Data Path" field.
-2. New Project > **Import** the release's `LootAdvisor.pak` (same UUID and folder as ours), then copy the mod source
-   `LootAdvisor/Mods/LootAdvisor/` by hand over the Toolkit's `Data\Mods\LootAdvisor\`. Import skips every file in
-   `ScriptExtender/Lua/Shared/`, so never publish from the import alone. Answer **No** when it offers to add GustavX
-   as a dependency.
-3. Project Settings (Ctrl+P): set Author to `Michael Dubé` (the Toolkit fills in the account name and can drop the
-   `é`), select `LootAdvisor/Mods/LootAdvisor/mod_publish_logo.png` as the thumbnail (PNG, 16:9, at least 512x288, at most
-   8 MB), check the Description (the Toolkit keeps at most 250 characters; the meta.lsx one is kept under that and
-   a test checks it), then Save.
-4. **Publish Local**. It writes `LootAdvisor_<UUID>.pak` straight into the game's mod folder
-   (`%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods`). Compare its file list with our build:
-   `python tools/pak.py list <that pak>` against `python tools/pak.py list dist/LootAdvisor.pak` must show the same paths. Then move that pak out of
-   the mod folder, since it has the same UUID as the regular install.
-5. Sign in (Project Settings > Authenticate) and **Publish**: maintainer only, this uploads to mod.io.
-
-The Toolkit regenerates `meta.lsx` from its project settings: it drops `Type`, `Tags` and the Story target mode,
-adds `PublishHandle`, `Conflicts`, `FileSize` and `MD5`, and bumps the build number of `Version64` on every Publish
-Local (its "Auto-increment" box). It also re-saves `GUI/metadata.lsf` with its own engine version. Once a version is
-published, copy the `PublishHandle` the Toolkit assigned back into this repository's `meta.lsx`, so the Nexus and
-mod.io builds stay the same mod.
-
-## Contributing
-Setup, building and testing in the game for both mods: see
-[CONTRIBUTING in BG3Tools](https://github.com/md12ol/BG3Tools/blob/main/CONTRIBUTING.md) (`sh setup.sh` there clones
-the repositories side by side and installs the pre-push hook).
-
-- **One branch per task**, named after its topic (`ci-setup`, `sets-page-header`, ...), cut from `main`. Nobody
-  commits to `main` directly: it is protected and only takes pull requests.
-- **Commits and PR titles use [Conventional Commits](https://www.conventionalcommits.org/)**: `feat:`, `fix:`,
-  `docs:`, `chore:`, `refactor:`, `test:`, `ci:` (`feat!:` for a breaking change). A commit message is a subject line
-  plus at most one body line. No co-author, "generated with" or other attribution lines.
-- Open a pull request to `main` (`gh pr create`); the CI checks (`lint`, `tests`, `pr-title`) must be green. CI checks out the sibling
-  repositories side by side and uses their branch of the same name when it exists, else `main`.
-- Merge with **"Create a merge commit"** (`gh pr merge --merge`, i.e. `--no-ff`); squash and rebase merges are off so
-  the branch history stays readable. The PR title becomes the merge commit subject.
-- Tests that need the game's data run locally only, in the pre-push hook (see CONTRIBUTING in
-  [BG3Tools](https://github.com/md12ol/BG3Tools)); it runs the full suite before every push.
+## Developing
+Repository layout, rebuilding the game data, tests, the gauntlet and optimizer, building and contributing:
+[`CONTRIBUTING.md`](CONTRIBUTING.md). How a version is released: [`RELEASING.md`](RELEASING.md). Licence: MIT
+([`LICENSE`](LICENSE)).
