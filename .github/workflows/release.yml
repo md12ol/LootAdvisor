@@ -2,7 +2,7 @@
 # next version and the CHANGELOG.md entry built from the Conventional Commit messages. Nothing is tagged until that PR
 # is merged; then it creates the tag and the GitHub Release, and the build job attaches <Mod>-<X.Y.Z>.zip (version
 # stamped into meta.lsx, pak built, package checked against INSTALL.md). The Nexus job runs only when the secret
-# NEXUS_API_KEY and the variables NEXUS_MOD_ID and NEXUS_FILE_ID are set (README "Releases").
+# NEXUS_API_KEY and the variables NEXUS_MOD_ID and NEXUS_FILE_ID are set (RELEASING.md).
 # Manual run (workflow_dispatch): rebuild and re-attach the zip of an EXISTING tag; it never creates a tag.
 name: Release
 on:
