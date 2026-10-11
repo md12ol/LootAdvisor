@@ -27,6 +27,8 @@
   check, the start barrier, a shared combat or hits across lanes fail the run; run.py's lane spacing and schedule,
   engine.py's lane run and its lock;
 - a real respec: nothing emulated in prep, classes / subclasses / feats compared; the game's proficiency answer;
+- what the worn items add to the resources (a status an item puts on), spells allowed only out of combat never
+  planned, the character's own summon's turn ended, bystanders in a lane moved away and back;
 - the control pair: equal damage and equal damage taken in the model, and the search for one.
 """
 import itertools
@@ -144,9 +146,14 @@ def lua_tests():
     check("arenas.json: lanes are mirrored (the same direction, the same radius)",
           all(len({tuple(ar[x["arena"]]["dir"]) for x in a["lanes"].values()}) == 1 and
               len({ar[x["arena"]]["radius"] for x in a["lanes"].values()}) == 1 for a in lane_sets))
+    check("arenas.json: a lanes entry's npc_park lies outside every lane (radius + margin)",
+          all(math.hypot(a["npc_park"][0] - ar[x["arena"]]["center"][0], a["npc_park"][2] - ar[x["arena"]]["center"][2])
+              > ar[x["arena"]]["radius"] + a.get("margin", 0) for a in lane_sets if "npc_park" in a
+              for x in a["lanes"].values()) and any("npc_park" in a for a in lane_sets))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests):
+              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
+              summon_turn_tests, npc_park_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -682,6 +689,16 @@ def refusal_tests(L):
       G._onCastFailed("c1", "Projectile_FireBolt")                    -- refused with no reaction: no retry
       G.settle(F2, R2, 100)
       T_noretry = F2.pending == nil and R2.actions[1].retried == nil and R2.cast_misses == 1
+      -- a run asked with retry_any_refusal: the same refusal is asked for again
+      local F3 = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end,
+                   req = { retry_any_refusal = true } }
+      local R3 = { r = 3, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G.rounds = { R3 }
+      G._doAction(F3, { spell = "Projectile_FireBolt", group = "action", target = "@boss" }, R3)
+      G._onCastFailed("c1", "Projectile_FireBolt")
+      G.settle(F3, R3, 100)
+      T_anyretry = F3.pending ~= nil and R3.actions[1].retries == 1 and (R3.cast_misses or 0) == 0
+      T_anydefault = G.RETRY_ANY_REFUSAL
       T_res = R.actions[1].result
       T_alt = R.actions[2] and R.actions[2].spell
       T_cd = F.cooldown["Projectile_MAG_ChainLightning"]
@@ -698,6 +715,8 @@ def refusal_tests(L):
     check("refusal: refused again after the Attack of Opportunity's retry: asked once more (at most twice)",
           g.T_fast15 is True and g.T_retry2 is True)
     check("refusal: a refusal with no Attack of Opportunity before it is not retried", g.T_noretry is True)
+    check("refusal: retry_any_refusal (off by default) asks again for a refusal with no reason shown",
+          g.T_anyretry is True and g.T_anydefault is False, f"{g.T_anyretry} {g.T_anydefault}")
     check("refusal: CastSpellFailed fails the cast at once (no timeout wait), the fallback runs",
           g.T_fast2 is True and str(g.T_res).startswith("failed: refused by the engine") and
           g.T_alt == "Zone_LightningBolt", str(g.T_res))
@@ -1225,6 +1244,203 @@ def lane_tests(L):
           g.T_busy == "busy" and g.T_singleBusy == "busy", f"{g.T_busy} {g.T_singleBusy}")
 
 
+def item_resource_check_tests(L):
+    """The setup check adds what the worn items give (spec.item_resources) to the class resources and spell slots: an
+    amulet's extra Channel Divinity charge is expected, not a mismatch; a resource only the items give is checked too."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      G.results = { prep = { bare = {}, items = {} } }
+      local sheet = G.sheet
+      local have = { slots = { ["1"] = 3 }, resources = { ["ChannelDivinity:0"] = 2, ["SorceryPoint:0"] = 1 } }
+      G.sheet = function() return have end
+      local base = { slots = { ["1"] = 2 }, resources = { { kind = "ChannelDivinity", level = 0, n = 1 } } }
+      local items = { { kind = "ChannelDivinity", level = 0, n = 1 }, { kind = "SpellSlot", level = 1, n = 1 },
+                      { kind = "SorceryPoint", level = 0, n = 1 } }
+      T_with = G.setupCheck({ char = "c1" }, { slots = base.slots, resources = base.resources, item_resources = items },
+        "start")
+      T_without = G.setupCheck({ char = "c1" }, { slots = base.slots, resources = base.resources }, "start")
+      have.resources["SorceryPoint:0"] = nil
+      T_missing = G.setupCheck({ char = "c1" }, { slots = base.slots, resources = base.resources, item_resources = items },
+        "start")
+      G.sheet = sheet
+    """)
+    g = L.globals()
+
+    def fields(t):
+        return sorted(m.field for m in t.mismatches.values())
+    check("setup: the items' extra Channel Divinity charge and spell slot are expected (no mismatch)",
+          fields(g.T_with) == [], str([(m.field, m.want, m.got) for m in g.T_with.mismatches.values()]))
+    check("setup: without the items' resources the extra charge and slot are mismatches",
+          fields(g.T_without) == ["resource ChannelDivinity", "spell slots L1"], str(fields(g.T_without)))
+    check("setup: a resource only the items give is checked",
+          fields(g.T_missing) == ["resource SorceryPoint (from items)"], str(fields(g.T_missing)))
+
+
+def summon_turn_tests(L):
+    """The character's own summon (Spiritual Weapon) gets a turn nobody drives: it is ended as soon as it comes and
+    counted, and the watchdog names the summon as the turn's holder instead of 'nobody holds the turn'."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local active = { sw = true }
+      local ents, entOf = {}, {}
+      for _, u in ipairs({ "c1", "sw", "other" }) do
+        local e = { Uuid = { EntityUuid = u },
+          IsSummon = (u == "sw") and { Owner = { Uuid = { EntityUuid = "c1" } } } or nil }
+        e.TurnBased = setmetatable({}, { __index = function(_, k)
+          if k == "IsActiveCombatTurn" then return active[u] == true end end })
+        ents[#ents + 1] = e
+        entOf[u] = e
+      end
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      Ext.Entity.Get = function(u) return entOf[u] end
+      Osi.IsSummon = function(u) return u == "sw" and 1 or 0 end
+      Osi.IsDead = function() return 0 end
+      Osi.IsInCombat = function() return 1 end
+      local ended = {}
+      Osi.EndTurn = function(u) ended[#ended + 1] = u; active[u] = false end
+      local F = { char = "c1", enemies = {}, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                  started = 1, state = "wait", deadline = 1e9 }
+      G.F = F
+      G.round = 1
+      G.step(F, 10)
+      T_ended = ended
+      T_count = G.results.summon_turns_ended
+      T_state = F.state
+      -- a summon whose turn will not end: the watchdog's recovery names it
+      active.sw = true
+      Osi.EndTurn = function() end
+      F.summonCheck = 1e12
+      F.deadline = 0
+      G.step(F, 20)
+      T_rec = G.results.turn_recoveries and G.results.turn_recoveries[1] and G.results.turn_recoveries[1].what
+      Ext.Entity.GetAllEntitiesWithComponent = function() return {} end
+      Ext.Entity.Get = function() return nil end
+      Osi.IsSummon, Osi.IsDead, Osi.IsInCombat, Osi.EndTurn = nil, nil, nil, nil
+      G.F = nil
+    """)
+    g = L.globals()
+    check("summon: the character's summon's turn is ended at once and counted, the fight keeps waiting",
+          lst(g.T_ended) == ["sw"] and g.T_count == 1 and g.T_state == "wait", f"{lst(g.T_ended)} {g.T_count}")
+    check("summon: the watchdog names the character's summon as the turn's holder", "sw" in str(g.T_rec),
+          str(g.T_rec))
+
+
+def npc_park_tests(L):
+    """Lanes: living characters outside the party in a lane (radius + margin) are moved to the lanes' npc_park before
+    the run, their spots kept; party members (also one made a player by script, missing from the players database),
+    summons and far ones stay; everyone moved goes back after the last lane, also when the run is aborted."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local at = { ghost = { -157, 17, 939 }, monk = { -157, 17, 941 }, gale = { -156, 17, 937 },
+        sw = { -150, 17, 937 }, far = { -100, 17, 937 }, edge = { -142, 17, 962 }, dead = { -150, 17, 940 } }
+      local function reset()
+        at.ghost, at.monk, at.edge = { -157, 17, 939 }, { -157, 17, 941 }, { -142, 17, 962 }
+      end
+      local ents = {}
+      for u in pairs(at) do ents[#ents + 1] = { Uuid = { EntityUuid = u } } end
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      Osi.GetPosition = function(u) local p = at[u]; if p then return p[1], p[2], p[3] end end
+      Osi.IsDead = function(u) return u == "dead" and 1 or 0 end
+      Osi.IsSummon = function(u) return u == "sw" and 1 or 0 end
+      Osi.IsPlayer = function(u) return u == "gale" and 1 or 0 end
+      Osi.DB_Players = { Get = function() return { { "host" } } end }
+      Osi.FindValidPosition = function(x, y, z) return x, y, z end
+      Osi.TeleportToPosition = function(u, x, y, z) at[u] = { x, y, z } end
+      local B = { center = { -142, 17.4, 937.5 }, radius = 16 }
+      G.movedNpcs = nil
+      T_moved = G.npcsAway({ B }, { -1328, 2, 528 }, 10)
+      T_at = { ghost = at.ghost[1], monk = at.monk[1], gale = at.gale[1], sw = at.sw[1], far = at.far[1],
+               edge = at.edge[1] }
+      T_back = G.npcsBack()
+      T_home = { ghost = at.ghost[1], monk = at.monk[3] }
+      reset()
+      -- the lanes' runner moves them when the lanes entry names npc_park, puts them back after the last lane
+      local run, park, cat, lf, fr = G.run, G.parkOthers, G.catalog, G.laneFactions, G.laneFactionsRestore
+      G.run = function() return "started" end
+      G.parkOthers = function() return 0 end
+      G.laneFactions = function() return {} end
+      G.laneFactionsRestore = function() return 0 end
+      G.catalog = function() return { arenas = { a1 = { center = { 0, 0, 0 }, radius = 16, start = { 0, 0, 0 } },
+        a2 = B, LN = { lanes = { A = { arena = "a1" }, B = { arena = "a2" } }, park = { 5, 5, 5 },
+        npc_park = { -1328, 2, 528 }, margin = 10 } } } end
+      G.LANES = nil
+      G.runLanes({ run_id = "L1", lanes = "LN", first = "A",
+        entries = { { id = "A", req = { char = "host" } }, { id = "B", req = { char = "gale" } } } })
+      T_lmoved = #(G.LANES.npcs_moved or {})
+      T_lat = at.ghost[1]
+      for _, id in ipairs({ "A", "B" }) do G.inLane(id, function() G.F = { state = "done" } end) end
+      G.lanesDone()
+      T_lback, T_lhome = G.LANES.npcs_restored, at.ghost[1]
+      reset()
+      -- a run stopped before its last lane put them back: abort does
+      G.LANES = nil
+      G.npcsAway({ B }, { -1328, 2, 528 }, 10)
+      G.abort()
+      T_ahome, T_aleft = at.ghost[1], G.movedNpcs
+      G.run, G.parkOthers, G.catalog, G.laneFactions, G.laneFactionsRestore = run, park, cat, lf, fr
+      G.LANES = nil
+      for _, id in ipairs({ "A", "B" }) do G.inLane(id, function() G.F = nil end) end
+      Ext.Entity.GetAllEntitiesWithComponent = function() return {} end
+      Osi.GetPosition, Osi.IsDead, Osi.IsSummon, Osi.IsPlayer, Osi.DB_Players = nil, nil, nil, nil, nil
+      Osi.FindValidPosition, Osi.TeleportToPosition = nil, nil
+    """)
+    g = L.globals()
+    moved = sorted(m.uuid for m in g.T_moved.values())
+    check("npc park: living characters outside the party within the lane's radius + margin are moved",
+          moved == ["edge", "ghost", "monk"] and g.T_at.ghost == -1328 and g.T_at.edge == -1328, str(moved))
+    check("npc park: party members (one missing from the players database), summons and far ones stay",
+          g.T_at.gale == -156 and g.T_at.sw == -150 and g.T_at.far == -100, str(dict(g.T_at)))
+    check("npc park: everyone moved goes back to where they stood", g.T_back == 3 and g.T_home.ghost == -157 and
+          g.T_home.monk == 941, f"{g.T_back} {dict(g.T_home)}")
+    check("npc park: the lanes' runner moves them for the run and puts them back after the last lane",
+          g.T_lmoved == 3 and g.T_lat == -1328 and g.T_lback == 3 and g.T_lhome == -157,
+          f"{g.T_lmoved} {g.T_lat} {g.T_lback} {g.T_lhome}")
+    check("npc park: a stopped run puts them back too", g.T_ahome == -157 and g.T_aleft is None, str(g.T_ahome))
+
+
+def item_resource_tests(P):
+    """What the worn items add to the class resources (plan.py item_resources): a boost on the item, and a status its
+    equip status or a long-rest passive puts on (Amulet of the Devout: one more Channel Divinity charge, reached both
+    ways, counted once); turn resources and conditional boosts are left out. Spells the game allows only out of combat
+    are never planned."""
+    st = {"MAG_Devout": {"PassivesOnEquip": "Devout_Cooldown", "StatusOnEquip": "DEVOUT_TECH"},
+          "Devout_Cooldown": {"StatsFunctorContext": "OnLongRest",
+                              "StatsFunctors": "RemoveStatus(TRACK);ApplyStatus(DEVOUT_CD, 100, -1)"},
+          "DEVOUT_TECH": {"StatusType": "BOOST",
+                          "OnApplyFunctors": "IF(not HasStatus('TRACK')):ApplyStatus(DEVOUT_CD, 100, -1)"},
+          "DEVOUT_CD": {"StatusType": "BOOST", "Boosts": "ActionResource(ChannelDivinity, 1, 0)"},
+          "TRACK": {"StatusType": "BOOST"},
+          "MAG_Slot": {"Boosts": "ActionResource(SpellSlot,1,2);ActionResource(Movement,3,0)"},
+          "MAG_LowHP": {"Boosts": "IF(HasHPPercentageLessThan(50)):ActionResource(SorceryPoint,1,0)"},
+          "MAG_Rest": {"PassivesOnEquip": "Rest_P"},
+          "Rest_P": {"StatsFunctorContext": "OnLongRest", "StatsFunctors": "ApplyStatus(SELF, REST_S, 100, -1)"},
+          "REST_S": {"Boosts": "ActionResource(SorceryPoint,2,0)"},
+          "Shout_ArcaneRecovery": {"Requirements": "!Combat"}, "Target_Shatter_Item": {"Requirements": "Combat"}}
+    r = P.item_resources(st, ["MAG_Devout"])
+    check("item resources: a status the item's equip status or long-rest passive puts on, counted once",
+          [(x["kind"], x["level"], x["n"]) for x in r] == [("ChannelDivinity", 0, 1)], str(r))
+    r2 = P.item_resources(st, ["MAG_Slot", "MAG_LowHP", "MAG_Rest"])
+    check("item resources: spell slots and a long-rest status's resource; turn and conditional boosts left out",
+          sorted((x["kind"], x["level"], x["n"]) for x in r2) == [("SorceryPoint", 0, 2), ("SpellSlot", 2, 1)], str(r2))
+    check("item resources: the equip status alone gives the charge (no long-rest passive)",
+          [x["n"] for x in P.item_resources(dict(st, MAG_Devout={"StatusOnEquip": "DEVOUT_TECH"}), ["MAG_Devout"])]
+          == [1])
+    check("item resources: the long-rest passive alone gives the charge (no equip status)",
+          [x["n"] for x in P.item_resources(dict(st, MAG_Devout={"PassivesOnEquip": "Devout_Cooldown"}),
+                                            ["MAG_Devout"])] == [1])
+    check("out of combat: a spell whose Requirements say !Combat is never planned",
+          P.unusable_reason(st, "Shout_ArcaneRecovery", None, []) == "cast only out of combat" and
+          P.unusable_reason(st, "Target_Shatter_Item", None, []) is None)
+    act = P.A("Shout_RadianceOfTheDawn", "action", "@self")
+    fc = P.forecast({"rounds": [[act]], "steady": [act]}, {}, r,
+                    {"Shout_RadianceOfTheDawn": {"UseCosts": "ActionPoint:1;ChannelDivinity:1"}}, n_rounds=2)
+    check("item resources: the forecast spends the items' extra charge", fc == [["Shout_RadianceOfTheDawn"], []],
+          str(fc))
+
+
 def respec_tests(L):
     """A real respec: prep emulates nothing (no passives, spells or sheet boosts); the setup check compares the
     character's own classes, subclasses and feats with the build. Proficiency: the game's own answer for each item the
@@ -1369,7 +1585,7 @@ def py_tests():
     import pairs as PA
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
-              lambda: lanes_py_tests(R), engine_lane_tests):
+              lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -1847,6 +2063,36 @@ MUTATIONS = [
     ("lanes: high ground in one lane only", GL, "    if not (A and A.high) then allHigh = false end", ""),
     ("lanes: single runs allowed during lanes", GL,
      "  if G.LANES and G.LANES.on and not req.lane then return \"busy\" end", ""),
+    ("item resources: a status put on as the item goes on ignored", PL,
+     '        nxt = _applied_statuses(st.get("OnApplyFunctors"), stats)', "        nxt = []"),
+    ("item resources: a status put on at a long rest ignored", PL,
+     '            nxt += _applied_statuses(st.get("StatsFunctors"), stats)', "            pass"),
+    ("item resources: a status reached twice counted twice", PL, "        if sid in seen or depth > 4:",
+     "        if depth > 4:"),
+    ("item resources: turn resources counted", PL,
+     '            if kind in TURN_RESOURCES or kind.startswith("Interrupt_"):', "            if False:"),
+    ("item resources: conditional boosts counted", PL, ' if not b.startswith("IF(")', ""),
+    ("out of combat: spells allowed only out of combat planned", PL, "    if out_of_combat_only(stats, spid):",
+     "    if False:"),
+    ("setup: the items' resources not expected", GL,
+     '    cmp("resource " .. r.kind, r.n + (fromItems[k] or 0), (now_.resources or {})[k])',
+     '    cmp("resource " .. r.kind, r.n, (now_.resources or {})[k])'),
+    ("setup: the items' spell slots not expected", GL, ' + (fromItems["SpellSlot:" .. lv] or 0)', ""),
+    ("setup: a resource only the items give not checked", GL,
+     '    if r.kind ~= "SpellSlot" and not seen[k] then', '    if false then'),
+    ("summon: its turn left alone", GL, "    if not F.manual and not activeTurn(F.char) then G.endSummonTurns(F, t) end\n",
+     ""),
+    ("summon: not a turn holder for the watchdog", GL, "  for _, s in ipairs(summonsOnTurn(F)) do out[#out + 1] = s end\n",
+     ""),
+    ("npc park: nobody moved", GL, "      if near then\n", "      if false then\n"),
+    ("npc park: party members moved", GL, "    if u and not party[u] and not G.movedNpcs[u]", "    if u and not G.movedNpcs[u]"),
+    ("npc park: summons moved", GL, " and try(Osi.IsSummon, u) ~= 1\n", "\n"),
+    ("npc park: margin ignored", GL, "<= A.radius + (margin or 0) then near = true end", "<= A.radius then near = true end"),
+    ("npc park: never put back after the lanes", GL, "  L.npcs_restored = G.npcsBack()\n", ""),
+    ("npc park: never put back on abort", GL, "  if G.movedNpcs and not (G.LANES and G.LANES.on) then G.npcsBack() end\n",
+     ""),
+    ("npc park: the lanes' runner does not move them", GL, "    L.npcs_moved = G.npcsAway(areas, LS.npc_park, LS.margin)\n",
+     ""),
     ("respec: emulation on a real respec", GL, "  local emulate = not spec.real_respec", "  local emulate = true"),
     ("respec: classes not compared", GL,
      "    for cls, n in pairs(spec.class_levels or {}) do cmp(\"class \" .. cls .. \" level\", n, lv[cls] or 0) end", ""),
@@ -1983,12 +2229,18 @@ MUTATIONS = [
      "        boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = false"),
     ("start: HP buffer given", GL, "G.HP_BUFFER = 0", "G.HP_BUFFER = 200"),
     ("refusal: no retry after an Attack of Opportunity", GL,
-     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
-     "if false then"),
+     '    and (tries > 0 or anyRefusal or reason.why:find("Attack of Opportunity", 1, true)) then',
+     "    and false then"),
     ("refusal: any refusal retried", GL,
-     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
-     "if refused and tries < G.CAST_RETRIES then"),
-    ("refusal: retries without a limit", GL, "G.CAST_RETRIES = 2", "G.CAST_RETRIES = 99"),
+     '    and (tries > 0 or anyRefusal or reason.why:find("Attack of Opportunity", 1, true)) then',
+     "    then"),
+    ("refusal: retry_any_refusal on by default", GL, "G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, false",
+     "G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, true"),
+    ("refusal: retry_any_refusal ignored", GL,
+     "  local anyRefusal = (F.req and F.req.retry_any_refusal) or G.RETRY_ANY_REFUSAL",
+     "  local anyRefusal = false"),
+    ("refusal: retries without a limit", GL, "G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, false",
+     "G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 99, false"),
     ("foreign: own Attack of Opportunity voids the run", GL, "and not (aoo and weapon) then", "then"),
     ("down: a down does not end the run", GL,
      'if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end',

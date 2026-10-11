@@ -278,6 +278,10 @@ function G.sheet(u)
     if id then s.passives[#s.passives + 1] = id end
   end
   for slot, it in pairs(G.equipped(u)) do s.equipped[slot] = try(Osi.GetStatString, it) or name(it) end
+  -- the active statuses, so a sheet that differs from the build (a bare max HP 8 above it, once) can be traced
+  s.statuses = {}
+  for id in pairs(G.statusSet(u)) do s.statuses[#s.statuses + 1] = id end
+  table.sort(s.statuses)
   return s
 end
 local function boost(u, b)
@@ -695,6 +699,46 @@ function G.unparkOthers()
   G.parked = nil
 end
 
+-- Bystanders: living characters outside the party that stand in a lane (two stood at one lane's start in the test
+-- saves) are moved by engine to spot (a lanes entry's npc_park, away from every lane) for the lanes' run; where each
+-- stood is kept in G.movedNpcs and G.npcsBack puts them back after the last lane, also when the run is aborted. Party
+-- members are parked instead (G.parkOthers); enemies and summons of earlier runs are removed by G.clearLeftovers.
+-- arenas = { A, ... } (centre, radius); margin metres around each radius. -> { { uuid, name, from = {x, y, z} } }
+function G.npcsAway(arenas, spot, margin)
+  G.movedNpcs = G.movedNpcs or {}
+  local party, out = {}, {}
+  for _, m in ipairs(partyMembers()) do party[m] = true end
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local u = try(function() return e.Uuid.EntityUuid end)
+    if u and not party[u] and not G.movedNpcs[u] and not (G.spawned or {})[u] and try(Osi.IsSummon, u) ~= 1
+      and try(Osi.IsDead, u) == 0 then
+      local x, y, z = Osi.GetPosition(u)
+      local near = false
+      for _, A in ipairs(arenas) do
+        if x and math.sqrt((x - A.center[1]) ^ 2 + (z - A.center[3]) ^ 2) <= A.radius + (margin or 0) then near = true end
+      end
+      if near then
+        local px, py, pz = Osi.FindValidPosition(spot[1], spot[2], spot[3], 20, u, 0)
+        if px then
+          pcall(Osi.TeleportToPosition, u, px, py, pz, "", 0, 0, 0, 0, 1)
+          G.movedNpcs[u] = { x, y, z }
+          out[#out + 1] = { uuid = u, name = name(u), from = { x, y, z } }
+        end
+      end
+    end
+  end
+  return out
+end
+function G.npcsBack()
+  local n = 0
+  for u, p in pairs(G.movedNpcs or {}) do
+    pcall(Osi.TeleportToPosition, u, p[1], p[2], p[3], "", 0, 0, 0, 0, 1)
+    n = n + 1
+  end
+  G.movedNpcs = nil
+  return n
+end
+
 -- ------------------------------------------------------------------------------------------------ enemies
 -- E = {template, ac, save, atk, dmg, dc, hp}. Stats are forced, then VERIFIED in G.results.enemies (a difficulty
 -- setting or the template could change them).
@@ -934,15 +978,31 @@ function G.setupCheck(F, spec, phase, extra)
   end
   if sh.hp then cmp("max HP", sh.hp, bare.hp) end
   if sh.prof then cmp("proficiency bonus", sh.prof, bare.prof) end
-  -- slots and class resources as the fight starts (their boosts can land after the bare sheet was read)
+  -- slots and class resources as the fight starts (their boosts can land after the bare sheet was read), plus what
+  -- the worn items add (spec.item_resources: a boost, or a status an item puts on)
   local now_ = G.sheet(u)
+  local fromItems = {}
+  for _, r in ipairs(spec.item_resources or {}) do
+    local k = r.kind .. ":" .. tostring(r.level or 0)
+    fromItems[k] = (fromItems[k] or 0) + r.n
+  end
   for lv = 1, 9 do
-    local want = spec.slots and spec.slots[tostring(lv)] or 0
+    local want = (spec.slots and spec.slots[tostring(lv)] or 0) + (fromItems["SpellSlot:" .. lv] or 0)
     local got = (now_.slots or {})[tostring(lv)] or 0
     if want ~= 0 or got ~= 0 then cmp("spell slots L" .. lv, want, got) end
   end
+  local seen = {}
   for _, r in ipairs(spec.resources or {}) do
-    cmp("resource " .. r.kind, r.n, (now_.resources or {})[r.kind .. ":" .. tostring(r.level or 0)])
+    local k = r.kind .. ":" .. tostring(r.level or 0)
+    seen[k] = true
+    cmp("resource " .. r.kind, r.n + (fromItems[k] or 0), (now_.resources or {})[k])
+  end
+  for _, r in ipairs(spec.item_resources or {}) do
+    local k = r.kind .. ":" .. tostring(r.level or 0)
+    if r.kind ~= "SpellSlot" and not seen[k] then
+      seen[k] = true
+      cmp("resource " .. r.kind .. " (from items)", fromItems[k], (now_.resources or {})[k])
+    end
   end
   if extra then
     cmp("not encumbered", 0, #(extra.encumbered or {}))
@@ -1403,7 +1463,7 @@ local function doAction(F, a, R, rec0)
   F.pending = P
 end
 
-G.CAST_RETRIES = 2
+G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, false
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
 -- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
 function G.settle(F, R, t)
@@ -1445,9 +1505,12 @@ function G.settle(F, R, t)
   -- an Attack of Opportunity interrupted the engine's step to the cast: once the step has settled the same cast is asked
   -- for again from where the character stands; it is not a miss and the round is not idle. The engine can refuse the
   -- first ask after the reaction too (no reason shown; seen when the enemy had just stepped into melee), so a cast
-  -- an Attack of Opportunity interrupted gets up to G.CAST_RETRIES asks, and only such a cast
+  -- an Attack of Opportunity interrupted gets up to G.CAST_RETRIES asks, and only such a cast. A run asked with
+  -- retry_any_refusal (off by default) asks again for any refused cast
   local tries = P.a.retried or 0
-  if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then
+  local anyRefusal = (F.req and F.req.retry_any_refusal) or G.RETRY_ANY_REFUSAL
+  if refused and tries < G.CAST_RETRIES
+    and (tries > 0 or anyRefusal or reason.why:find("Attack of Opportunity", 1, true)) then
     R.cast_misses = R.cast_misses - 1
     P.rec.retried = P.rec.retried or P.rec.result
     P.rec.retries = tries + 1
@@ -2183,9 +2246,38 @@ function G.recoverTurn(F, inCombat, holders)
   G.enterCombat(F)
   return "nobody holds the turn: entered combat again"
 end
+-- The character's own summon (Spiritual Weapon) gets a turn of its own after the character's, and nothing drives it:
+-- the fight waited for a turn the summon never gave back (the watchdog found "nobody holds the turn", the character
+-- still in combat). Its turn is ended as soon as it comes (looked for once a second while waiting); the record counts
+-- these turns in summon_turns_ended, so the summon's own attacks are not in the run's damage.
+G.SUMMON_CHECK_MS = 1000
+local function summonsOnTurn(F)
+  local out = {}
+  for _, s in ipairs(F.char and G.leftoverSummons(uuid(F.char), nil) or {}) do
+    if activeTurn(s) then out[#out + 1] = s end
+  end
+  return out
+end
+function G.endSummonTurns(F, t)
+  if t < (F.summonCheck or 0) then return 0 end
+  F.summonCheck = t + G.SUMMON_CHECK_MS
+  local n = 0
+  for _, s in ipairs(summonsOnTurn(F)) do
+    G.endTurn(s)
+    local key = tostring(G.round) .. ":" .. s
+    F.summonEnded = F.summonEnded or {}
+    if not F.summonEnded[key] then
+      F.summonEnded[key] = true
+      G.results.summon_turns_ended = (G.results.summon_turns_ended or 0) + 1
+    end
+    n = n + 1
+  end
+  return n
+end
 local function turnHolders(F)
   local out = {}
   for _, d in ipairs(F.enemies or {}) do if activeTurn(d) then out[#out + 1] = uuid(d) end end
+  for _, s in ipairs(summonsOnTurn(F)) do out[#out + 1] = s end
   local other = {}
   for _, u in pairs(F.lane and F.lane.others or {}) do other[uuid(u)] = true end
   for _, m in ipairs(partyMembers()) do
@@ -2211,6 +2303,7 @@ function G.step(F, t)
     if miss then return finish(F, "reaction prompt " .. tostring(miss) .. " not covered by the policy") end
   end
   if F.state == "wait" then
+    if not F.manual and not activeTurn(F.char) then G.endSummonTurns(F, t) end
     if activeTurn(F.char) then
       F.recoveries = 0
       if G.round >= F.rounds then return finish(F) end
@@ -2308,6 +2401,8 @@ function G.abort()
     G.lanesDone()
   end
   if G.F and G.F.state ~= "done" then finish(G.F, "aborted") end
+  -- bystanders a lanes' run moved and did not put back (it stopped before its last lane ended) go back now
+  if G.movedNpcs and not (G.LANES and G.LANES.on) then G.npcsBack() end
   if G.barSaved then G.hotbarRestore() end
   return G.status
 end
@@ -2337,6 +2432,11 @@ function G.runLanes(req)
   local keep = {}
   for _, u in pairs(L.chars) do keep[u] = true end
   L.parkedCount = G.parkOthers(nil, LS.park, keep)
+  if LS.npc_park then
+    local areas = {}
+    for id in pairs(L.chars) do areas[#areas + 1] = (C.arenas or {})[LS.lanes[id].arena or ""] end
+    L.npcs_moved = G.npcsAway(areas, LS.npc_park, LS.margin)
+  end
   L.factions = G.laneFactions(L, LS)
   local allHigh = true
   for id in pairs(L.chars) do
@@ -2462,6 +2562,7 @@ function G.laneSetup(F)
   end
   G.results.lane_isolation = iso
   G.results.lane_factions = G.LANES and G.LANES.factions
+  G.results.npcs_moved = G.LANES and G.LANES.npcs_moved
 end
 
 -- After the last lane: factions and relations back, the party back.
@@ -2473,6 +2574,7 @@ function G.lanesDone()
     if F and F.state ~= "done" then return end
   end
   L.restored = G.laneFactionsRestore(L.factions)
+  L.npcs_restored = G.npcsBack()
   G.unparkOthers()
   L.on = false
 end
