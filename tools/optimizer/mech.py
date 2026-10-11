@@ -209,6 +209,17 @@ def _ev(c, k, default=0.0):
     return 1.0 if c.ev.get(k) else default if k not in c.ev else 0.0
 
 
+def _num(x, default=1.0):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return default
+
+
+def _enemies():
+    return getattr(sys.modules.get("model"), "ENEMIES", 4)
+
+
 def _status_p(c, args):
     name = args[0] if args else ""
     who = args[1] if len(args) > 1 else ""
@@ -353,7 +364,11 @@ PREDICATES = {
     "HasHPPercentageWithoutTemporaryHPLessThan": _hp_le,
     "HasHPLessThan": lambda c, a: 0.15,
     "DistanceToTargetGreaterThan": lambda c, a: 0.0 if c.ev.get("melee") else 0.6,
-    "HasEnemyWithinRange": lambda c, a: 1.0 if c.st.exposure >= 1.25 else 0.5,
+    # HasEnemyWithinRange('SG_Incapacitated', 3, nil, 2, ...) (Scabby Pugilist Circlet; every use in the data has
+    # this shape): read as "at least 2 enemies, not Incapacitated, within 3 m", so never with fewer enemies in the
+    # fight (model.scenario); the excluded group is not modelled
+    "HasEnemyWithinRange": lambda c, a: 0.0 if _enemies() < _num(a[3] if len(a) > 3 else "1") else
+    (1.0 if c.st.exposure >= 1.25 else 0.5),
     # the character's own state
     "Self": lambda c, a: 1.0 if c.phase in ("boost", "self") else (1.0 if any("Source" in x for x in a) and
                                                           any("Observer" in x for x in a) else 0.0),
@@ -573,6 +588,9 @@ def lmv_names(level):
     return out
 
 
+MAX_TARGETS = None                      # model.scenario(): at most this many enemies per cast (None: no cap)
+
+
 def area_targets(sp, enemies=4):
     """Enemies hit by one cast (assumption, same table as the companion analyses: 4 enemies per fight)."""
     r = 0.0
@@ -650,6 +668,8 @@ def read_spell(W, sid, level, slot_level=None):
             chain = min(3.0, float(S[extra.group(1)].get("ProjectileCount") or 0))
         except ValueError:
             chain = 0.0
+    if MAX_TARGETS is not None:
+        tg, chain = min(tg, MAX_TARGETS), min(chain, max(0.0, MAX_TARGETS - 1.0))
     lvl = int(base.get("Level") or 0)
     flags = (base.get("SpellFlags") or "")
     return {"id": sid, "dmg": dmg, "roll": kind, "save_abil": ab.group(1) if ab else None,

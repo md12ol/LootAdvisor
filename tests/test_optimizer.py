@@ -14,9 +14,11 @@ one set per origin x first two Build Advisor builds x act, proficiency, Rage + h
 obtainability, story-path families, Dark-Urge-only items, local optimality (no single swap improves the score) and
 the unverified-mechanics switches, party ownership (owners.json read here), defensive value (status immunities
 read from the game stats here), creature-type / wearer conditions, stealth openers, the action economy of per-rest
-item spells, The Dead Shot's crit range, the respec tuning (re-scored and re-checked against the point-buy rules
-here) and the test-plan export. A test with nothing to check fails.
+item spells, The Dead Shot's crit range, a weapon's ability-modifier rider counted once, the boss scenario, the
+respec tuning (re-scored and re-checked against the point-buy rules here) and the test-plan export, with the
+toggles it assumes. A test with nothing to check fails.
 """
+import contextlib
 import itertools
 import json
 import math
@@ -927,6 +929,103 @@ def check_dead_shot(out=None):
     return fails, 1
 
 
+def check_weapon_riders(out=None):
+    """An ability-modifier rider counts once per hit: Balduran's Giantslayer (its "StrengthModifier Slashing" rider
+    read here from the item record) hits for its dice + enchantment + the STR modifier twice, no more."""
+    import model
+    W = _world()
+    rec = next(r for r in _items().values() if r.get("name") == "Balduran's Giantslayer")
+    w = W.items[rec["stats_id"]]["weapon"]
+    if "StrengthModifier Slashing" not in (w.get("extra_damage") or []):
+        return ["Balduran's Giantslayer has no StrengthModifier rider in the data - expectation changed"], 1
+    nd, sides = (int(x) for x in w["damage"].split("d"))
+    st = model.State(W, "laezel", "bmgiant", 3, {"MainHand": rec["stats_id"]}, None)
+    evs, _special = model.make_weapon_events(st)
+    main = next(e for e in evs if e.get("name") == "attack")
+    want = nd * (sides + 1) / 2 + w["enchantment"] + 2 * st.mods["STR"]
+    if abs(main["base_dmg"] - want) > 1e-9:
+        return [f"Giantslayer hit before conditional boosts: {main['base_dmg']}, want {want} (STR {st.mods['STR']:+d} "
+                f"twice)"], 1
+    return [], 1
+
+
+def check_plan_toggles(out=None):
+    """A test plan lists the toggled passives its attacks assume (the harness sets them; a character can have them
+    off): each is a toggle in the game stats (read here) and is listed exactly when the model's attacks used it.
+    Lae'zel with Balduran's Giantslayer swings with Great Weapon Master's -5 / +10; Gale has no such passive."""
+    import gauntlet
+    import model
+    W = _world()
+    S = _stats()
+    gs = next(r for r in _items().values() if r.get("name") == "Balduran's Giantslayer")["stats_id"]
+    fails = []
+    for cid, bid, lo, want in (("laezel", "bmgiant", {"MainHand": gs}, ["GreatWeaponMaster_BonusDamage"]),
+                               ("gale", "tempestevoker", {}, [])):
+        r = model.score(W, cid, bid, 3, lo, None, detail=True)
+        got = gauntlet.test_plan(W, r, "check", lo, "research")["toggles"]
+        if got != want:
+            fails.append(f"{cid} {bid}: toggles {got}, want {want}")
+        for t in got:
+            if "IsToggled" not in ((S.get(t) or {}).get("Properties") or ""):
+                fails.append(f"{cid} {bid}: {t} is not a toggled passive in the game stats")
+    return fails, 2
+
+
+def check_scenario(out=None):
+    """model.scenario("boss") scores the gauntlet's boss fight (expectations from its rules, not the code): one
+    enemy, so an area spell (Fireball, radius read here from the stats) hits one target and nothing chains; one
+    16-round fight with no short rest, so a Fighter 12's Action Surge adds its 3 attacks once in 16 rounds; Scabby
+    Pugilist Circlet's "2 enemies within 3 m" never holds; the enemy attacks once a round at half damage (17 -> 9,
+    one d20 enumerated here vs the model's AC); Markoheshkir's once-per-short-rest spells (cooldown read here) once
+    in 16 rounds; and the day's numbers are the same before and after the block."""
+    import mech
+    import model
+    W = _world()
+    S = _stats()
+    gs = next(r for r in _items().values() if r.get("name") == "Balduran's Giantslayer")["stats_id"]
+    scabby = next(r for r in _items().values() if r.get("name") == "Scabby Pugilist Circlet")["stats_id"]
+    fails, n = [], 0
+    lo = {"MainHand": gs, "Helmet": scabby}
+
+    def numbers():
+        st = model.State(W, "laezel", "bmgiant", 3, lo, None)
+        evs, _sp = model.make_weapon_events(st)
+        main = next(e for e in evs if e.get("name") == "attack")
+        mods = model.event_mods(st, main, model.all_extra_boosts(st, []), model.lmv_names(st))
+        fb = mech.read_spell(W, "Projectile_Fireball", 12)
+        r = model.score(W, "laezel", "bmgiant", 3, lo, None)
+        gale = model.State(W, "gale", "tempestevoker", 3, {"MainHand": "MAG_TheChromatic_Staff"}, None,
+                           {"MainHand": "MAG_LEGENDARY_CHROMATIC_ATTUNEMENT_LIGHTNING"})
+        sr = [e["n"] for e in model.item_spell_events(gale)
+              if S[e["spell_id"]].get("Cooldown") == "OncePerShortRest"]
+        return main["n"], mods["flat"], fb["targets"] + fb["chain"], r, sr
+    day = numbers()
+    with model.scenario("boss"):
+        boss = numbers()
+    again = numbers()
+    if float(S["Projectile_Fireball"].get("ExplodeRadius") or 0) > 1 and day[2] <= 1:
+        fails.append(f"day: Fireball hits {day[2]} targets")
+    want = {"attacks a round (3 + Action Surge once)": (boss[0], 3 + 3 / 16),
+            "Scabby Pugilist +2": (boss[1], 0.0), "Fireball targets": (boss[2], 1.0)}
+    for k, (got, w) in want.items():
+        n += 1
+        if abs(got - w) > 1e-9:
+            fails.append(f"boss {k}: {got}, want {w}")
+    n += 1
+    if not boss[4] or any(abs(x - 1 / 16) > 1e-9 for x in boss[4]):
+        fails.append(f"boss: Markoheshkir's once-per-short-rest spells {boss[4]} a round, want 1/16 each")
+    if day[1] < 2.0 - 1e-9:
+        fails.append(f"day: Scabby Pugilist +2 read as {day[1]} for a melee build")
+    ac = boss[3].dur["ac"]
+    want_taken = _enum_hit(model.ENEMY[3]["atk"], ac, 0) * 9 + 0.05 * 9 * 0.5
+    if abs(boss[3].dur["incoming"] - want_taken) > 1e-6:
+        fails.append(f"boss damage taken {boss[3].dur['incoming']:.3f}, want {want_taken:.3f} (AC {ac})")
+    if (day[0], day[1], day[2], day[3].dpr, day[3].score, day[4]) != (again[0], again[1], again[2], again[3].dpr,
+                                                                       again[3].score, again[4]):
+        fails.append(f"day numbers changed by the boss block: {day[3].dpr} -> {again[3].dpr}")
+    return fails, n + 2
+
+
 _COST = {8: 0, 9: 1, 10: 2, 11: 3, 12: 4, 13: 5, 14: 7, 15: 9}
 
 
@@ -1158,6 +1257,9 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("wearer conditions (BoostConditions)", check_wearer_conditions),
                 ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
                 ("The Dead Shot crit range", check_dead_shot),
+                ("weapon ability-modifier rider counted once", check_weapon_riders),
+                ("test plans list the toggles the model assumes", check_plan_toggles),
+                ("boss scenario: one target, one fight, half-damage attacks", check_scenario),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
                 ("test plans", check_test_plans), ("party assignment of unique items", check_party),
                 ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
@@ -1481,6 +1583,66 @@ def mutations():
         finally:
             model.all_extra_boosts = old
     out.append(("The Dead Shot's crit range only on its own weapon", m_deadshot))
+
+    def m_rider_twice():
+        old = model.make_weapon_events
+
+        def twice(st):
+            evs, special = old(st)
+            for ev in evs:
+                if ev.get("slot") == "MainHand":
+                    ev["base_dmg"] += max(0, st.mods.get("STR", 0))     # the sheet's rider added again
+            return evs, special
+        model.make_weapon_events = twice
+        try:
+            return check_weapon_riders()[0]
+        finally:
+            model.make_weapon_events = old
+    out.append(("weapon ability-modifier rider counted twice", m_rider_twice))
+
+    def m_no_toggles():
+        import gauntlet
+        old = gauntlet.TOGGLES
+        gauntlet.TOGGLES = ()
+        try:
+            return check_plan_toggles()[0]
+        finally:
+            gauntlet.TOGGLES = old
+    out.append(("test plans drop the toggles the model assumes", m_no_toggles))
+
+    def m_scenario_targets():
+        old = model.SCENARIOS["boss"]["enemies"]
+        model.SCENARIOS["boss"]["enemies"] = 4                 # area spells still hit the day's enemies
+        try:
+            return check_scenario()[0]
+        finally:
+            model.SCENARIOS["boss"]["enemies"] = old
+    out.append(("boss scenario keeps the day's enemy count", m_scenario_targets))
+
+    def m_scenario_rests():
+        old = model.SCENARIOS["boss"]["sr_windows"]
+        model.SCENARIOS["boss"]["sr_windows"] = 3              # three short-rest windows in one fight
+        try:
+            return check_scenario()[0]
+        finally:
+            model.SCENARIOS["boss"]["sr_windows"] = old
+    out.append(("boss scenario credits per-short-rest features 3 times", m_scenario_rests))
+
+    def m_scenario_leak():
+        old = model.scenario
+
+        @contextlib.contextmanager
+        def leaky(name):
+            with old(name) as s:
+                yield s
+            model.ENEMY_HP[3] = 5000.0                          # the boss's HP left behind
+        model.scenario = leaky
+        try:
+            return check_scenario()[0]
+        finally:
+            model.scenario = old
+            model.ENEMY_HP[3] = 70.0
+    out.append(("boss scenario leaves its enemy HP in the day model", m_scenario_leak))
 
     def m_respec():
         import respec

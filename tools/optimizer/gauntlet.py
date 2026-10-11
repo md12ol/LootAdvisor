@@ -20,10 +20,15 @@ sets), written by run.py to tools/optimizer/.cache/test_plans.json. Format "loot
       "Cantrip: <spell id>" and the build's own Builds.lua picks (spells, manoeuvres, invocations, metamagic)
     "gear": {slot: {"id": stats id, "name"}}, "choices": {slot: status id} (Markoheshkir attunement),
     "buffs": [{"id", "kind": "elixir" | "class" | "spell", "when": "before combat" | "round 1 bonus action" ...}],
+    "toggles": [passive id]: the toggled passives the model's attacks assume switched on (Great Weapon Master /
+               Sharpshooter "All In": -5 to hit, +10 damage); a test switches them on before the fight,
     "rounds": [{"round": n, "actions": [{"resource": "Action" | "BonusAction" | "Reaction" | "Free",
                                          "id": spell / action id, "slot": weapon slot or null, "repeat": n}]}],
     "expected": {"dpr": model damage per round (long-rest average), "score",
-                 "per_use": [{"name", "id", "per_round", "damage_per_use", "damage_per_round"}]},
+                 "per_use": [{"name", "id", "per_round", "damage_per_use", "damage_per_round"}],
+                 "scenarios": {"boss": {"dpr", "taken", "R"}}: the same set scored for the gauntlet's boss fight
+                 (model.SCENARIOS: one enemy that never dies, one 16-round fight, no short rest, no stealth opener),
+                 the number a boss run's damage per round compares with},
     "enemy": {ac, save, atk, dmg, dc, hp} of the act,
     "kept_by_threshold": optimizer plans only: [{"item", "name", "keeps": this character keeps it, "owner",
                          "other", "margin", "close"}] of the contested list above that this plan's gear holds
@@ -37,6 +42,7 @@ import model
 import odata
 
 FORMAT = "loot-advisor-test-plan/1"
+TOGGLES = ("GreatWeaponMaster_BonusDamage", "Sharpshooter_AllIn")
 ATTACK_ID = {"melee": ("Target_MainHandAttack", "MainHand"), "ranged": ("Projectile_MainHandAttack", "Ranged"),
              "throw": ("Throw_Throw", "MainHand")}
 
@@ -150,6 +156,8 @@ def test_plan(W, r, set_id, loadout, source, ownership=None, tuning=None):
     buffs = []
     if loadout.get("Elixir"):
         buffs.append({"id": loadout["Elixir"], "kind": "elixir", "when": "before combat"})
+    on = any(e.get("toggle") and e.get("n") for e in r.plan_events or [] if not e.get("dropped"))
+    toggles = [p for p in TOGGLES if on and p in st.class_passives]
     per_use = []
     for e in r.plan_events or []:
         if e.get("dropped"):
@@ -170,6 +178,8 @@ def test_plan(W, r, set_id, loadout, source, ownership=None, tuning=None):
     return {"id": set_id, "source": source, "char": cid, "build": bid, "act": act, "level": lvl,
             "ownership": ownership, "classes": classes, "level_sequence": st.BI["seq"][:lvl], "respec": out_respec,
             "gear": {s: {"id": sid, "name": W.items[sid]["name"]} for s, sid in loadout.items()},
-            "choices": dict(r.choice), "buffs": buffs, "rounds": rounds_plan(W, r),
-            "expected": {"dpr": round(r.dpr, 2), "score": round(r.score, 2), "per_use": per_use},
+            "choices": dict(r.choice), "buffs": buffs, "toggles": toggles, "rounds": rounds_plan(W, r),
+            "expected": {"dpr": round(r.dpr, 2), "score": round(r.score, 2), "per_use": per_use,
+                         "scenarios": {"boss": model.scenario_numbers(W, cid, bid, act, loadout, "boss",
+                                                                      tuning.get("respec"), dict(r.choice))}},
             "enemy": dict(model.ENEMY[act], hp=model.ENEMY_HP[act])}
