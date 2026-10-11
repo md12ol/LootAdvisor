@@ -407,8 +407,37 @@ def test_party_threshold():
     assert not fails, fails
 
 
+def test_target_hp():
+    """The target's hit points in a condition: a day's share below the percentage, while in the boss scenario the
+    gauntlet resets the enemy to 99% at each of our turns, so "hurt" (99 or less) is true and "below half" or "below
+    99" false; the character's own hit points are not the target's; the day comes back after the block."""
+    M = _mech()
+    import model
+    st, ev = FakeState(), {"weapon": True}
+
+    def p(text):
+        return M.cond_p(text, M.Ctx(st, ev, "boost"))
+    fails = []
+    day = (p("HasHPPercentageEqualOrLessThan(99, context.Target)"), p("HasHPPercentageLessThan(50, context.Target)"))
+    if abs(day[0] - 0.99) > 1e-9 or abs(day[1] - 0.4) > 1e-9:
+        fails.append(f"day {day}")
+    with model.scenario("boss"):
+        got = {t: p(t) for t in ("HasHPPercentageEqualOrLessThan(99, context.Target)",
+                                 "HasHPPercentageLessThan(99, context.Target)",
+                                 "HasHPPercentageLessThan(100, context.Target)",
+                                 "HasHPPercentageEqualOrLessThan(50, context.Target)",
+                                 "HasHPPercentageWithoutTemporaryHPLessThan(99, context.Target)",
+                                 "HasHPPercentageEqualOrLessThan(50, context.Source)")}
+    want = [1.0, 0.0, 1.0, 0.0, 0.0, 0.25]
+    if list(got.values()) != want:
+        fails.append(f"boss {got}")
+    if M.TARGET_HP_PCT is not None:
+        fails.append("the boss's hit points left in the day model")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
-            test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold]
+            test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp]
 
 
 # ============================================================================================ local-only tests
@@ -1618,6 +1647,31 @@ def mutations():
         finally:
             model.SCENARIOS["boss"]["enemies"] = old
     out.append(("boss scenario keeps the day's enemy count", m_scenario_targets))
+
+    def _ci(t):
+        try:
+            t()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+
+    def m_target_hp():
+        old = model.SCENARIOS["boss"]["target_hp_pct"]
+        model.SCENARIOS["boss"]["target_hp_pct"] = None       # the boss treated as a day's enemy
+        try:
+            return _ci(test_target_hp)
+        finally:
+            model.SCENARIOS["boss"]["target_hp_pct"] = old
+    out.append(("boss scenario: the enemy's 99% not assumed", m_target_hp))
+
+    def m_strict():
+        old = mech.PREDICATES["HasHPPercentageLessThan"]
+        mech.PREDICATES["HasHPPercentageLessThan"] = mech._hp_le     # "less than 99" read as "99 or less"
+        try:
+            return _ci(test_target_hp)
+        finally:
+            mech.PREDICATES["HasHPPercentageLessThan"] = old
+    out.append(("target hit points: less than read as equal or less", m_strict))
 
     def m_scenario_rests():
         old = model.SCENARIOS["boss"]["sr_windows"]

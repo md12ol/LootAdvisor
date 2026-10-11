@@ -59,11 +59,13 @@ ENEMY_DMG_SCALE = 1.0                           # enemy damage per hit x this, r
 # The encounter a score is for. "day": the assumptions above, an act's typical day. "boss": the in-game gauntlet's
 # boss fight (tools/gauntlet "boss" scenario): one enemy that never dies, one 16-round fight, no short rest (a
 # per-short-rest feature once in 16 rounds), no stealth opener; it only attacks (weapon hits, no saves, no
-# conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE). Used through scenario().
+# conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE); the enemy stands at 99% of its
+# hit points at each of our turns (gauntlet.lua G.BOSS_HP_PCT): "target hurt" effects on, "below half" off. Used
+# through scenario().
 SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
-                         stealth=True, attacks_only=False, dmg_scale=1.0),
+                         stealth=True, attacks_only=False, dmg_scale=1.0, target_hp_pct=None),
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
-                          attacks_only=True, dmg_scale=0.5)}
+                          attacks_only=True, dmg_scale=0.5, target_hp_pct=99)}
 
 # ----------------------------------------------------------------------------------- encounter assumptions
 # Everything situational is an uptime taken from these tables (model assumptions, not game data; the game data
@@ -1261,7 +1263,7 @@ def scenario(name):
     g = globals()
     names = ("ROUNDS", "FIGHTS", "SR_WINDOWS", "SR_COVER", "ENEMIES", "STEALTH_OPENERS", "INCOMING_ATTACKS_ONLY",
              "ENEMY_DMG_SCALE")
-    keep, keep_hp, keep_tg = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS
+    keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
@@ -1270,6 +1272,7 @@ def scenario(name):
     if s["enemy_hp"]:
         ENEMY_HP.update({a: s["enemy_hp"] for a in ENEMY_HP})
     mech.MAX_TARGETS = s["enemies"] if name != "day" else None
+    mech.TARGET_HP_PCT = s.get("target_hp_pct")
     for c in _caches():
         c.clear()
     try:
@@ -1278,6 +1281,7 @@ def scenario(name):
         g.update(keep)
         ENEMY_HP.update(keep_hp)
         mech.MAX_TARGETS = keep_tg
+        mech.TARGET_HP_PCT = keep_pct
         for c, k in zip(_caches(), kept):
             c.clear()
             c.update(k)
