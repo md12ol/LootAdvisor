@@ -157,6 +157,13 @@ damage taken (AC, hit points, saving throws, resistances, damage reduction; dama
 Each side of a pair names its test plan (`--select char:build:act:N` compares with research set N): the optimizer tunes
 ability scores, feats and fighting styles to each set, the test character is respecced to that plan, and `plan.py`
 builds the expected sheet and the model's numbers from the same respec.
+The round plan follows the model's decisions for the boss fight: a buff item spell (an extra action, weapon dice) is
+cast when the model finds it worth the action it takes, with the extra action's attacks while its status is on; a
+Battle Master whose every attack has Advantage keeps the superiority dice for Riposte instead of Trip; the off-hand
+weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
+lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
+replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
+adds most to.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

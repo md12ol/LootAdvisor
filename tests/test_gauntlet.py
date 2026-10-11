@@ -156,7 +156,8 @@ def lua_tests():
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
               rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
-              carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests):
+              carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
+              plan_gap_lua_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -787,6 +788,78 @@ def speed_tests(L):
     check("spawn: the fight starts once the enemies' stats are forced, at most SPAWN_MS when they never are",
           g.T_spawn_go is True and g.T_spawn_ms == G.POLL_MS and g.T_spawn_ms2 == G.SPAWN_MS,
           f"{g.T_spawn_ms} {g.T_spawn_ms2}")
+
+
+def plan_gap_lua_tests(L):
+    """The plan gaps in the harness: an entry for a status (an extra action while hasted) only while that status is on
+    as the turn starts; an entry needed only after a critical hit (GWM's bonus attack) is skipped without counting as
+    a failed action when its status is not there; an item action replaces planned actions only when it is worth more
+    (also the surge's attacks); a yielding core bonus action (the off-hand attack) gives way to a bonus item spell
+    worth more, and only to one."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local has = {}
+      Ext.Entity.Get = function(u) if u == "c1" then
+        local l = {}
+        for k in pairs(has) do l[#l + 1] = k end
+        return { StatusContainer = { Statuses = l } } end end
+      local yes = function() return true end
+      local plan = { rounds = { { { spell = "A1", group = "action" },
+        { spell = "A2", group = "action", if_status = "HASTE_X", done_key = "extra" } } }, item_actions = {} }
+      local F = { char = "c1", cooldown = {}, afford = yes, plan = plan, S = {} }
+      local R = { r = 1, done = {} }
+      T_q0 = G.planRound(F, R)
+      has.HASTE_X = true
+      local R2 = { r = 1, done = {} }
+      T_q1 = G.planRound(F, R2)
+      -- GWM's bonus attack: not needed without its status, not a failed action
+      local R3 = { r = 1, done = {}, actions = {}, casts = {} }
+      Osi.HasActiveStatus = function() return 0 end
+      G._doAction(F, { spell = "Target_GWM", group = "bonus", when_status = "GWM_BA", optional = true }, R3)
+      T_gwm = R3.actions[1]
+      G.rounds, G.dmg = { R3 }, {}
+      T_gsum = G._summarize({ char = "c1", enemies = {} })
+      Osi.HasActiveStatus = nil
+      Ext.Entity.Get = function() return nil end
+      -- the item rule's value check
+      local function IR(items, list, av)
+        local f = { cooldown = {}, afford = yes, plan = { item_actions = items, action_value = av } }
+        local r = { done = {} }
+        local out = G._itemRule(f, list, r)
+        local names = {}
+        for _, a in ipairs(out) do names[#names + 1] = a.spell end
+        return table.concat(names, ","), r.item_rule[1].result
+      end
+      local caster = { { spell = "Zone_LB", group = "action", value = 46 } }
+      T_v1, T_v1r = IR({ { spell = "Target_Topple", group = "action", per = "short", value = 2.5 } }, caster)
+      T_v2 = IR({ { spell = "Projectile_Chain", group = "action", per = "short", value = 80 } }, caster)
+      local surge = { { spell = "Atk", group = "action", value = 30 }, { spell = "Shout_ActionSurge", group = "free" },
+        { spell = "Atk", group = "free", requires = "surge" } }
+      T_v3 = IR({ { spell = "Shout_Haste", group = "action", per = "long", value = 390 } }, surge, 100)
+      T_v4, T_v4r = IR({ { spell = "Shout_Weak", group = "action", per = "long", value = 50 } }, surge, 100)
+      local bon = { { spell = "Atk", group = "action" }, { spell = "Off", group = "bonus", yield_bonus = true, value = 12 } }
+      T_y1, T_y1r = IR({ { spell = "Opening", group = "bonus", per = "short", value = 2.5 } }, bon)
+      T_y2 = IR({ { spell = "Strong", group = "bonus", per = "short", value = 20 } }, bon)
+      local hard = { { spell = "Atk", group = "action" }, { spell = "HM", group = "bonus" } }
+      T_y3 = IR({ { spell = "Strong", group = "bonus", per = "short", value = 20 } }, hard)
+    """)
+    g = L.globals()
+    q0 = [g.T_q0[i + 1].spell for i in range(len(g.T_q0))]
+    q1 = [g.T_q1[i + 1].spell for i in range(len(g.T_q1))]
+    check("plan gaps: the extra action only while its status is on as the turn starts", q0 == ["A1"] and
+          q1 == ["A1", "A2"], f"{q0} {q1}")
+    check("plan gaps: GWM's bonus attack without its status is not needed and not a failed action",
+          "not needed" in str(g.T_gwm.result) and g.T_gsum.actions_not_done == 0,
+          f"{g.T_gwm.result} {g.T_gsum.actions_not_done}")
+    check("item rule: an item action worth less than the planned action is not used", g.T_v1 == "Zone_LB" and
+          "worth less" in str(g.T_v1r), f"{g.T_v1} {g.T_v1r}")
+    check("item rule: an item action worth more replaces it", g.T_v2.startswith("Projectile_Chain"), str(g.T_v2))
+    check("item rule: in a surge round the surge's attacks are what an item action is weighed against",
+          "Shout_Haste" in g.T_v3 and "Shout_Weak" not in g.T_v4 and "worth less" in str(g.T_v4r),
+          f"{g.T_v3} | {g.T_v4} {g.T_v4r}")
+    check("item rule: a yielding bonus action gives way only to a bonus item spell worth more",
+          g.T_y1 == "Atk,Off" and "worth less" in str(g.T_y1r) and g.T_y2 == "Atk,Strong", f"{g.T_y1} {g.T_y2}")
+    check("item rule: a core bonus action that does not yield keeps the bonus action", g.T_y3 == "Atk,HM", str(g.T_y3))
 
 
 def verdict_tests(L):
@@ -2089,6 +2162,101 @@ def plan_effect_tests(P):
           items[0].get("weapon") == {"dice": "1d8", "type": "Piercing", "from": "sheet row"}, str(items[0].get("weapon")))
 
 
+def plan_gap_tests(P):
+    """plan.py follows the model's decisions for the boss fight (model_choices): no Trip when every attack's Advantage
+    is sure (dice kept for Riposte), the off-hand attack in a free bonus action (yielding, with its value), GWM's
+    bonus attack after a critical hit, the extra action while a kept buff's status is on, the action's value for the
+    item rule; Hunter's Mark after a concentration buff; filler spells and a concentration zone only when kept and
+    known; Destructive Wrath's gain per spell; the respec's spell names."""
+    from types import SimpleNamespace as NS
+    model = NS(slots=lambda cl: [4, 3, 3, 3, 2, 1], ADV_SURE=0.99, ROUNDS=16)
+    stats = {"Shout_Haste": {"SpellProperties": "ApplyStatus(HASTE_X,100,5)"},
+             "HASTE_X": {"Boosts": "ActionResource(ActionPoint,1,0)"}}
+    st = NS(plan={"mode": "melee", "superiority": True, "hunters_mark": True}, classes={"Fighter": 12, "Ranger": 2},
+            sheet={"nAtt": 3}, subs={}, level=12)
+    pred = NS(st=NS(sheet={"nAtt": 3}), plan_events=[
+        {"name": "attack", "n": 3.0, "dmg": 90.0, "adv": 1.0},
+        {"name": "GWM bonus attack", "n": 0.3, "dmg": 9.0},
+        {"name": "off-hand attack", "n": 0.9, "dmg": 9.0},
+        {"name": "item buff: Bow", "kind": "buff", "spell": "Shout_Haste", "n": 0.06, "dmg": 18.0, "turns": 5,
+         "gain": 300.0}])
+    ch = P.model_choices(pred)
+    core = P.core_plan(model, st, stats, ch)
+    steady = core["steady"]
+    names = [a["spell"] for a in steady]
+    check("plan gaps: no Trip when every attack has Advantage (the dice go to Riposte)",
+          "Target_TripAttack" not in names and steady[0]["value"] == 90.0, str(names))
+    low = P.model_choices(NS(st=pred.st, plan_events=[dict(pred.plan_events[0], adv=0.5)]))
+    check("plan gaps: Trip while Advantage is not sure", P.core_plan(model, st, stats, low)["steady"][0]["spell"] ==
+          "Target_TripAttack")
+    off = [a for a in steady if a["spell"] == "Target_OffhandAttack"]
+    gwm = [a for a in steady if a["spell"] == "Target_GreatWeaponMaster_BonusAttack"]
+    check("plan gaps: the off-hand attack in a free bonus action, yielding, with its value",
+          off and off[0]["yield_bonus"] and off[0]["value"] == 10.0 and off[0]["granted_by"], str(off))
+    check("plan gaps: GWM's bonus attack only with its status, optional",
+          gwm and gwm[0]["when_status"] == "GREAT_WEAPON_MASTER_BONUS_ATTACK" and gwm[0]["optional"], str(gwm))
+    ext = [a for a in steady if a.get("if_status") == "HASTE_X"]
+    check("plan gaps: a kept buff's extra action (with its Extra Attacks) while its status is on",
+          len(ext) == 3 and ext[0]["group"] == "action" and ext[0]["done_key"] == "extra" and
+          all(a.get("requires") == "extra" for a in ext[1:]), str(ext))
+    none = P.core_plan(model, st, stats, P.model_choices(NS(st=pred.st, plan_events=pred.plan_events[:1])))
+    check("plan gaps: nothing of it without the model's choice",
+          not any(a["spell"] in ("Target_OffhandAttack", "Target_GreatWeaponMaster_BonusAttack") or a.get("if_status")
+                  for a in none["steady"]))
+    rounds = [list(r) for r in core["rounds"]]
+    P._mark_after(core, 6)
+    hm = [i + 1 for i, r in enumerate(core["rounds"]) for a in r if a["spell"] == "Target_HuntersMark"]
+    check("plan gaps: Hunter's Mark after a concentration buff's turns", hm == [6] and
+          any(r["spell"] == "Target_HuntersMark" and r["round"] == 6 for r in core["riders"]) and
+          any(a["spell"] == "Target_HuntersMark" for r in rounds for a in r), str(hm))
+    cst = NS(plan={"mode": "caster", "cantrip": "Projectile_FireBolt", "nukes": [("Zone_LightningBolt", 5)],
+                   "fillers": [("Projectile_ScorchingRay", 3, "Scorching Ray")],
+                   "conc_options": [("Wall_WallOfFire", 9, "Wall of Fire")]},
+             classes={"Wizard": 12}, sheet={"nAtt": 1}, subs={}, level=12)
+    cstats = {"Zone_LightningBolt": {"Level": "3"}, "Zone_LightningBolt_6": {}, "Wall_WallOfFire": {"Level": "4"}}
+    cch = P.model_choices(NS(st=cst, plan_events=[
+        {"name": "levelled spell", "spell": "Zone_LightningBolt", "n": 0.5, "dmg": 23.0},
+        {"name": "filler spell", "spell": "Projectile_ScorchingRay", "n": 0.2, "dmg": 4.0},
+        {"name": "cantrip", "spell": "Projectile_FireBolt", "n": 0.1, "dmg": 2.0},
+        {"name": "concentration damage", "spell": "Wall_WallOfFire", "n": 0.4, "dmg": 13.0}]))
+    cp = P.core_plan(model, cst, cstats, cch, known={"scorching ray", "wall of fire"})
+    chain = []
+    a = cp["steady"][0]
+    while a:
+        chain.append(a["spell"])
+        a = a.get("alt")
+    check("plan gaps: a kept filler between the nuke and the cantrip",
+          chain[-2:] == ["Projectile_ScorchingRay", "Projectile_FireBolt"] and chain[0] == "Zone_LightningBolt_6", str(chain))
+    check("plan gaps: a kept concentration zone cast at the boss in round 1",
+          cp["rounds"][0][0]["spell"].startswith("Wall_WallOfFire") and cp["rounds"][0][0]["at_target_pos"],
+          str(cp["rounds"][0][0]["spell"]))
+    cp2 = P.core_plan(model, cst, cstats, cch, known={"magic missile"})
+    a, chain2 = cp2["steady"][0], []
+    while a:
+        chain2.append(a["spell"])
+        a = a.get("alt")
+    check("plan gaps: a spell the respec does not know is not planned",
+          "Projectile_ScorchingRay" not in chain2 and not cp2["rounds"][0][0]["spell"].startswith("Wall_"), str(chain2))
+    bare = P.model_choices(NS(st=cst, plan_events=[
+        {"name": "levelled spell", "spell": "Zone_LightningBolt", "n": 0.5, "dmg": 23.0}]))
+    cp3 = P.core_plan(model, cst, cstats, bare, known={"scorching ray", "wall of fire"})
+    a, chain3 = cp3["steady"][0], []
+    while a:
+        chain3.append(a["spell"])
+        a = a.get("alt")
+    check("plan gaps: a filler or zone the model did not keep is not planned",
+          "Projectile_ScorchingRay" not in chain3 and not cp3["rounds"][0][0]["spell"].startswith("Wall_"), str(chain3))
+    kn = P.known_spell_names([{"picks": ["Spells: Misty Step, Scorching Ray"]},
+                              {"picks": ["Spells: Fireball, Lightning Bolt (learn Haste from scrolls)", "Feat: X"]}])
+    check("plan gaps: the respec's spell names from its picks",
+          kn == {"misty step", "scorching ray", "fireball", "lightning bolt"}, str(kn))
+    W = NS(stats={"Chain": {"TooltipDamageList": "DealDamage(10d8,Lightning);DealDamage(2d6,Fire)", "Level": "6"}})
+    sys.path.insert(0, os.path.join(LA, "tools", "optimizer"))
+    import mech
+    check("plan gaps: Destructive Wrath's gain is the lightning dice at their maximum",
+          abs(P._dw_gain(W, mech, "Chain", 12) - 35.0) < 1e-9, str(P._dw_gain(W, mech, "Chain", 12)))
+
+
 def item_resource_tests(P):
     """What the worn items add to the class resources (plan.py item_resources): a boost on the item, and a status its
     equip status or a long-rest passive puts on (Amulet of the Devout: one more Channel Divinity charge, reached both
@@ -2274,7 +2442,7 @@ def py_tests():
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
-              lambda: plan_effect_tests(P), lambda: scheduler_tests(R)):
+              lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -3186,6 +3354,34 @@ MUTATIONS = [
      "if i2 == i or char_for(a, pairs[i]) == char_for(a, pairs[i2]) or not char_for(a, pairs[i]):", "if i2 == i:"),
     ("lanes across pairs: no swap", RN, "out.append((pair_ if k % 2 == 0 else pair_[::-1], mate[1]))",
      "out.append((pair_, mate[1]))"),
+    ("plan gaps: the extra action every turn", GL, "    if a.if_status and not has[a.if_status] then", "    if false then"),
+    ("plan gaps: GWM's bonus attack asked without its status", GL,
+     "  if a.when_status and try(Osi.HasActiveStatus, F.char, a.when_status) ~= 1 then", "  if false then"),
+    ("plan gaps: an optional action counted as failed", GL,
+     'if a.result ~= "done" and not a.optional then failed', 'if a.result ~= "done" then failed'),
+    ("item rule: no value check", GL, '    elseif it.group == "action" and it.value and takes and it.value <= takes then',
+     "    elseif false then"),
+    ("item rule: the surge's attacks not what an item takes", GL,
+     "  if G.hasSurge(list) then return F.plan.action_value end\n", ""),
+    ("item rule: the off-hand attack never yields", GL,
+     "      if a.yield_bonus then yields = yields or a else hasBonus = true end", "      hasBonus = true"),
+    ("item rule: a yielding bonus action given to any item", GL,
+     '    elseif it.group == "bonus" and yields and yields.value and (it.value or 0) <= yields.value then',
+     "    elseif false then"),
+    ("plan gaps: Trip with sure Advantage", PL, ' and trip and ch["adv"] < model.ADV_SURE:', " and trip:"),
+    ("plan gaps: no off-hand attack", PL, '        if ch["offhand"]:\n', "        if False:\n"),
+    ("plan gaps: no GWM bonus attack", PL, '        if ch["gwm"]:\n', "        if False:\n"),
+    ("plan gaps: no extra action while hasted", PL, "            if st_ and _buff_actions(stats, spid):",
+     "            if False:"),
+    ("plan gaps: Hunter's Mark kept in round 1", PL, "                r.remove(a)\n", "                pass\n"),
+    ("plan gaps: the respec's spells ignored", PL, "        return known is None or name.lower() in known",
+     "        return True"),
+    ("plan gaps: fillers the model did not keep", PL, '            if sid in ch["fillers"] and knows(name):',
+     "            if knows(name):"),
+    ("plan gaps: a zone the model did not keep", PL, '            if ch["conc"] == sid and knows(name):',
+     "            if knows(name):"),
+    ("plan gaps: Destructive Wrath on every damage type", PL,
+     'for e, t in sp["dmg"] if t in ("Lightning", "Thunder")', 'for e, t in sp["dmg"]'),
     ("boss: full hit points at our turn", GL, "pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT)",
      "pcall(Osi.SetHitpointsPercentage, d, 100)"),
 ]

@@ -436,8 +436,82 @@ def test_target_hp():
     assert not fails, fails
 
 
+def test_buff_spells():
+    """Buff item spells (Gontr Mael's Haste, Giantslayer's Enlarge): the status a spell puts on and what it gives, read
+    from stats written here; a status with a lethargy (OnRemoveFunctors) is no buff. Worth: an extra action a turn on
+    the turns after the cast plus weapon dice on every hit, less the action the cast takes, less a concentration mark's
+    turns (hand formulas); dropped when not positive."""
+    M = _mech()
+    import model
+    S = {"Shout_H": {"SpellProperties": "ApplyStatus(H1,100, 5)", "SpellFlags": "IsConcentration;IsSpell",
+                     "UseCosts": "ActionPoint:1", "Cooldown": "OncePerRestPerItem"},
+         "H1": {"Boosts": "ActionResource(Movement,9,0);AC(2);ActionResource(ActionPoint,1,0)", "OnRemoveFunctors": ""},
+         "Shout_E": {"SpellProperties": "ApplyStatus(E1,100,10)", "UseCosts": "ActionPoint:1"},
+         "E1": {"Boosts": "CharacterWeaponDamage(1d6);ObjectSize(+1)", "StackId": "SIZE"},
+         "Shout_L": {"SpellProperties": "ApplyStatus(L1,100,3)"},
+         "L1": {"Boosts": "ActionResource(ActionPoint,1,0)", "OnRemoveFunctors": "ApplyStatus(LETHARGIC,100,1)"},
+         "Shout_N": {"SpellProperties": "DealDamage(1d6,Fire)"}}
+    fails = []
+    h, e = M.item_buff(S, "Shout_H"), M.item_buff(S, "Shout_E")
+    if not h or (h["status"], h["turns"], h["actions"], h["wdmg"], h["conc"]) != ("H1", 5, 1, 0, True):
+        fails.append(f"haste {h}")
+    if not e or (e["status"], e["turns"], e["actions"], e["wdmg"], e["stack"]) != ("E1", 10, 0, 3.5, "SIZE"):
+        fails.append(f"enlarge {e}")
+    if M.item_buff(S, "Shout_L") is not None or M.item_buff(S, "Shout_N") is not None:
+        fails.append("a lethargy or a plain damage spell read as a buff")
+    st = type("St", (), {})()
+    st.sheet = {"nAtt": 3}
+    evs = [{"name": "attack", "n": 3.0}]
+    res = [{"dmg": 90.0}]
+    old = model._buff_spells
+    try:
+        model._buff_spells = lambda _st: [("Shout_H", "Bow", h, 1), ("Shout_E", "Sword", e, 3)]
+        with model.scenario("boss"):
+            out = model.buff_events(st, evs, res, {"mark": 2.0}, 2.7)
+        # haste: 4 extra actions of 90, less the cast's 90, less the mark (2 per hit, 2.7 hits, 5 turns)
+        want_h = 4 * 90 - 90 - 2.0 * 2.7 * 5
+        # enlarge: 3.5 a hit, 2.7 hits a round, 10 turns, less the cast's 90; negative -> dropped
+        want_e = 3.5 * 2.7 * 10 - 90
+        got = {ev["spell_id"]: (ev["gain_per_cast"], ev["dropped"], r["dmg"]) for ev, r in out}
+        if abs(got["Shout_H"][0] - round(want_h, 2)) > 1e-6 or got["Shout_H"][1] or \
+                abs(got["Shout_H"][2] - want_h / 16) > 1e-6:
+            fails.append(f"haste worth {got['Shout_H']}, want {want_h}")
+        if abs(got["Shout_E"][0] - round(want_e, 2)) > 1e-6 or got["Shout_E"][1] is not (want_e <= 0):
+            fails.append(f"enlarge worth {got['Shout_E']}, want {want_e}")
+    finally:
+        model._buff_spells = old
+    assert not fails, fails
+
+
+def test_riposte():
+    """Riposte: per round min(dice kept, enemy misses in a fight) / rounds, each one attack's damage plus a die on a hit
+    (hand formula); none without dice kept for it or for a ranged build."""
+    import model
+    st = type("St", (), {})()
+    st.plan = {"mode": "melee"}
+    evs, res = [{"name": "attack", "n": 3.0}], [{"dmg": 90.0, "ph": 0.9, "pc": 0.05}]
+    fails = []
+    with model.scenario("boss"):
+        ev, r = model.riposte_event(st, evs, res, {"riposte_dice": 10.0, "die": 5.5},
+                                    {"enemy_attacks": 1.0, "enemy_ph": 0.6})
+        few = model.riposte_event(st, evs, res, {"riposte_dice": 2.0, "die": 5.5}, {"enemy_attacks": 1.0, "enemy_ph": 0.6})
+    misses = 16 * 1.0 * 0.4
+    want = min(10.0, misses) / 16 * (30.0 + 0.9 * 5.5)
+    if abs(r["dmg"] - want) > 1e-9:
+        fails.append(f"riposte {r['dmg']} want {want}")
+    if abs(few[0]["n"] - 2.0 / 16) > 1e-9:
+        fails.append(f"dice cap {few[0]['n']}")
+    if model.riposte_event(st, evs, res, {}, {"enemy_attacks": 1.0, "enemy_ph": 0.6}) is not None:
+        fails.append("riposte without dice kept")
+    st.plan = {"mode": "ranged"}
+    if model.riposte_event(st, evs, res, {"riposte_dice": 5.0}, {"enemy_attacks": 1.0, "enemy_ph": 0.6}) is not None:
+        fails.append("riposte for a ranged build")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
-            test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp]
+            test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
+            test_buff_spells, test_riposte]
 
 
 # ============================================================================================ local-only tests
@@ -1278,6 +1352,56 @@ def check_jobs_parallel(_out=None, only=PARALLEL_SUBSET):
     return fails, len(got[1]["optimized.json"].get("sets") or [])
 
 
+def check_plan_gaps(out=None):
+    """The plan gaps in the boss fight (expectations from the game data and the gauntlet's rules): a Gloom Stalker
+    with a melee off-hand weapon attacks with it in a free bonus action once the boss stands in reach (not in the
+    day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight spends the
+    level 1-2 slots too and holds Wall of Fire when its ticks beat one nuke; a Battle Master whose every attack has
+    Advantage (Risky Ring) plans no Trip and ripostes instead. The day's numbers are the same before and after."""
+    import model
+    W = _world()
+    fails, n = [], 0
+    names = {r.get("name"): r["stats_id"] for r in _items().values()}
+    ast = {"Ranged": names["Gontr Mael"], "MainHand": names["Ambusher"], "OffHand": names["Blade of the First Blood"]}
+    gale = {"MainHand": "MAG_TheChromatic_Staff"}
+    risky = {"MainHand": names["Balduran's Giantslayer"], "Ring1": names["Risky Ring"]}
+
+    def ev(cid, bid, lo, boss):
+        if boss:
+            with model.scenario("boss"):
+                r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
+        else:
+            r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
+        return {e["name"]: e for e in r.plan_events}, r.dpr
+    day_before = ev("astarion", "gloomassassin", ast, False)[1]
+    a_boss, _ = ev("astarion", "gloomassassin", ast, True)
+    a_day, day_after = ev("astarion", "gloomassassin", ast, False)
+    n += 3
+    if not (a_boss.get("off-hand attack") or {}).get("n"):
+        fails.append("boss: no off-hand attack for a ranged build in reach of the boss")
+    if (a_day.get("off-hand attack") or {}).get("n"):
+        fails.append("day: a ranged build's off-hand melee attack counted")
+    if abs(day_before - day_after) > 1e-9:
+        fails.append(f"day changed by the boss block: {day_before} -> {day_after}")
+    buff = next((e for e in a_boss.values() if e.get("spell") == "Shout_MAG_Victory_Longbow_Haste"), None)
+    n += 1
+    if not buff or buff.get("dropped") or not buff.get("n"):
+        fails.append(f"boss: Gontr Mael's Haste not kept: {buff}")
+    g_boss, _ = ev("gale", "tempestevoker", gale, True)
+    n += 2
+    if not (g_boss.get("concentration damage") or {}).get("n"):
+        fails.append("boss: no concentration damage zone for Gale")
+    if not (g_boss.get("filler spell") or {}).get("n"):
+        fails.append("boss: Gale's level 1-2 slots unspent")
+    l_boss, _ = ev("laezel", "bmgiant", risky, True)
+    n += 2
+    if (l_boss.get("attack") or {}).get("adv", 0) < model.ADV_SURE:
+        fails.append(f"Risky Ring: Advantage {l_boss.get('attack')}")
+    if not (l_boss.get("Riposte") or {}).get("n"):
+        fails.append("boss: no Riposte with every attack's Advantage sure")
+    return fails, n
+
+
 LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_set_rules),
                 ("research sets never beat the optimizer", check_research_not_better),
                 ("why text has no leaks", check_why_text), ("switches", check_switches),
@@ -1289,6 +1413,7 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("weapon ability-modifier rider counted once", check_weapon_riders),
                 ("test plans list the toggles the model assumes", check_plan_toggles),
                 ("boss scenario: one target, one fight, half-damage attacks", check_scenario),
+                ("plan gaps in the boss fight (off-hand, buffs, slots, Wall of Fire, Riposte)", check_plan_gaps),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
                 ("test plans", check_test_plans), ("party assignment of unique items", check_party),
                 ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
@@ -1672,6 +1797,74 @@ def mutations():
         finally:
             mech.PREDICATES["HasHPPercentageLessThan"] = old
     out.append(("target hit points: less than read as equal or less", m_strict))
+
+    def m_buff_cost():
+        old = model.buff_events
+
+        def bad(st, evs, results, special, hits):
+            out_ = old(st, evs, results, special, hits)
+            for ev, r in out_:                      # the cast's action not paid
+                a = st.sheet["nAtt"] * results[0]["dmg"] / evs[0]["n"]
+                ev["gain_per_cast"] = round(ev["gain_per_cast"] + a, 2)
+            return out_
+        model.buff_events = bad
+        try:
+            return _ci(test_buff_spells)
+        finally:
+            model.buff_events = old
+    out.append(("buff spells: the cast's action not paid", m_buff_cost))
+
+    def m_lethargy():
+        old = mech.item_buff
+
+        def bad(S, sid):
+            s2 = {k: (dict(v, OnRemoveFunctors="") if isinstance(v, dict) else v) for k, v in S.items()}
+            return old(s2, sid)
+        mech.item_buff = bad
+        try:
+            return _ci(test_buff_spells)
+        finally:
+            mech.item_buff = old
+    out.append(("buff spells: a lethargy ignored", m_lethargy))
+
+    def m_riposte_cap():
+        old = model.riposte_event
+
+        def bad(st, evs, results, special, dur):
+            return old(st, evs, results, special, dict(dur, enemy_ph=0.0))     # every enemy attack a miss
+        model.riposte_event = bad
+        try:
+            return _ci(test_riposte)
+        finally:
+            model.riposte_event = old
+    out.append(("riposte: not capped by the enemy's misses", m_riposte_cap))
+
+    def m_adv_sure():
+        old = model.ADV_SURE
+        model.ADV_SURE = 1.5                        # never sure: Trip planned, no Riposte
+        try:
+            return check_plan_gaps()[0]
+        finally:
+            model.ADV_SURE = old
+    out.append(("plan gaps: Advantage never sure (Trip instead of Riposte)", m_adv_sure))
+
+    def m_contact():
+        old = model.SCENARIOS["boss"]["melee_contact"]
+        model.SCENARIOS["boss"]["melee_contact"] = 0.0
+        try:
+            return check_plan_gaps()[0]
+        finally:
+            model.SCENARIOS["boss"]["melee_contact"] = old
+    out.append(("plan gaps: a ranged build never in reach of the boss", m_contact))
+
+    def m_slots():
+        old = model.SCENARIOS["boss"]["slot_share"]
+        model.SCENARIOS["boss"]["slot_share"] = (2 / 3, 0.0)
+        try:
+            return check_plan_gaps()[0]
+        finally:
+            model.SCENARIOS["boss"]["slot_share"] = old
+    out.append(("plan gaps: the boss fight leaves the low slots unspent", m_slots))
 
     def m_scenario_rests():
         old = model.SCENARIOS["boss"]["sr_windows"]

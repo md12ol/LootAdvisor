@@ -595,6 +595,7 @@ def lmv_names(level):
 
 MAX_TARGETS = None                      # model.scenario(): at most this many enemies per cast (None: no cap)
 TARGET_HP_PCT = None                    # model.scenario(): the target's hit points in percent at our turns (None: a day)
+MELEE_CONTACT = 0.0                     # model.scenario(): share of a ranged build's turns an enemy stands in its reach
 
 
 def area_targets(sp, enemies=4):
@@ -683,6 +684,28 @@ def read_spell(W, sid, level, slot_level=None):
             "school": base.get("SpellSchool") or "", "level": lvl, "slot": slot_level or lvl,
             "conc": "IsConcentration" in flags, "cantrip": lvl == 0, "is_spell": "IsSpell" in flags or lvl > 0,
             "uses": (base.get("UseCosts") or ""), "cooldown": base.get("Cooldown") or ""}
+
+
+def item_buff(S, sid):
+    """A spell that puts a buff on its caster (Gontr Mael's Haste, Balduran's Giantslayer's Enlarge): the status of
+    ApplyStatus(STATUS, chance, turns) in its properties and what the status gives: extra actions
+    (ActionResource(ActionPoint,n,0)) and weapon damage dice (CharacterWeaponDamage(XdY)). A status that takes
+    something back as it ends (OnRemoveFunctors: the lethargy of the spell Haste) is left out.
+    -> {status, turns, actions, wdmg, stack, conc} or None"""
+    sp = S.get(sid) or {}
+    m = re.search(r"ApplyStatus\((?:SELF,\s*)?(\w+),\s*\d+,\s*(\d+)\)", sp.get("SpellProperties") or "")
+    if not m:
+        return None
+    st = S.get(m.group(1)) or {}
+    if (st.get("OnRemoveFunctors") or "").strip():
+        return None
+    boosts = st.get("Boosts") or ""
+    ap = sum(int(n) for n in re.findall(r"ActionResource\(ActionPoint,\s*(\d+),\s*0\)", boosts))
+    wd = sum(avg_expr(e) for e in re.findall(r"CharacterWeaponDamage\(([^,)]+)", boosts))
+    if not ap and not wd:
+        return None
+    return {"status": m.group(1), "turns": int(m.group(2)), "actions": ap, "wdmg": wd, "stack": st.get("StackId"),
+            "conc": "IsConcentration" in (sp.get("SpellFlags") or "")}
 
 
 def p_hit(bonus, ac, adv=0.0, dis=0.0):

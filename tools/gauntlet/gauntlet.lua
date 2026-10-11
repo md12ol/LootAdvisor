@@ -1936,13 +1936,21 @@ end
 -- F.pending until G.settle confirms or fails it.
 local function doAction(F, a, R, rec0)
   if a.requires and not R.done[a.requires] then
-    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round" }
+    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round",
+      optional = a.optional }
+    return
+  end
+  -- an action the turn only offers after something happened in it (Great Weapon Master's bonus attack after a critical
+  -- hit or a kill: its status): not needed otherwise, and not a failed action
+  if a.when_status and try(Osi.HasActiveStatus, F.char, a.when_status) ~= 1 then
+    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
+      result = "not needed: no " .. a.when_status .. " this turn" }
     return
   end
   local tgt = resolveTarget(F, a.target or "@boss")
   local rec = rec0
   if not rec then
-    rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item }
+    rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item, optional = a.optional }
     R.actions[#R.actions + 1] = rec
   end
   local function fallback(reason)
@@ -2073,11 +2081,28 @@ function G.hasSurge(list)
   for _, a in ipairs(list) do if a.requires == "surge" then return true end end
   return false
 end
+-- What an item action would take is worth: in an Action Surge round the surge's attacks (one attack action), else the
+-- round's first core action (its plan value, else one attack action). nil when the plan gives no value.
+function G.replacedValue(F, list)
+  if G.hasSurge(list) then return F.plan.action_value end
+  for _, a in ipairs(list) do if a.group == "action" then return a.value or F.plan.action_value end end
+  return F.plan.action_value
+end
 local function itemRule(F, list, R)
   local out = {}
   for _, a in ipairs(list) do out[#out + 1] = a end
   local hasBonus, replaced = false, false
-  for _, a in ipairs(out) do if a.group == "bonus" then hasBonus = true end end
+  -- a core bonus action that yields (an off-hand attack, GWM's bonus attack) leaves the bonus action to an item spell
+  -- worth more
+  local yields
+  for _, a in ipairs(out) do
+    if a.group == "bonus" then
+      if a.yield_bonus then yields = yields or a else hasBonus = true end
+    end
+  end
+  -- what the planned action an item action would take is worth; an item action worth less is not used (Topple's 2.5
+  -- took a caster's whole action)
+  local takes = G.replacedValue(F, out)
   R.item_rule = {}
   for _, it in ipairs(F.plan.item_actions or {}) do
     local log = { spell = it.spell, item = it.item, group = it.group, per = it.per }
@@ -2094,8 +2119,14 @@ local function itemRule(F, list, R)
       log.result = "skipped: one item action per round"
     elseif (it.group == "bonus" and hasBonus) then
       log.result = "skipped: the core plan uses the bonus action"
+    elseif it.group == "bonus" and yields and yields.value and (it.value or 0) <= yields.value then
+      log.result = string.format("skipped: worth less (%s) than the bonus action it would take (%s)",
+        tostring(it.value), tostring(yields.value))
     elseif (it.group == "action" or it.group == "bonus") and not okp then
       log.result = "skipped: cannot pay (" .. tostring(why) .. ")"
+    elseif it.group == "action" and it.value and takes and it.value <= takes then
+      log.result = string.format("skipped: worth less (%s) than the action it would take (%s)", tostring(it.value),
+        tostring(takes))
     elseif it.group == "action" and G.hasSurge(out) then
       -- an Action Surge round: the item spell takes the surge's action, so the first action keeps its Extra Attacks
       -- (the pilot's Roaring Shot took round 1's attack action and its Extra Attack every run); the surge's first
@@ -2122,9 +2153,14 @@ local function itemRule(F, list, R)
       out, replaced = keep, true
       log.result = "used: replaces the core action"
     elseif it.group == "bonus" then
+      if yields then
+        local keep = {}
+        for _, a in ipairs(out) do if not a.yield_bonus then keep[#keep + 1] = a end end
+        out = keep
+      end
       out[#out + 1] = entry
       hasBonus = true
-      log.result = "used: free bonus action"
+      log.result = yields and "used: takes the bonus action of " .. tostring(yields.spell) or "used: free bonus action"
     end
   end
   return out
@@ -2459,10 +2495,17 @@ function G.planRound(F, R)
   R.turn_statuses = {}
   for st in pairs(G.statusSet(F.char)) do R.turn_statuses[#R.turn_statuses + 1] = st end
   table.sort(R.turn_statuses)
+  local has = {}
+  for _, st in ipairs(R.turn_statuses) do has[st] = true end
   local out = {}
   for _, a in ipairs(list) do
-    local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
-    if pick then out[#out + 1] = pick end
+    -- an entry for a status (the extra action of a haste) only while the status is on as the turn starts
+    if a.if_status and not has[a.if_status] then
+      R.plan_skips[#R.plan_skips + 1] = { spell = a.spell, why = "no " .. a.if_status .. " as the turn started" }
+    else
+      local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
+      if pick then out[#out + 1] = pick end
+    end
   end
   if S.char_acts == false then return out end
   return itemRule(F, out, R)
@@ -2545,7 +2588,7 @@ local function summarize(F)
   local tk = turns > 0 and sum / turns or 0
   local failed, misses, downed, smisses, riders, total = 0, 0, 0, 0, 0, 0
   for _, R in ipairs(G.rounds) do
-    for _, a in ipairs(R.actions) do if a.result ~= "done" then failed = failed + 1 end end
+    for _, a in ipairs(R.actions) do if a.result ~= "done" and not a.optional then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
     smisses = smisses + (R.summon_misses or 0)
     riders = riders + #(R.rider_misses or {})
