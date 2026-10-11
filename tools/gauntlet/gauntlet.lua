@@ -341,9 +341,18 @@ local function equipAll(u, items, i, cb)
       return equipAll(u, items, i + 1, cb)
     end
     if spec.use then
+      local before = G.statusSet(u)
       pcall(Osi.Use, u, it, "")
       G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "used", uuid = it }
-      return wait(G.USE_MS, function() equipAll(u, items, i + 1, cb) end)
+      return wait(G.USE_MS, function()
+        -- the statuses the elixir gave are taken off in the next run's prep, before the bare sheet is read
+        G.usedStatuses = G.usedStatuses or {}
+        G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
+        for st in pairs(G.statusSet(u)) do
+          if not before[st] then G.usedStatuses[uuid(u)][st] = true end
+        end
+        equipAll(u, items, i + 1, cb)
+      end)
     end
     pcall(Osi.Equip, u, it, 1, 0, 0)
     -- worn yet? asked every POLL_MS; an equip that has not taken by half of EQUIP_MS is asked for once more (two runs
@@ -429,6 +438,7 @@ function G.prep(spec)
   wait(G.SETTLE_MS, function()
     G.results.items_deleted = G.dropSpawnedItems(u)
     G.unencumber(u, true)
+    G.results.used_statuses_removed = G.removeUsedStatuses(u)
     for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -475,6 +485,25 @@ function G.prep(spec)
     end)
   end)
   return G.status
+end
+-- The character's active statuses as a set of ids.
+function G.statusSet(u)
+  local out = {}
+  local e = ent(u)
+  for _, v in pairs(e and try(function() return e.StatusContainer.Statuses end) or {}) do out[tostring(v)] = true end
+  return out
+end
+-- An elixir or potion an earlier run used lasts until a long rest: its statuses (Cloud Giant Strength, STR 27) were
+-- still on in the next run's bare sheet and failed the setup check. Takes off what a run's consumable gave.
+function G.removeUsedStatuses(u)
+  local out = {}
+  for st in pairs((G.usedStatuses or {})[uuid(u)] or {}) do
+    pcall(Osi.RemoveStatus, u, st, "")
+    out[#out + 1] = st
+  end
+  if G.usedStatuses then G.usedStatuses[uuid(u)] = nil end
+  table.sort(out)
+  return out
 end
 -- prep, last part: the bare sheet is read, then the set goes on, the fixed statuses, full resources
 function G.prepItems(u, spec, gen)

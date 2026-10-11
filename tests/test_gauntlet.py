@@ -250,6 +250,20 @@ def party_tests(L):
     """)
     check("cast: the character casts from where it stands (UseSpell without move; the harness moves it first)",
           L.globals().T_nomove is True)
+    L.execute(r"""
+      local G = GAUNTLET
+      local removed = {}
+      Osi.RemoveStatus = function(_, st) removed[#removed + 1] = st end
+      G.usedStatuses = { ["11111111-1111-1111-1111-111111111111"] = { POTION_X = true } }
+      T_used = G.removeUsedStatuses("Laezel_11111111-1111-1111-1111-111111111111")
+      T_used2 = G.removeUsedStatuses("11111111-1111-1111-1111-111111111111")
+      T_removed = removed
+      Osi.RemoveStatus = nil
+    """)
+    g = L.globals()
+    check("prep: the statuses an earlier run's elixir gave are taken off once",
+          lst(g.T_removed) == ["POTION_X"] and lst(g.T_used) == ["POTION_X"] and len(lst(g.T_used2)) == 0,
+          str(lst(g.T_removed)))
     p = lst(L.globals().T_party)
     check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
           p == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], str(p))
