@@ -256,7 +256,10 @@ def _passive_p(c, args):
     return 1.0 if c.st.has_passive(p) else 0.0
 
 
-def _hp_le(c, args):
+def _hp_le(c, args, strict=False):
+    """HasHPPercentage(Equal)LessThan(pct, who): the character's own (half the time at half HP or less), or the
+    target's: in a day's fights hurt nearly always, below pct for that share; in the boss scenario (TARGET_HP_PCT) the
+    target stands at that percentage at each of our turns, so the condition is simply true or false."""
     try:
         pct = float(args[0])
     except (ValueError, IndexError):
@@ -264,6 +267,8 @@ def _hp_le(c, args):
     who = args[1] if len(args) > 1 else "context.Target"
     if "Source" in who:
         return 0.25 if pct <= 50 else 0.5          # the character at half HP or less
+    if TARGET_HP_PCT is not None:
+        return 1.0 if (TARGET_HP_PCT < pct if strict else TARGET_HP_PCT <= pct) else 0.0
     return 0.99 if pct >= 99 else max(0.05, min(0.95, pct / 100 * 0.8))
 
 
@@ -359,9 +364,9 @@ PREDICATES = {
     "IsMetalCharacter": lambda c, a: 0.05,
     "HasMaxHP": lambda c, a: 0.3,
     "HasHPPercentageEqualOrLessThan": _hp_le,
-    "HasHPPercentageLessThan": _hp_le,
+    "HasHPPercentageLessThan": lambda c, a: _hp_le(c, a, strict=True),
     "HasHPPercentageWithoutTemporaryHPEqualOrLessThan": _hp_le,
-    "HasHPPercentageWithoutTemporaryHPLessThan": _hp_le,
+    "HasHPPercentageWithoutTemporaryHPLessThan": lambda c, a: _hp_le(c, a, strict=True),
     "HasHPLessThan": lambda c, a: 0.15,
     "DistanceToTargetGreaterThan": lambda c, a: 0.0 if c.ev.get("melee") else 0.6,
     # HasEnemyWithinRange('SG_Incapacitated', 3, nil, 2, ...) (Scabby Pugilist Circlet; every use in the data has
@@ -589,6 +594,8 @@ def lmv_names(level):
 
 
 MAX_TARGETS = None                      # model.scenario(): at most this many enemies per cast (None: no cap)
+TARGET_HP_PCT = None                    # model.scenario(): the target's hit points in percent at our turns (None: a day)
+MELEE_CONTACT = 0.0                     # model.scenario(): share of a ranged build's turns an enemy stands in its reach
 
 
 def area_targets(sp, enemies=4):
@@ -677,6 +684,28 @@ def read_spell(W, sid, level, slot_level=None):
             "school": base.get("SpellSchool") or "", "level": lvl, "slot": slot_level or lvl,
             "conc": "IsConcentration" in flags, "cantrip": lvl == 0, "is_spell": "IsSpell" in flags or lvl > 0,
             "uses": (base.get("UseCosts") or ""), "cooldown": base.get("Cooldown") or ""}
+
+
+def item_buff(S, sid):
+    """A spell that puts a buff on its caster (Gontr Mael's Haste, Balduran's Giantslayer's Enlarge): the status of
+    ApplyStatus(STATUS, chance, turns) in its properties and what the status gives: extra actions
+    (ActionResource(ActionPoint,n,0)) and weapon damage dice (CharacterWeaponDamage(XdY)). A status that takes
+    something back as it ends (OnRemoveFunctors: the lethargy of the spell Haste) is left out.
+    -> {status, turns, actions, wdmg, stack, conc} or None"""
+    sp = S.get(sid) or {}
+    m = re.search(r"ApplyStatus\((?:SELF,\s*)?(\w+),\s*\d+,\s*(\d+)\)", sp.get("SpellProperties") or "")
+    if not m:
+        return None
+    st = S.get(m.group(1)) or {}
+    if (st.get("OnRemoveFunctors") or "").strip():
+        return None
+    boosts = st.get("Boosts") or ""
+    ap = sum(int(n) for n in re.findall(r"ActionResource\(ActionPoint,\s*(\d+),\s*0\)", boosts))
+    wd = sum(avg_expr(e) for e in re.findall(r"CharacterWeaponDamage\(([^,)]+)", boosts))
+    if not ap and not wd:
+        return None
+    return {"status": m.group(1), "turns": int(m.group(2)), "actions": ap, "wdmg": wd, "stack": st.get("StackId"),
+            "conc": "IsConcentration" in (sp.get("SpellFlags") or "")}
 
 
 def p_hit(bonus, ac, adv=0.0, dis=0.0):

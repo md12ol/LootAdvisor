@@ -263,9 +263,20 @@ end
 function G.strip(u)
   for _, it in pairs(G.equipped(u)) do pcall(Osi.Unequip, u, it) end
 end
+-- Maximum hit points without temporary ones: Osi.GetMaxHitpoints adds them (a cloak's 8 temporary HP read as max HP 119
+-- for 111 right after a save load and failed the setup check). Health.MaxHp is the sheet's; when it cannot be read the
+-- temporary hit points are taken off the Osiris answer.
+function G.maxHp(u)
+  local e = ent(u)
+  local m = e and try(function() return e.Health.MaxHp end)
+  if m then return m end
+  local o = try(Osi.GetMaxHitpoints, u)
+  if not o then return nil end
+  return o - ((e and try(function() return e.Health.TemporaryHp end)) or 0)
+end
 function G.sheet(u)
   local e = ent(u)
-  local s = { abilities = abilities(u), hp = try(Osi.GetMaxHitpoints, u),
+  local s = { abilities = abilities(u), hp = G.maxHp(u),
     ac = e and try(function() return e.Resistances.AC end), prof = e and try(function() return e.Stats.ProficiencyBonus end),
     level = e and try(function() return e.EocLevel.Level end), slots = {}, passives = {}, equipped = {}, resources = {} }
   for _, entry in ipairs(resList(u, "SpellSlot") or {}) do s.slots[tostring(entry.Level)] = entry.MaxAmount end
@@ -326,70 +337,146 @@ function G.probe()
 end
 
 -- ------------------------------------------------------------------------------------------------ items
--- items: { {slot = "MeleeOffHand", template = "<uuid>", stats = "<stats id>"}, ... } equipped in order
-G.POLL_MS, G.EQUIP_MS, G.USE_MS = 100, 2000, 500
-local function equipAll(u, items, i, cb)
-  if i > #items then return cb() end
-  local spec = items[i]
-  local x, y, z = Osi.GetPosition(u)
-  local it = try(Osi.CreateAt, spec.template, x, y, z, 0, 0, "")
-  if not it then
-    G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, err = "CreateAt failed" }
-    return equipAll(u, items, i + 1, cb)
-  end
-  G.spawnedItems = G.spawnedItems or {}
-  G.spawnedItems[#G.spawnedItems + 1] = it
-  pcall(Osi.ToInventory, it, u, 1, 0, 0)
-  wait(G.POLL_MS, function()
-    if spec.use and G.manualPrep then
-      G.results.consumables = G.results.consumables or {}
-      G.results.consumables[#G.results.consumables + 1] = it
-      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "inventory", uuid = it }
-      return equipAll(u, items, i + 1, cb)
-    end
-    if spec.use then
-      local before = G.statusSet(u)
-      pcall(Osi.Use, u, it, "")
-      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "used", uuid = it }
-      local rec = G.results.items[#G.results.items]
-      return wait(G.USE_MS, function()
-        -- the statuses the elixir gave are taken off in the next run's prep, before the bare sheet is read; the setup
-        -- check finds them still on as the fight starts
-        G.usedStatuses = G.usedStatuses or {}
-        G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
-        rec.statuses = {}
-        for st in pairs(G.statusSet(u)) do
-          if not before[st] then
-            G.usedStatuses[uuid(u)][st] = true
-            rec.statuses[#rec.statuses + 1] = st
-          end
-        end
-        table.sort(rec.statuses)
-        equipAll(u, items, i + 1, cb)
-      end)
-    end
-    pcall(Osi.Equip, u, it, 1, 0, 0)
-    -- worn yet? asked every POLL_MS; an equip that has not taken by half of EQUIP_MS is asked for once more (two runs
-    -- of the control lost a ring or boots that a fixed 350 ms wait read as not worn)
-    local t0, again = now(), false
-    local function check()
-      local where
-      for s, e in pairs(G.equipped(u)) do if uuid(e) == uuid(it) then where = s end end
-      -- the slot query can miss a slot name; the item itself knows whether it is worn
-      if not where and try(Osi.IsEquipped, it) == 1 then where = spec.slot end
-      local waited = now() - t0
-      -- a slow frame can skip past half the time: the second ask always happens before giving up
-      if not where and (waited < G.EQUIP_MS or not again) then
-        if not again and waited >= G.EQUIP_MS / 2 then again = true; t0 = now() - G.EQUIP_MS / 2; pcall(Osi.Equip, u, it, 1, 0, 0) end
-        return wait(G.POLL_MS, check)
+-- items: { {slot = "MeleeOffHand", template = "<uuid>", stats = "<stats id>"}, ... }. Every item is made and put in
+-- the bag in one frame; then every item but the rings is equipped in one frame, the rings one at a time (two rings
+-- asked for together can both go for the first ring slot), the elixir last. One item at a time took 2.4-3 s a run.
+-- Worn is read every POLL_MS; an item not worn by half of EQUIP_MS is asked for once more (two runs of the control lost
+-- a ring or boots that a fixed 350 ms wait read as not worn). After a save load the game ignores equips for a while (a
+-- run 10 s after a load had no item on): while no item of the run has gone on yet, the asks go on up to READY_MS.
+G.POLL_MS, G.EQUIP_MS, G.USE_MS, G.READY_MS = 100, 2000, 3000, 45000
+local function wornSlot(u, e)
+  for s, x in pairs(G.equipped(u)) do if uuid(x) == uuid(e.it) then return s end end
+  -- the slot query can miss a slot name; the item itself knows whether it is worn
+  if try(Osi.IsEquipped, e.it) == 1 then return e.spec.slot end
+  return nil
+end
+-- Equips a group of made items in one frame and waits until each is worn (or given up). S.worn counts the items of
+-- the run worn so far.
+local function equipGroup(u, group, S, cb)
+  if #group == 0 then return cb() end
+  for _, e in ipairs(group) do pcall(Osi.Equip, u, e.it, 1, 0, 0) end
+  local t0, asked, polls = now(), now(), 0
+  local function check()
+    polls = polls + 1
+    local open = {}
+    for _, e in ipairs(group) do
+      if not e.where then
+        e.where = wornSlot(u, e)
+        if e.where then S.worn = S.worn + 1; e.ms = now() - t0 else open[#open + 1] = e end
       end
-      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = where, uuid = it,
-        ms = waited, again = again or nil }
-      note("item %s want %s got %s", spec.stats, spec.slot, tostring(where))
-      equipAll(u, items, i + 1, cb)
     end
-    wait(G.POLL_MS, check)
-  end)
+    -- a stopped clock (tests) still ends the wait: at least POLL_MS a poll
+    local waited = math.max(now() - t0, polls * G.POLL_MS)
+    -- nothing of the run on yet: the game is not taking equips (just after a save load), asked again until READY_MS
+    local loading = S.worn == 0 and waited < G.READY_MS
+    if #open > 0 and (waited < G.EQUIP_MS or loading or not open[1].again) then
+      -- a slow frame can skip past half the time: the second ask always happens before giving up
+      if now() - asked >= G.EQUIP_MS / 2 then
+        asked = now()
+        for _, e in ipairs(open) do
+          if not e.again then e.again = true end
+          pcall(Osi.Equip, u, e.it, 1, 0, 0)
+        end
+        if waited >= G.EQUIP_MS and not loading then t0, polls = now() - G.EQUIP_MS / 2, G.EQUIP_MS / 2 / G.POLL_MS end
+      end
+      return wait(G.POLL_MS, check)
+    end
+    for _, e in ipairs(group) do
+      G.results.items[#G.results.items + 1] = { want = e.spec.slot, stats = e.spec.stats, got = e.where, uuid = e.it,
+        ms = e.ms or waited, again = e.again or nil }
+      note("item %s want %s got %s", e.spec.stats, e.spec.slot, tostring(e.where))
+    end
+    cb()
+  end
+  wait(G.POLL_MS, check)
+end
+-- Uses the consumables one after the other (manual runs: left in the bag for the player). The statuses an elixir gave
+-- are waited for (they can land later than the 500 ms a fixed wait gave them; at most USE_MS), read once they stop
+-- changing and taken off in the next run's prep, before the bare sheet is read; the setup check finds them still on as
+-- the fight starts.
+local function useAll(u, list, k, cb)
+  local e = list[k]
+  if not e then return cb() end
+  if G.manualPrep then
+    G.results.consumables = G.results.consumables or {}
+    G.results.consumables[#G.results.consumables + 1] = e.it
+    G.results.items[#G.results.items + 1] = { want = e.spec.slot, stats = e.spec.stats, got = "inventory", uuid = e.it }
+    return useAll(u, list, k + 1, cb)
+  end
+  local before = G.statusSet(u)
+  pcall(Osi.Use, u, e.it, "")
+  local rec = { want = e.spec.slot, stats = e.spec.stats, got = "used", uuid = e.it, statuses = {} }
+  G.results.items[#G.results.items + 1] = rec
+  local t0, seen, polls = now(), -1, 0
+  local function check()
+    polls = polls + 1
+    local new = {}
+    for st in pairs(G.statusSet(u)) do if not before[st] then new[#new + 1] = st end end
+    -- done once the new statuses stopped changing between two reads, or at USE_MS
+    if (#new == 0 or #new ~= seen) and math.max(now() - t0, polls * G.POLL_MS) < G.USE_MS then
+      seen = #new > 0 and #new or seen
+      return wait(G.POLL_MS, check)
+    end
+    G.usedStatuses = G.usedStatuses or {}
+    G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
+    for _, st in ipairs(new) do G.usedStatuses[uuid(u)][st] = true end
+    table.sort(new)
+    rec.statuses = new
+    useAll(u, list, k + 1, cb)
+  end
+  wait(G.POLL_MS, check)
+end
+-- Makes the items (an item the game would not make is asked for again every REAPPLY_MS while none could be made, at
+-- most READY_MS: right after a save load every CreateAt failed once), then equips them as above.
+local function equipAll(u, items, i, cb)
+  local worn, rings, uses, todo = {}, {}, {}, {}
+  for k = i or 1, #items do todo[#todo + 1] = items[k] end
+  local made, tries = 0, 0
+  local function make()
+    tries = tries + 1
+    local x, y, z = Osi.GetPosition(u)
+    local left = {}
+    for _, spec in ipairs(todo) do
+      local it = try(Osi.CreateAt, spec.template, x, y, z, 0, 0, "")
+      if not it then
+        left[#left + 1] = spec
+      else
+        made = made + 1
+        G.spawnedItems = G.spawnedItems or {}
+        G.spawnedItems[#G.spawnedItems + 1] = it
+        pcall(Osi.ToInventory, it, u, 1, 0, 0)
+        local e = { spec = spec, it = it }
+        if spec.use then
+          uses[#uses + 1] = e
+        elseif spec.slot == "Ring" or spec.slot == "Ring2" then
+          rings[#rings + 1] = { e }
+        else
+          worn[#worn + 1] = e
+        end
+      end
+    end
+    todo = left
+    return #todo == 0 or made > 0 or tries * G.REAPPLY_MS >= G.READY_MS
+  end
+  local function go()
+    for _, spec in ipairs(todo) do
+      G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, err = "CreateAt failed" }
+    end
+    G.results.create_tries = tries > 1 and tries or nil
+    local S = { worn = 0 }
+    local groups = { worn }
+    for _, r in ipairs(rings) do groups[#groups + 1] = r end
+    local function nextGroup(g)
+      if g > #groups then return useAll(u, uses, 1, cb) end
+      equipGroup(u, groups[g], S, function() nextGroup(g + 1) end)
+    end
+    wait(G.POLL_MS, function() nextGroup(1) end)
+  end
+  local function attempt()
+    if make() then return go() end
+    wait(G.REAPPLY_MS, attempt)
+  end
+  attempt()
 end
 
 -- ------------------------------------------------------------------------------------------------ encumbrance
@@ -462,6 +549,8 @@ function G.prep(spec)
     end
     for _, sp in ipairs(emulate and spec.spells_add or {}) do pcall(Osi.AddSpell, u, sp, 0, 1) end
     for _, b in ipairs(emulate and spec.boosts or {}) do boost(u, b) end
+    -- a real respec boosts nothing: one settle for the statuses taken off above, then the bare sheet
+    if not emulate then return wait(G.SETTLE_MS, function() G.prepItems(u, spec, gen) end) end
     wait(G.SETTLE_MS, function()
       local cur = abilities(u)
       for short, want in pairs(emulate and spec.sheet.abilities or {}) do
@@ -470,7 +559,6 @@ function G.prep(spec)
         if d ~= 0 then boost(u, string.format("Ability(%s,%d)", n, d)) end
       end
       wait(G.SETTLE_MS, function()
-        if not emulate then return G.prepItems(u, spec, gen) end
         local e = ent(u)
         local prof = e and try(function() return e.Stats.ProficiencyBonus end) or spec.sheet.prof
         local dp = spec.sheet.prof - prof
@@ -478,7 +566,7 @@ function G.prep(spec)
           boost(u, string.format("RollBonus(Attack,%d)", dp))
           boost(u, string.format("SpellSaveDC(%d)", dp))
         end
-        local hp = try(Osi.GetMaxHitpoints, u) or spec.sheet.hp
+        local hp = G.maxHp(u) or spec.sheet.hp
         if spec.sheet.hp - hp ~= 0 then boost(u, string.format("IncreaseMaxHP(%d)", spec.sheet.hp - hp)) end
         local ac = e and try(function() return e.Resistances.AC end)
         if spec.sheet.ac_unarmoured and ac and ac ~= spec.sheet.ac_unarmoured then
@@ -710,16 +798,38 @@ function G.prepItems(u, spec, gen)
   equipAll(u, spec.items or {}, 1, function()
     for _, st in ipairs(spec.statuses or {}) do pcall(Osi.ApplyStatus, u, st, -1, 1, u); note("status %s", st) end
     if not G.manualPrep then G.results.toggles = G.setToggles(u, spec.toggles) end
-    wait(G.SETTLE_MS, function()
-      if G.prepGen ~= gen then return end
-      G.refill(u, "long")
-      pcall(Osi.SetHitpointsPercentage, u, 100)
-      G.unencumber(u, false)
-      G.results.after = G.sheet(u)
-      G.status = "prepped"
-      G.dump()
+    -- a frame for the statuses and toggles to land, then until the set's statuses read back
+    wait(G.POLL_MS, function()
+      G.awaitStatuses(u, spec.statuses, function(missing)
+        if G.prepGen ~= gen then return end
+        G.results.statuses_missing = #missing > 0 and missing or nil
+        G.refill(u, "long")
+        pcall(Osi.SetHitpointsPercentage, u, 100)
+        G.unencumber(u, false)
+        G.results.after = G.sheet(u)
+        G.status = "prepped"
+        G.dump()
+      end)
     end)
   end)
+end
+-- Waits until the character has every status of the list, each missing one put on again every REAPPLY_MS, at most
+-- READY_MS: just after a save load the game ignores them for a while (a run 10 s after a load had no Bless). The
+-- setup check reads them as the fight starts. cb(the statuses still missing)
+G.REAPPLY_MS = 1000
+function G.awaitStatuses(u, list, cb)
+  local polls = 0
+  local function check()
+    local missing = {}
+    for _, st in ipairs(list or {}) do if try(Osi.HasActiveStatus, u, st) ~= 1 then missing[#missing + 1] = st end end
+    if #missing == 0 or polls * G.POLL_MS >= G.READY_MS then return cb(missing) end
+    polls = polls + 1
+    if polls % math.max(1, math.floor(G.REAPPLY_MS / G.POLL_MS)) == 0 then
+      for _, st in ipairs(missing) do pcall(Osi.ApplyStatus, u, st, -1, 1, u) end
+    end
+    wait(G.POLL_MS, check)
+  end
+  check()
 end
 
 -- ------------------------------------------------------------------------------------------------ reactions
@@ -976,7 +1086,18 @@ local function forceEnemy(d, E, tries)
     -- a creature that cannot be critically hit takes no critical hits from either set: what blocks them is taken off
     G.enemyCrit = G.enemyCrit or {}
     G.enemyCrit[uuid(d)] = G.makeCritable(d)
-    wait(300, function() pcall(Osi.SetHitpointsPercentage, d, 100) end)
+    -- full hit points once the HP boost reads back (at most 300 ms); the fight waits for G.enemyForced
+    local polls = 0
+    local function full()
+      polls = polls + 1
+      if (try(Osi.GetMaxHitpoints, d) or 0) < (E.hp or 0) and polls * G.POLL_MS < 300 then
+        return wait(G.POLL_MS, full)
+      end
+      pcall(Osi.SetHitpointsPercentage, d, 100)
+      G.enemyForced = G.enemyForced or {}
+      G.enemyForced[uuid(d)] = true
+    end
+    wait(G.POLL_MS, full)
   end)
 end
 
@@ -1033,12 +1154,19 @@ function G.leftoverSummons(me, A)
   return out
 end
 -- Removes the enemies earlier runs spawned and the character's leftover summons; after CLEANUP_MS kills any of them
--- still standing. cb(report): { removed = n, killed = { names } }.
+-- still standing. cb(report): { removed = n, killed = { names } }. Only a creature still standing is waited for: the
+-- corpses every run leaves (29-45 a run in the pilot) are forgotten, so a run whose last enemies died pays no wait.
 function G.clearLeftovers(me, A, cb)
   local list = {}
-  for d in pairs(G.spawned or {}) do if try(Osi.IsDead, d) ~= nil then list[#list + 1] = d end end
+  for d in pairs(G.spawned or {}) do
+    if try(Osi.IsDead, d) == 0 then list[#list + 1] = d else G.spawned[d] = nil end
+  end
   for _, d in ipairs(G.leftoverSummons(me, A)) do list[#list + 1] = d end
   for _, d in ipairs(list) do G.removeCreature(d) end
+  if #list == 0 then
+    if cb then cb({ removed = 0, killed = {} }) end
+    return
+  end
   wait(G.CLEANUP_MS, function()
     local killed = {}
     for _, d in ipairs(list) do
@@ -1808,13 +1936,21 @@ end
 -- F.pending until G.settle confirms or fails it.
 local function doAction(F, a, R, rec0)
   if a.requires and not R.done[a.requires] then
-    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round" }
+    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round",
+      optional = a.optional }
+    return
+  end
+  -- an action the turn only offers after something happened in it (Great Weapon Master's bonus attack after a critical
+  -- hit or a kill: its status): not needed otherwise, and not a failed action
+  if a.when_status and try(Osi.HasActiveStatus, F.char, a.when_status) ~= 1 then
+    R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
+      result = "not needed: no " .. a.when_status .. " this turn" }
     return
   end
   local tgt = resolveTarget(F, a.target or "@boss")
   local rec = rec0
   if not rec then
-    rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item }
+    rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, item = a.item, optional = a.optional }
     R.actions[#R.actions + 1] = rec
   end
   local function fallback(reason)
@@ -1945,11 +2081,28 @@ function G.hasSurge(list)
   for _, a in ipairs(list) do if a.requires == "surge" then return true end end
   return false
 end
+-- What an item action would take is worth: in an Action Surge round the surge's attacks (one attack action), else the
+-- round's first core action (its plan value, else one attack action). nil when the plan gives no value.
+function G.replacedValue(F, list)
+  if G.hasSurge(list) then return F.plan.action_value end
+  for _, a in ipairs(list) do if a.group == "action" then return a.value or F.plan.action_value end end
+  return F.plan.action_value
+end
 local function itemRule(F, list, R)
   local out = {}
   for _, a in ipairs(list) do out[#out + 1] = a end
   local hasBonus, replaced = false, false
-  for _, a in ipairs(out) do if a.group == "bonus" then hasBonus = true end end
+  -- a core bonus action that yields (an off-hand attack, GWM's bonus attack) leaves the bonus action to an item spell
+  -- worth more
+  local yields
+  for _, a in ipairs(out) do
+    if a.group == "bonus" then
+      if a.yield_bonus then yields = yields or a else hasBonus = true end
+    end
+  end
+  -- what the planned action an item action would take is worth; an item action worth less is not used (Topple's 2.5
+  -- took a caster's whole action)
+  local takes = G.replacedValue(F, out)
   R.item_rule = {}
   for _, it in ipairs(F.plan.item_actions or {}) do
     local log = { spell = it.spell, item = it.item, group = it.group, per = it.per }
@@ -1966,8 +2119,14 @@ local function itemRule(F, list, R)
       log.result = "skipped: one item action per round"
     elseif (it.group == "bonus" and hasBonus) then
       log.result = "skipped: the core plan uses the bonus action"
+    elseif it.group == "bonus" and yields and yields.value and (it.value or 0) <= yields.value then
+      log.result = string.format("skipped: worth less (%s) than the bonus action it would take (%s)",
+        tostring(it.value), tostring(yields.value))
     elseif (it.group == "action" or it.group == "bonus") and not okp then
       log.result = "skipped: cannot pay (" .. tostring(why) .. ")"
+    elseif it.group == "action" and it.value and takes and it.value <= takes then
+      log.result = string.format("skipped: worth less (%s) than the action it would take (%s)", tostring(it.value),
+        tostring(takes))
     elseif it.group == "action" and G.hasSurge(out) then
       -- an Action Surge round: the item spell takes the surge's action, so the first action keeps its Extra Attacks
       -- (the pilot's Roaring Shot took round 1's attack action and its Extra Attack every run); the surge's first
@@ -1994,9 +2153,14 @@ local function itemRule(F, list, R)
       out, replaced = keep, true
       log.result = "used: replaces the core action"
     elseif it.group == "bonus" then
+      if yields then
+        local keep = {}
+        for _, a in ipairs(out) do if not a.yield_bonus then keep[#keep + 1] = a end end
+        out = keep
+      end
       out[#out + 1] = entry
       hasBonus = true
-      log.result = "used: free bonus action"
+      log.result = yields and "used: takes the bonus action of " .. tostring(yields.spell) or "used: free bonus action"
     end
   end
   return out
@@ -2143,6 +2307,8 @@ G.RANGE = { melee = 1.6, throw = 6.0, ranged = 10.0, caster = 10.0 }
 -- A solo character takes every hit a party would share, and keeps its real hit points: the enemies' damage per hit is
 -- scaled (the same for both sets; a scenario or a request may set enemy_damage_scale), rounded to whole points.
 G.ENEMY_DAMAGE_SCALE = 0.5
+-- the enemies' hit points at each of our turns, in percent of their pool (see roundStart)
+G.BOSS_HP_PCT = 99
 function G.scaleEnemy(E, scale)
   local out = {}
   for k, v in pairs(E) do out[k] = v end
@@ -2289,7 +2455,11 @@ local function roundStart(F)
   -- downed in the enemies' turn: the engine gives the turn no action (healing does not bring it back). G.step ends the
   -- run before such a round; a round that still starts down is recorded as downed, never as an idle round.
   if R.char_hp_before and R.char_hp_before <= 0 then R.downed = true end
-  for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, 100) end
+  -- the enemies' large pool is reset at each of our turns to BOSS_HP_PCT, below full, so the effects that need a hurt
+  -- target (Toll the Dead's d12) work while "below half" and kill effects stay off; the model's boss scenario assumes
+  -- the same (mech.TARGET_HP_PCT)
+  for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT) end
+  R.enemy_hp_pct = F.enemies[1] and try(Osi.GetHitpointsPercentage, F.enemies[1]) or nil
   local S = F.S
   if S.short_rest_every and G.round > 1 and (G.round - 1) % S.short_rest_every == 0 then
     G.refill(F.char, "short")
@@ -2325,10 +2495,17 @@ function G.planRound(F, R)
   R.turn_statuses = {}
   for st in pairs(G.statusSet(F.char)) do R.turn_statuses[#R.turn_statuses + 1] = st end
   table.sort(R.turn_statuses)
+  local has = {}
+  for _, st in ipairs(R.turn_statuses) do has[st] = true end
   local out = {}
   for _, a in ipairs(list) do
-    local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
-    if pick then out[#out + 1] = pick end
+    -- an entry for a status (the extra action of a haste) only while the status is on as the turn starts
+    if a.if_status and not has[a.if_status] then
+      R.plan_skips[#R.plan_skips + 1] = { spell = a.spell, why = "no " .. a.if_status .. " as the turn started" }
+    else
+      local pick = a.requires and a or G.pickAffordable(F, a, R.plan_skips)
+      if pick then out[#out + 1] = pick end
+    end
   end
   if S.char_acts == false then return out end
   return itemRule(F, out, R)
@@ -2385,6 +2562,11 @@ local function summarize(F)
       end
     end
   end
+  -- damage taken before round 1 (the enemy won the initiative) is the run's too
+  local pre = 0
+  for _, row in ipairs(G.dmg) do
+    if row.r == 0 and row.target == me then pre = pre + (row.amount or 0) end
+  end
   local dealt, taken, summon = {}, {}, {}
   for r = 1, #G.rounds do
     dealt[r] = per[r] and per[r].dealt or 0
@@ -2397,11 +2579,16 @@ local function summarize(F)
     return #t > 0 and s / #t or 0
   end
   -- the sheet's hit points, without the run's HP buffer
-  local hp = math.max(0, (try(Osi.GetMaxHitpoints, F.char) or 0) - (F.hpBuffer or 0))
-  local tk = mean(taken)
+  local hp = math.max(0, (G.maxHp(F.char) or 0) - (F.hpBuffer or 0))
+  -- per enemy turn fought: the run ends as the last round's turn is released (F.lastCut), so that round's enemy turn
+  -- is not fought; one before round 1 is
+  local turns = #G.rounds - (F.lastCut and 1 or 0) + (F.enemyFirst and 1 or 0)
+  local sum = pre
+  for _, v in ipairs(taken) do sum = sum + v end
+  local tk = turns > 0 and sum / turns or 0
   local failed, misses, downed, smisses, riders, total = 0, 0, 0, 0, 0, 0
   for _, R in ipairs(G.rounds) do
-    for _, a in ipairs(R.actions) do if a.result ~= "done" then failed = failed + 1 end end
+    for _, a in ipairs(R.actions) do if a.result ~= "done" and not a.optional then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
     smisses = smisses + (R.summon_misses or 0)
     riders = riders + #(R.rider_misses or {})
@@ -2411,7 +2598,8 @@ local function summarize(F)
   return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
     turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
     rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil,
-    summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders }
+    summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders,
+    enemy_turns = turns, taken_before_round1 = pre }
 end
 
 function G.difficulty()
@@ -2531,8 +2719,12 @@ G.HP_BUFFER = 0
 -- or timed out, arena not clear) still ends in a run record, marked invalid with its cause.
 G.PREP_MS = 120000
 -- prep pauses: boosts and statuses settle within a few frames; spawned enemies need a moment before their stats are
--- forced and read back
-G.SETTLE_MS, G.SPAWN_MS = 250, 800
+-- forced and read back (the fight waits for that, at most SPAWN_MS)
+G.SETTLE_MS, G.SPAWN_MS = 250, 3000
+-- Fail fast (scripted runs): a run whose setup check fails at the start ends before round 1, and one with a round that
+-- already makes it invalid (no confirmed action, a planned cast refused, a rider missing, a summon attack never seen)
+-- ends after that round. The record keeps every cause; an invalid run used to fight all 16 rounds (100-148 s).
+G.FAIL_FAST = true
 function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
   if G.LANES and G.LANES.on and not req.lane then return "busy" end
@@ -2615,20 +2807,23 @@ function G.start(F)
       if req.haste then buffs[#buffs + 1] = C.haste or "HASTE" end
       for _, s in ipairs(buffs) do pcall(Osi.ApplyStatus, u, s, -1, 1, u) end
       G.results.buffs = buffs
-      G.clearLeftovers(uuid(u), A, function(left)
-        G.results.leftovers = left
-        if A then
-          G.results.arena = req.arena
-          local intr = G.arenaIntruders(A)
-          if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
-        end
-        -- lanes: every lane waits here until all are ready, then all spawn their enemies in the same frame, the first
-        -- lane first (G.lanesGo), so no lane's enemies stand around while the other lane still prepares
-        if F.lane then
-          F.state, F.go = "ready", function() G.spawnAndFight(F, pts, E, buffs, C) end
-          return G.lanesGo()
-        end
-        G.spawnAndFight(F, pts, E, buffs, C)
+      G.awaitStatuses(u, buffs, function(missing)
+        G.results.buffs_missing = #missing > 0 and missing or nil
+        G.clearLeftovers(uuid(u), A, function(left)
+          G.results.leftovers = left
+          if A then
+            G.results.arena = req.arena
+            local intr = G.arenaIntruders(A)
+            if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
+          end
+          -- lanes: every lane waits here until all are ready, then all spawn their enemies in the same frame, the first
+          -- lane first (G.lanesGo), so no lane's enemies stand around while the other lane still prepares
+          if F.lane then
+            F.state, F.go = "ready", function() G.spawnAndFight(F, pts, E, buffs, C) end
+            return G.lanesGo()
+          end
+          G.spawnAndFight(F, pts, E, buffs, C)
+        end)
       end)
     elseif tostring(G.status):match("^failed") then
       stop(F, "prep " .. tostring(G.status))
@@ -2671,7 +2866,19 @@ function G.spawnAndFight(F, pts, E, buffs, C)
     for _, d in ipairs(F.enemies) do m[uuid(d)] = true end
     G.LANES.members[F.lane.id] = m
   end
-  wait(G.SPAWN_MS, function()
+  -- the fight starts once every enemy's stats are forced (G.enemyForced), at most SPAWN_MS
+  local polls = 0
+  local function forced()
+    for _, d in ipairs(F.enemies) do if not (G.enemyForced or {})[uuid(d)] then return false end end
+    return true
+  end
+  local function ready(go)
+    polls = polls + 1
+    if not forced() and polls * G.POLL_MS < G.SPAWN_MS then return wait(G.POLL_MS, function() ready(go) end) end
+    go()
+  end
+  ready(function()
+    G.results.spawn_ms = polls * G.POLL_MS
     G.results.enemies = G.enemyReport(F.enemies)
     G.results.enemy_target = E
     G.results.enemy_damage_scale = F.enemyDamageScale
@@ -2688,6 +2895,9 @@ function G.spawnAndFight(F, pts, E, buffs, C)
       G.results.setup = { start = G.setupCheck(F, spec, "start", F.setupExtra) }
     end
     if F.lane then G.laneSetup(F) end
+    -- fail fast: a run that starts with a mismatch never counts, so it ends here instead of after 16 rounds
+    local sc = G.results.setup and G.results.setup.start
+    if sc and #sc.mismatches > 0 and G.FAIL_FAST then return stop(F, "setup mismatch at the start") end
     G.goFight(F)
   end)
 end
@@ -2699,6 +2909,7 @@ function G.goFight(F)
   F.tFight = now()
   F.hpChar = try(Osi.GetHitpoints, F.char)
   G.enterCombat(F)
+  F.inCombatAt = now()
   F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
   if F.manual then
     local rows = G.hotbarRows(F.spec, (G.results.prep or {}).consumables)
@@ -2712,10 +2923,38 @@ end
 -- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
 -- combat if the character left it, else the turn of whoever holds it is ended); after TURN_RECOVERIES tries the run
 -- ends, invalid. Ending the character's own turn is retried until the engine lets go of it.
-G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 45000, 2, 4000, 3, 90000
+-- The longest enemy turn of the pilot took 9.5 s: 20 s and one recovery (45 s and two cost 135 s per hung run). A combat
+-- that ended (out of combat for COMBAT_LOST_MS while waiting) is reacted to at once instead.
+G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 20000, 1, 4000, 3, 90000
+G.COMBAT_LOST_MS = 3000
 -- pauses around the character's turn: after the turn starts (the engine refills the turn's resources) and after the
 -- last action (the cast has ended: G.step waits for casting() first)
 G.ACT_DELAY_MS, G.END_DELAY_MS = 200, 100
+-- Out of combat for COMBAT_LOST_MS while waiting for the turn? (IsInCombat 0; an unknown answer is no evidence.) The
+-- enemies' turn before round 1 is noted on the way (F.enemyFirst: its damage counts).
+function G.combatLost(F, t)
+  if G.round == 0 and not F.enemyFirst then
+    for _, d in ipairs(F.enemies or {}) do if activeTurn(d) then F.enemyFirst = true end end
+  end
+  local inC = try(Osi.IsInCombat, F.char)
+  if inC == 1 or not F.inCombatAt then
+    if inC == 1 then F.inCombatAt = t end
+    return false
+  end
+  return inC == 0 and t - F.inCombatAt > G.COMBAT_LOST_MS
+end
+-- A round that already makes the run invalid (G.judge): with FAIL_FAST the run ends after it. -> the cause, or nil.
+function G.roundFault(F, R)
+  if F.manual or not G.FAIL_FAST or R.downed then return nil end
+  if (R.cast_misses or 0) > 0 then
+    return string.format("round %d: %d planned cast(s) refused or never seen", R.r, R.cast_misses)
+  end
+  if #(R.rider_misses or {}) > 0 then return string.format("round %d: rider missing", R.r) end
+  if (F.S or {}).char_acts ~= false and not (R.done and (R.done.action or R.done.item)) then
+    return string.format("round %d: no action confirmed", R.r)
+  end
+  return nil
+end
 function G.recoverTurn(F, inCombat, holders)
   if not inCombat then
     G.enterCombat(F)
@@ -2891,8 +3130,24 @@ function G.step(F, t)
       if G.round >= F.rounds then return finish(F) end
       -- real hit points: a down is a result. The run ends there; the rounds fought and their damage are the record.
       if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end
+      local last = G.rounds[#G.rounds]
+      if last and G.FAIL_FAST and not F.manual and (last.summon_misses or 0) > 0 then
+        return finish(F, string.format("round %d: %d summon attack(s) refused or never seen", last.r, last.summon_misses))
+      end
       roundStart(F)
       F.state, F.next, F.turnStart = F.manual and "player" or "act", t + G.ACT_DELAY_MS, t
+    elseif not F.manual and G.combatLost(F, t) then
+      -- the combat ended (an item spell ended it, the enemies are not hostile): no turn will come, nothing to wait for
+      F.recoveries = (F.recoveries or 0) + 1
+      if F.recoveries > G.TURN_RECOVERIES then
+        return finish(F, "the combat ended or never started (round " .. G.round .. ")")
+      end
+      G.enterCombat(F)
+      G.results.turn_recoveries = G.results.turn_recoveries or {}
+      G.results.turn_recoveries[#G.results.turn_recoveries + 1] = { r = G.round,
+        what = "the character was out of combat: entered it again" }
+      note("combat lost (round %d): entered it again", G.round)
+      F.inCombatAt, F.deadline = t, t + G.TURN_WAIT_MS
     elseif t > F.deadline then
       F.recoveries = (F.recoveries or 0) + 1
       if F.recoveries > G.TURN_RECOVERIES then
@@ -2941,6 +3196,8 @@ function G.step(F, t)
     if casting(F.char) then F.next = t + 200; return end
     local R = G.rounds[#G.rounds]
     if R then G.riderCheck(F, R) end
+    local fault = R and G.roundFault(F, R)
+    if fault then return finish(F, fault) end
     G.endTurn(F.char)
     if R and R.tm then R.tm.end_asked = t - G.t0 end
     F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
@@ -2948,6 +3205,12 @@ function G.step(F, t)
     if not activeTurn(F.char) then
       local R = G.rounds[#G.rounds]
       if R and R.tm then R.tm.released = t - G.t0 end
+      -- the last round is over once its turn is released: the enemies' turn after it is not waited for (the summary
+      -- counts the damage taken per enemy turn fought)
+      if G.round >= F.rounds then
+        F.lastCut = true
+        return finish(F)
+      end
       F.state, F.deadline = "wait", t + G.TURN_WAIT_MS
     elseif t >= F.next then
       if F.endTries >= G.END_TURN_TRIES then return finish(F, "the character's turn could not be ended") end

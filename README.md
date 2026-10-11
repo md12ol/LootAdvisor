@@ -104,6 +104,8 @@ python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md repo
 # both sides of a pair at once: two party members levelled to the same build, two lanes (arenas.json)
 python tools/gauntlet/engine.py survey undercity_lanes
 python tools/gauntlet/run.py specs.json --results results.jsonl --lanes undercity_lanes --char UUID_A --char-b UUID_B
+# one save per side (one character per build): the same side of two pairs at once, then the other save
+python tools/gauntlet/run.py specs.json --results results.jsonl --sides a --repeats 2 --lanes undercity_lanes --chars laezel=UUID,shadowheart=UUID
 ```
 While a run is active nothing else may use the eval hook (the run's own status reads would lose answers): the run
 holds a lock file and `engine.py` refuses other commands until it ends.
@@ -113,7 +115,15 @@ enemies and arena spot. Each lane's enemies get their own faction, hostile to th
 other lane; the lanes lie farther apart than the farthest spell of either set reaches (from anywhere inside one lane
 to anywhere inside the other, plus a margin), the sides swap lanes and the first lane alternates every repeat. A hit
 from one lane on the other, a shared combat, or an enemy hostile to the other lane's character fails the run. With one
-character, or lanes too close for the pair's spells, the sides run one after the other.
+character, or lanes too close for the pair's spells, the sides run one after the other. When each save holds one
+character per build, the lanes take the same side of two different pairs at once instead (`--chars`), under the same
+spacing rule.
+`--repeats` counts the usable runs already in `--results` for the same pair and set, so the side run from the second
+save sees the first save's runs and a pair is not run again once it is decided. A pair is decided when the 95%
+interval of the ratio of its two sides' damage per round excludes 1 or lies within the control tolerance; rounds are
+compared by their number, since a round's damage depends on its number (Action Surge, item spells, slots running out)
+far more than on the dice. A side whose first run failed for a reason every run would meet (a setup mismatch at the
+start, a combat that ended) is not repeated; the results file says why.
 The gauntlet Lua is not part of the pak: `engine.py load` copies it into the Script Extender folder and runs it
 through the hook. Loading a save resets the game's Lua state, so run `engine.py load` again after every load.
 Scripted runs park the rest of the party 40 m away and set every party character's reactions so the game never asks
@@ -126,8 +136,12 @@ Each turn is planned from the resources the character has at that moment (an upc
 the base spell, then the cantrip; an item spell is used only when it can be paid), and a scripted action counts as done
 only when the game shows it (a cast event, damage to its target, or its cost spent); otherwise it is logged as failed
 and its fallback runs. A run is recorded as invalid, with the causes, when it ends early (the character's turn never
-came after the recovery attempts, the prep timed out, ...), a round passes without a confirmed action, or the
-character casts something outside its plan. Before the fight every field of the setup is read back from the game
+came after the recovery attempt, the combat ended, the prep timed out, ...), a round passes without a confirmed action,
+or the character casts something outside its plan. Such a run ends as soon as it is known to be invalid: a setup
+mismatch before round 1, a round without a confirmed action or with a refused cast after that round. The run ends as
+the last round's turn is released; damage taken is counted per enemy turn fought (one before round 1 included). The
+enemies are reset to 99% of their hit points at each of the character's turns, so effects that need a hurt target
+work while "below half" and kill effects do not. Before the fight every field of the setup is read back from the game
 and compared with the plan (items, proficiency as the game judges it for each item, the character's own classes,
 subclasses and feats, abilities, hit points, spells, slots, resources, buffs, reactions, enemies), and so are the
 effects the model credits: toggled passives such as Great Weapon Master's "All In" in the state the model assumes (prep
@@ -143,6 +157,13 @@ damage taken (AC, hit points, saving throws, resistances, damage reduction; dama
 Each side of a pair names its test plan (`--select char:build:act:N` compares with research set N): the optimizer tunes
 ability scores, feats and fighting styles to each set, the test character is respecced to that plan, and `plan.py`
 builds the expected sheet and the model's numbers from the same respec.
+The round plan follows the model's decisions for the boss fight: a buff item spell (an extra action, weapon dice) is
+cast when the model finds it worth the action it takes, with the extra action's attacks while its status is on; a
+Battle Master whose every attack has Advantage keeps the superiority dice for Riposte instead of Trip; the off-hand
+weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
+lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
+replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
+adds most to.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

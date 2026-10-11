@@ -303,9 +303,55 @@ def reaction_policy(build_interrupts, set_interrupts):
     return {k: "auto" for k in list(build_interrupts) + list(set_interrupts) + COMMON_REACTIONS}
 
 
-def core_plan(model, st, stats):
-    """The build's fixed round plan (the optimizer's PLANS, the same rotation its model assumes)."""
+def known_spell_names(per_level):
+    """The spell names a respec's per-level picks name ("Spells: Misty Step, Scorching Ray"), lower case; None when
+    the picks name none (then the build's plan is trusted)."""
+    out = set()
+    for lv in per_level or []:
+        for pick in lv.get("picks") or []:
+            m = re.match(r"(?:Spells?|Prepare):\s*(.+)$", pick)
+            if m:
+                out |= {re.sub(r"\([^)]*\)", "", x).strip().lower() for x in m.group(1).split(",")}
+    return out or None
+
+
+def model_choices(pred):
+    """What the model's evaluation decided for the plan (the boss fight's: one target, 16 rounds), from its events:
+    {"action": damage of one attack action, "adv": the attacks' own Advantage, "offhand": an off-hand attack kept,
+    "gwm": the GWM bonus attack counted, "buffs": {spell: {turns, gain, buff}}, "conc": the concentration damage spell,
+    "fillers": [spells], "values": {event name: damage per use}}."""
+    out = {"action": None, "adv": 0.0, "offhand": False, "gwm": False, "buffs": {}, "conc": None, "fillers": [],
+           "values": {}}
+    for e in getattr(pred, "plan_events", None) or []:
+        n = e.get("n") or 0
+        if e.get("name") == "attack" and n:
+            out["action"] = e["dmg"] / n * int((pred.st.sheet.get("nAtt") or 1))
+            out["adv"] = e.get("adv") or 0.0
+        elif e.get("name") == "off-hand attack" and n and not e.get("dropped"):
+            out["offhand"] = True
+            out["values"]["off-hand attack"] = e["dmg"] / n
+        elif e.get("name") == "GWM bonus attack" and n:
+            out["gwm"] = True
+        elif e.get("kind") == "buff" and not e.get("dropped") and n:
+            out["buffs"][e["spell"]] = {"turns": e.get("turns"), "gain": e.get("gain")}
+        elif e.get("name") == "concentration damage" and n:
+            out["conc"] = e.get("spell")
+        elif e.get("name") == "filler spell" and n:
+            out["fillers"].append(e.get("spell"))
+        if n and e.get("name") in ("levelled spell", "cantrip", "filler spell"):
+            out["values"][e.get("spell")] = e["dmg"] / n
+    return out
+
+
+def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
+    """The build's fixed round plan (the optimizer's PLANS, the same rotation its model assumes). choices: the model's
+    decisions for the fight (model_choices); known: the respec's spell names (known_spell_names), None = all;
+    maneuvers: the respec's Battle Master picks."""
     plan, cl = st.plan, st.classes
+    ch = choices or model_choices(None)
+
+    def knows(name):
+        return known is None or name.lower() in known
     n_att = int(st.sheet.get("nAtt") or 1)
     mode = plan["mode"]
     opening, steady, bonus_open, bonus_steady = [], [], [], []
@@ -320,9 +366,17 @@ def core_plan(model, st, stats):
     if mode in ("melee", "throw", "ranged"):
         spell = {"melee": "Target_MainHandAttack", "throw": "Throw_Throw", "ranged": "Projectile_MainHandAttack"}[mode]
         main = attacks(spell, n_att)
-        if plan.get("superiority") and fighter >= 3:
-            main[0] = A("Target_TripAttack", "action", "@boss", "manoeuvre (superiority die)",
-                        cost="ActionPoint:1;SuperiorityDie:1", alt=A(spell, "action", "@boss", "attack"))
+        if ch["action"]:
+            main[0]["value"] = round(ch["action"], 1)
+        # a manoeuvre on the action's first attack while the dice last; none when every attack has Advantage already
+        # (the dice are kept for Riposte, which the model then counts)
+        trip = "Projectile_TripAttack" if mode == "ranged" else "Target_TripAttack"
+        if mode == "ranged" and maneuvers and "TripAttack" not in maneuvers:
+            trip = "Projectile_MenacingAttack" if "MenacingAttack" in maneuvers else None
+        if plan.get("superiority") and fighter >= 3 and trip and ch["adv"] < model.ADV_SURE:
+            main[0] = A(trip, "action", "@boss", "manoeuvre (superiority die)",
+                        cost="ActionPoint:1;SuperiorityDie:1", alt=A(spell, "action", "@boss", "attack"),
+                        value=main[0].get("value"))
         if plan.get("smite") and cl.get("Paladin", 0) >= 2:
             main[0] = A("Target_Smite_Divine", "action", "@boss", "Divine Smite",
                         cost="ActionPoint:1;SpellSlotsGroup:1:1:1", alt=A(spell, "action", "@boss", "attack"))
@@ -354,15 +408,42 @@ def core_plan(model, st, stats):
             # attack of any kind: the extra attack comes first, ahead of the action it would otherwise wait for
             dread = "Projectile_DreadAmbusher" if mode == "ranged" else "Target_DreadAmbusher"
             opening.insert(0, A(dread, "free", "@boss", "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))
+        # the off-hand weapon's attack in a bonus action nothing else uses (the model keeps it); a per-rest bonus item
+        # spell takes the bonus action before it (yield)
+        if ch["offhand"]:
+            bonus_steady.append(A("Target_OffhandAttack", "bonus", "@boss", "off-hand attack", yield_bonus=True,
+                                  granted_by="off-hand weapon", value=_val(ch, "off-hand attack")))
+        # Great Weapon Master's bonus attack: only in a turn a critical hit or a kill gave it (its status), after the
+        # attacks; not needed in the other turns
+        if ch["gwm"]:
+            bonus_steady.append(A("Target_GreatWeaponMaster_BonusAttack", "bonus", "@boss", "GWM bonus attack",
+                                  when_status="GREAT_WEAPON_MASTER_BONUS_ATTACK",
+                                  granted_by="GREAT_WEAPON_MASTER_BONUS_ATTACK", optional=True, yield_bonus=True))
+        # an extra action while a buff item spell's status is on as the turn starts (Gontr Mael's Haste): the attacks
+        # of one more action
+        hasted = []
+        for spid, b in ch["buffs"].items():
+            st_ = (b.get("buff") or {}).get("status") or _buff_status(stats, spid)
+            if st_ and _buff_actions(stats, spid):
+                hasted = [A(spell, "action", "@boss", "extra action (" + st_ + ")", if_status=st_, done_key="extra")] + \
+                    [A(spell, "free", "@boss", "Extra Attack (extra action)", requires="extra", if_status=st_)
+                     for _ in range(n_att - 1)]
+                break
+        steady = steady + hasted
+        opening = opening + hasted
     else:
         cantrip = plan.get("cantrip")
         nukes = [s_ for s_, lv in plan.get("nukes") or [] if st.level >= lv
                  and int((stats.get(s_) or {}).get("Level") or 1) <= top]
         # each spell as a chain: highest slot first, down to the base spell, then the cantrip
-        act = A(cantrip, "action", "@boss", "cantrip") if cantrip else None
+        act = A(cantrip, "action", "@boss", "cantrip", value=_val(ch, cantrip)) if cantrip else None
+        # the slots the nuke leaves: lower-level spells the model found worth more than the cantrip
+        for sid, _lv, name in reversed(plan.get("fillers") or []):
+            if sid in ch["fillers"] and knows(name):
+                act = A(sid, "action", "@boss", "filler spell", alt=act, value=_val(ch, sid))
         for nk in nukes[:1]:
             act = chain(upcast_chain(stats, nk, slot_levels), "action", "@boss", "nuke", tail=act,
-                        at_target_pos=nk.startswith("Zone_") or None)
+                        at_target_pos=nk.startswith("Zone_") or None, value=_val(ch, nk))
         if plan.get("rotd") and cl.get("Cleric", 0) >= 2:
             act = A("Shout_RadianceOfTheDawn", "action", "@self", "Radiance of the Dawn", alt=act)
         steady = [act] if act else []
@@ -370,6 +451,11 @@ def core_plan(model, st, stats):
         if plan.get("conc") and st.level >= plan["conc"][1]:
             opening = [chain(upcast_chain(stats, plan["conc"][0], slot_levels), "action", "@self",
                              "concentration spell", tail=act)]
+        # a concentration damage zone (Wall of Fire) cast at the boss in round 1, when the model keeps it
+        for sid, _lv, name in plan.get("conc_options") or []:
+            if ch["conc"] == sid and knows(name):
+                opening = [chain(upcast_chain(stats, sid, slot_levels), "action", "@boss", "concentration damage",
+                                 tail=act, at_target_pos=True, value=ch.get("conc_value"))]
         if plan.get("spiritual"):
             bonus_open.append(A("Target_SpiritualWeapon", "bonus", "@boss", "Spiritual Weapon"))
         if plan.get("hex") and cl.get("Warlock", 0):
@@ -383,6 +469,21 @@ def core_plan(model, st, stats):
     return {"rounds": rounds, "steady": steady + bonus_steady, "fight_rounds": 4, "mode": mode,
             "selfaoe": bool(plan.get("conc") or plan.get("rotd")),
             "defence_opening": [a for a in bonus_open if a["target"] == "@self"], "riders": plan_riders(rounds)}
+
+
+def _val(ch, spell):
+    v = (ch.get("values") or {}).get(spell)
+    return round(v, 1) if v else None
+
+
+def _buff_status(stats, spid):
+    m = re.search(r"ApplyStatus\((?:SELF,\s*)?(\w+),", (stats.get(spid) or {}).get("SpellProperties") or "")
+    return m.group(1) if m else None
+
+
+def _buff_actions(stats, spid):
+    st_ = stats.get(_buff_status(stats, spid) or "") or {}
+    return bool(re.search(r"ActionResource\(ActionPoint,\s*\d+,\s*0\)", st_.get("Boosts") or ""))
 
 
 # Spells whose effect the run checks right after the turn that cast them: the status it must have put on, and on whom.
@@ -472,6 +573,11 @@ def item_actions(st, stats, mech):
             group = "bonus" if "BonusActionPoint" in costs else "reaction" if "Reaction" in costs else "action"
             per = "short" if "ShortRest" in cd else "long" if "Rest" in cd else "none"
             rec = {"spell": spid, "item": im.name, "slot": slot, "group": group, "per": per, "cost": costs}
+            buff = mech.item_buff(stats, spid) if hasattr(mech, "item_buff") else None
+            if (not sp or not sp.get("dmg")) and buff and per != "none" and group == "action":
+                # a buff (extra actions, weapon dice): its value is the model's (spec_for), kept only when it keeps it
+                out.append(dict(rec, value=0.0, buff=buff, target="@self"))
+                continue
             if not sp or not sp.get("dmg"):
                 skipped.append(dict(rec, reason="no damage in the spell data"))
                 continue
@@ -481,7 +587,7 @@ def item_actions(st, stats, mech):
             if group == "action" and per == "none":
                 skipped.append(dict(rec, reason="unlimited action spell: the core plan keeps the action"))
                 continue
-            dmg = sum(model_avg(e) for e, _t in sp["dmg"]) * (sp.get("targets") or 1)
+            dmg = sum(model_avg(e) for e, _t in sp["dmg"]) * ((sp.get("targets") or 1) + (sp.get("chain") or 0))
             rec.update(value=round(dmg, 1), target="@self" if (s.get("SpellType") == "Shout") else "@boss",
                        at_target_pos=spid.startswith("Zone_") or None)
             out.append(rec)
@@ -718,8 +824,36 @@ def item_checks(stats, items, attacks=None):
 
 
 # ------------------------------------------------------------------------------------------------ specs
+def _mark_after(core, rnd):
+    """Moves Hunter's Mark / Hex (a concentration bonus spell of round 1-2) to round rnd (1-based), after a
+    concentration buff's turns."""
+    marks = ("Target_HuntersMark", "Target_Hex")
+    rounds = core["rounds"]
+    found = None
+    for r in rounds:
+        for a in list(r):
+            if a["spell"] in marks:
+                found = a
+                r.remove(a)
+    if not found:
+        return
+    while len(rounds) < rnd:
+        rounds.append(list(core["steady"]))
+    rounds[rnd - 1] = [a for a in rounds[rnd - 1] if a["group"] != "bonus"] + [found]
+    core["riders"] = plan_riders(rounds)
+
+
+def _dw_gain(W, mech, spid, level):
+    """Destructive Wrath's gain on one cast of the spell: its lightning / thunder dice at their maximum."""
+    sp = mech.read_spell(W, spid, level)
+    if not sp:
+        return 0.0
+    return sum(mech.max_part(e) - mech.dice_part(e) for e, t in sp["dmg"] if t in ("Lightning", "Thunder")) * \
+        (sp.get("targets") or 1)
+
+
 def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None, maneuvers=None,
-             plan_toggles=None):
+             plan_toggles=None, known=None):
     """respec: the test plan's tuned respec (pairs.tuned_respec) the test character was given, or None for the
     build's own picks; the sheet, feats, styles, plan and the model's numbers follow it. maneuvers: the plan's Battle
     Master picks (maneuver_picks). plan_toggles: the test plan's toggled passives the model assumes on (None: the
@@ -729,24 +863,50 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
     st = model.State(W, cid, bid, act, lo, {}, respec=respec)
     g = grants(G, bare.BI["seq"][: bare.level], bare.subs, bare.feats, bare.styles, maneuvers=maneuvers)
     pred = model.score(W, cid, bid, act, lo, None, detail=True, respec=respec)
-    core = core_plan(model, bare, stats)
-    acts, skipped = item_actions(st, stats, mech)
-    # choice items (Markoheshkir attunements, elemental weapons): the model's pick is applied as a status in the
-    # setup; the spells it unlocks join the item actions
+    # the plan's choices follow the model of the fight the gauntlet runs (boss: one target, one 16-round fight); the
+    # expected numbers stay the day's
+    with model.scenario("boss"):
+        boss = model._evaluate(W, cid, bid, act, lo, None, True, pred.choice or None, respec)
+        acts, skipped = item_actions(st, stats, mech)
+        # choice items (Markoheshkir attunements, elemental weapons): the model's pick is applied as a status in the
+        # setup; the spells it unlocks join the item actions
+        for slot, status in dict(pred.choice or {}).items():
+            for spid in re.findall(r"UnlockSpell\((\w+)", (stats.get(status) or {}).get("Boosts") or ""):
+                sp = mech.read_spell(W, spid, st.level)
+                s_ = stats.get(spid) or {}
+                if sp and sp.get("dmg"):
+                    cd = s_.get("Cooldown") or ""
+                    acts.append({"spell": spid, "item": (W.items[lo[slot]].get("name") if slot in lo else slot),
+                                 "slot": slot, "group": "bonus" if "BonusActionPoint" in (s_.get("UseCosts") or "")
+                                 else "action", "per": "short" if "ShortRest" in cd else "long" if "Rest" in cd
+                                 else "none", "cost": s_.get("UseCosts"),
+                                 "value": round(sum(model_avg(e) for e, _t in sp["dmg"]) *
+                                                ((sp.get("targets") or 1) + (sp.get("chain") or 0)), 1),
+                                 "target": "@boss", "at_target_pos": spid.startswith("Zone_") or None})
+        choices = model_choices(boss)
+        # Destructive Wrath (lightning / thunder dice at their maximum) goes on the first such damage of the fight:
+        # the item spell it adds most to (on the boss fight's one target) is cast first
+        if st.plan.get("dw") and st.classes.get("Cleric", 0) >= 2:
+            for rec in acts:
+                rec["dw_gain"] = round(_dw_gain(W, mech, rec["spell"], st.level), 1)
+        for e in boss.plan_events or []:
+            if e.get("name") == "concentration damage" and e.get("n"):
+                choices["conc_value"] = round(e["dmg"] * model.ROUNDS, 1)
     choice = dict(pred.choice or {})
-    for slot, status in choice.items():
-        for spid in re.findall(r"UnlockSpell\((\w+)", (stats.get(status) or {}).get("Boosts") or ""):
-            sp = mech.read_spell(W, spid, st.level)
-            s_ = stats.get(spid) or {}
-            if sp and sp.get("dmg"):
-                cd = s_.get("Cooldown") or ""
-                acts.append({"spell": spid, "item": (W.items[lo[slot]].get("name") if slot in lo else slot),
-                             "slot": slot, "group": "bonus" if "BonusActionPoint" in (s_.get("UseCosts") or "")
-                             else "action", "per": "short" if "ShortRest" in cd else "long" if "Rest" in cd else "none",
-                             "cost": s_.get("UseCosts"), "value": round(sum(model_avg(e) for e, _t in sp["dmg"]) *
-                                                                        (sp.get("targets") or 1), 1),
-                             "target": "@boss", "at_target_pos": spid.startswith("Zone_") or None})
-    acts.sort(key=lambda r: (r["per"] == "none", -r["value"]))
+    core = core_plan(model, bare, stats, choices, known, maneuvers)
+    if choices["action"]:
+        core["action_value"] = round(choices["action"], 1)
+    for rec in acts:
+        b = choices["buffs"].get(rec["spell"])
+        if rec.get("buff") and b:
+            # what the buff is worth against the action it takes: its gain plus that action
+            rec["value"] = round((b.get("gain") or 0.0) + (choices["action"] or 0.0), 1)
+    acts = [r for r in acts if not r.get("buff") or r["spell"] in choices["buffs"]]
+    # a concentration buff ends a concentration mark: Hunter's Mark / Hex wait until the buff's turns are over
+    conc_buff = [rec for rec in acts if rec.get("buff") and rec["buff"].get("conc")]
+    if conc_buff:
+        _mark_after(core, (conc_buff[0]["buff"].get("turns") or 0) + 1)
+    acts.sort(key=lambda r: (r["per"] == "none", -(r.get("value") or 0) - (r.get("dw_gain") or 0)))
     # requirements checked before the run: an item spell the character could never cast with this set is not planned
     profs = re.findall(r"Proficiency\((\w+)\)", ";".join(g["boosts"]))
     keep = []
@@ -758,11 +918,11 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
             keep.append(rec)
     acts = keep
     # an action item spell takes the round's core action (and the Extra Attacks that come with it): only one the
-    # model's plan uses, i.e. one it found worth more than that action (a weapon action of 2.5 damage took a caster's
+    # model's plan for the boss fight uses, i.e. one it found worth more than that action (a weapon action of 2.5 damage took a caster's
     # whole action in every run before); a bonus-action one only fills a free bonus action and stays
     keep = []
     for rec in acts:
-        rec["model_kept"] = model_intends(pred, rec["spell"])
+        rec["model_kept"] = model_intends(boss, rec["spell"])
         if rec["group"] == "action" and rec["model_kept"] is False:
             skipped.append(dict(rec, reason="the model's plan does not use it (worth less than the action it takes)"))
         else:
@@ -846,9 +1006,11 @@ def main(argv=None):
             pid = p[side].get("respec")
             r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
             mv = maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
+            known = known_spell_names(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
             row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates,
                                           respec=r, maneuvers=mv,
-                                          plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None)
+                                          plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None,
+                                          known=known)
         row.pop("a"), row.pop("b")
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", row["specs"]["a"]["set"], "/", row["specs"]["b"]["set"])

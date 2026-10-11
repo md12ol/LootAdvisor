@@ -51,19 +51,28 @@ ENEMY = {1: dict(ac=15, save=2, atk=5, dmg=9.0, dc=13, save_dmg=7.0),
          2: dict(ac=17, save=3, atk=7, dmg=13.0, dc=15, save_dmg=10.0),
          3: dict(ac=19, save=4, atk=9, dmg=17.0, dc=17, save_dmg=14.0)}
 CTRL_EQ = 2.0                                   # rounds of one enemy's damage a successful control spell prevents
+ADV_SURE = 0.99                                 # an Advantage at least this likely is sure (no Trip for it)
+WALL_STAY = 0.5                                 # share of its turns an enemy ends in a damage zone (it may walk out)
 HIT_REMOVED = 0.6                               # uptime of a "until you are hit" status
 R_SAT = 3.0 * ROUNDS                            # durability saturation (rounds), see sat()
 STEALTH_OPENERS = True
 INCOMING_ATTACKS_ONLY = False                   # True: one attacker's weapon hits only (no save damage, no conditions)
 ENEMY_DMG_SCALE = 1.0                           # enemy damage per hit x this, rounded to whole points
+SLOT_SHARE = (2 / 3, 0.5)                       # share of a caster's level-3+ / level-1-2 slots spent on damage
+NUKE_ROUNDS = 0.6                               # at most this share of the rounds go to levelled damage spells
 # The encounter a score is for. "day": the assumptions above, an act's typical day. "boss": the in-game gauntlet's
 # boss fight (tools/gauntlet "boss" scenario): one enemy that never dies, one 16-round fight, no short rest (a
 # per-short-rest feature once in 16 rounds), no stealth opener; it only attacks (weapon hits, no saves, no
-# conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE). Used through scenario().
+# conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE); the enemy stands at 99% of its
+# hit points at each of our turns (gauntlet.lua G.BOSS_HP_PCT): "target hurt" effects on, "below half" off; it walks
+# up to the character in round 1 and stays in reach (melee_contact: a ranged build's off-hand melee attack); one fight
+# spends every spell slot (slot_share, nuke_rounds). Used through scenario().
 SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
-                         stealth=True, attacks_only=False, dmg_scale=1.0),
+                         stealth=True, attacks_only=False, dmg_scale=1.0, target_hp_pct=None, melee_contact=0.0,
+                         slot_share=(2 / 3, 0.5), nuke_rounds=0.6),
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
-                          attacks_only=True, dmg_scale=0.5)}
+                          attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
+                          slot_share=(1.0, 1.0), nuke_rounds=1.0)}
 
 # ----------------------------------------------------------------------------------- encounter assumptions
 # Everything situational is an uptime taken from these tables (model assumptions, not game data; the game data
@@ -149,7 +158,7 @@ SWITCHES = {
 # What the build does in a round (the companion analyses' rotations, generalised). Spell ids are the game's.
 PLANS = {
     "thx": dict(mode="ranged", offhand="ranged", hunters_mark=True, dread=True),
-    "gloomassassin": dict(mode="ranged", hunters_mark=True, dread=True, assassin=True),
+    "gloomassassin": dict(mode="ranged", hunters_mark=True, dread=True, assassin=True, superiority=True),
     "giants": dict(mode="throw", rage="giant"),
     "throwzerker": dict(mode="throw", rage="frenzy"),
     "throw_zerk7_thief3": dict(mode="throw", rage="frenzy"),
@@ -160,9 +169,14 @@ PLANS = {
     "lockadin": dict(mode="melee", smite=True, vow=True, hexblade=True, hex=True),
     "tempestevoker": dict(mode="caster", cantrip="Projectile_FireBolt",
                           nukes=[("Zone_LightningBolt", 5), ("Projectile_Fireball", 5), ("Projectile_IceStorm", 10),
-                                 ("Cone_ConeOfCold", 11)], dw=True, control=["Target_HoldPerson"]),
+                                 ("Cone_ConeOfCold", 11)], dw=True, control=["Target_HoldPerson"],
+                          conc_options=[("Wall_WallOfFire", 9, "Wall of Fire")],
+                          fillers=[("Projectile_ScorchingRay", 3, "Scorching Ray"),
+                                   ("Projectile_MagicMissile", 1, "Magic Missile")]),
     "evoker": dict(mode="caster", cantrip="Projectile_FireBolt",
-                   nukes=[("Projectile_Fireball", 5), ("Zone_LightningBolt", 5), ("Cone_ConeOfCold", 9)]),
+                   nukes=[("Projectile_Fireball", 5), ("Zone_LightningBolt", 5), ("Cone_ConeOfCold", 9)],
+                   fillers=[("Projectile_ScorchingRay", 3, "Scorching Ray"),
+                            ("Projectile_MagicMissile", 1, "Magic Missile")]),
     "stormsorc": dict(mode="caster", cantrip="Projectile_FireBolt",
                       nukes=[("Zone_LightningBolt", 7), ("Projectile_IceStorm", 10), ("Cone_ConeOfCold", 11)],
                       dw=True, quicken_from=5, control=["Target_HoldPerson"]),
@@ -676,6 +690,7 @@ def make_weapon_events(st):
         die = 5.5 if fighter >= 10 else 4.5
         special["superiority"] = dice * SR_COVER / ROUNDS * die     # damage dice per round (Trip / Precision)
         special["trip_prone"] = min(1.0, dice * SR_COVER / ROUNDS)
+        special["dice_fight"], special["die"] = dice * SR_COVER, die
     # item spells (UnlockSpell) that deal damage, per rest: a bonus-action one only in a free bonus action, an
     # action one in place of an Attack action - kept only when it beats that action's attacks (see _evaluate)
     for ev in item_spell_events(st):
@@ -686,6 +701,21 @@ def make_weapon_events(st):
             ev["displaces"] = n_att * base.get("throw_penalty", 1.0)
         if ev["n"] > 0:
             evs.append(ev)
+    # the off-hand weapon's bonus-action attack in a bonus action nothing else uses (a melee build every turn, a
+    # ranged or throwing one in the turns an enemy stands in its reach: mech.MELEE_CONTACT)
+    orow = weapon_row(st, "OffHand") if plan.get("offhand") != "ranged" and free_ba > 0 else None
+    contact = 1.0 if plan["mode"] == "melee" else mech.MELEE_CONTACT
+    if orow and contact > 0:
+        (ond, osides), orec = weapon_dice(st, "OffHand")
+        ow = orec.get("weapon") or {}
+        keep = {k: v for k, v in base.items() if k not in ("throw_penalty", "any_dmg", "returning", "thrown", "unarmed",
+                                                           "rider_flat", "rider_dice")}
+        n = free_ba * contact
+        evs.append(dict(keep, slot="OffHand", n=n, name="off-hand attack", kind="weapon", weapon=True, melee=True,
+                        ranged=False, attack_type="MeleeOffHandWeaponAttack", base_hit=orow["hit"], base_dmg=orow["avg"],
+                        die=(ond, osides), heavy=False, dtypes={orow.get("dt") or "Slashing"}, main_dtype=orow.get("dt"),
+                        base_dice=ond * (osides + 1) / 2 + sum(mech.dice_part(e) for e in (ow.get("extra_damage") or []))))
+        free_ba -= n
     special["free_ba"] = free_ba
     return evs, special
 
@@ -794,12 +824,33 @@ def make_caster_events(st):
     evs = []
     lvl = st.level
     sl = slots(st.classes)
-    # damage slots: two thirds of the level-3+ slots (the rest: Haste, Counterspell, Hold Person ...)
-    big = sum(sl[2:]) * 2 / 3 if len(sl) >= 3 else 0.0
-    small = sum(sl[:2]) * 0.5
+    # damage slots: a day spends two thirds of the level-3+ slots and half the low ones on damage (the rest: Haste,
+    # Counterspell, Hold Person ...); one long fight (scenario) spends them all
+    big = sum(sl[2:]) * SLOT_SHARE[0] if len(sl) >= 3 else 0.0
+    small = sum(sl[:2]) * SLOT_SHARE[1]
     rounds_lr = ROUNDS * FIGHTS
     used = 0.0
     conc = plan.get("conc")
+    # a concentration damage zone (Wall of Fire) in place of a nuke when its ticks over the fight are worth more than
+    # one nuke; the enemy stays in it WALL_STAY of its turns (plan.py casts it in round 1 when kept)
+    best_nuke = 0.0
+    for sid, lv_min in plan.get("nukes") or []:
+        need = int((W.stats.get(sid) or {}).get("Level") or 1)
+        if lvl >= lv_min and need <= len(sl):
+            sp = mech.read_spell(W, sid, lvl, slot_level=len(sl) if len(sl) > need else None)
+            if sp:
+                best_nuke = max(best_nuke, _raw_spell_value(st, sp))
+    if not conc:
+        for sid, lv_min, _name in plan.get("conc_options") or []:
+            need = int((W.stats.get(sid) or {}).get("Level") or 1)
+            sp = mech.read_spell(W, sid, lvl) if lvl >= lv_min and need <= len(sl) else None
+            if sp and big >= 1 and _raw_spell_value(st, sp) * (ROUNDS - 1) * WALL_STAY > best_nuke:
+                casts = min(FIGHTS, big)
+                big -= casts
+                evs.append(spell_event(st, sp, casts / FIGHTS * (ROUNDS - 1) / ROUNDS * WALL_STAY,
+                                       "concentration damage", dict(conc_tick=True)))
+                used += casts / FIGHTS / ROUNDS
+                break
     if conc and lvl >= conc[1] and big > 0:
         sp = mech.read_spell(W, conc[0], lvl, slot_level=min(len(sl), 3))
         if sp:
@@ -825,7 +876,7 @@ def make_caster_events(st):
         cands.sort(key=lambda t: -_raw_spell_value(st, t[0]))
         sp, need = cands[0]
         pool = big if need >= 3 else big + small
-        casts = min(rounds_lr * 0.6, pool)                       # the slots limit the casts per long rest
+        casts = min(rounds_lr * NUKE_ROUNDS, pool)                # the slots limit the casts per long rest
         nuke_rounds = casts / rounds_lr
         # Quickened Spell (3 Sorcery Points) moves a cast to the bonus action; it does not add casts
         quick = min(casts, sorc_points / 3) if plan.get("quicken_from") and lvl >= plan["quicken_from"] else 0.0
@@ -851,6 +902,17 @@ def make_caster_events(st):
               "level": 2, "slot": 2, "conc": False, "cantrip": False, "is_spell": True}
         evs.append(spell_event(st, sp, (ROUNDS - 1) / ROUNDS, "Spiritual Weapon", dict(attack_type="MeleeSpellAttack",
                                                                                        melee=True, ranged=False)))
+    # lower-level spells for the slots the nukes leave (Scorching Ray, Magic Missile): each with its own slot level's
+    # share, used in the action allocation below only when it beats the cantrip
+    for sid, lv_min, _name in plan.get("fillers") or []:
+        need = int((W.stats.get(sid) or {}).get("Level") or 1)
+        if lvl < lv_min or need > 2 or need > len(sl):
+            continue
+        sp = mech.read_spell(W, sid, lvl)
+        can = mech.read_spell(W, plan["cantrip"], lvl) if plan.get("cantrip") else None
+        left = (sl[need - 1] * SLOT_SHARE[1]) if not (cands and cands[0][1] < 3) else 0.0
+        if sp and left > 0 and (not can or _raw_spell_value(st, sp) > _raw_spell_value(st, can)):
+            evs.append(spell_event(st, sp, left / rounds_lr, "filler spell", dict(a_cost=1.0, b_cost=0.0, budget=True)))
     # action economy per round: one action and one bonus action. Reserved first: a control spell a fight (plan
     # "control") and the concentration cast; then the levelled spells, Channel Divinity and the per-rest item
     # spells share what is left, the strongest cast first (each up to its own per-rest budget); the cantrip gets
@@ -931,7 +993,9 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
         adv_list.append(adv_extra)
     adv = 1.0 - math.prod(1 - min(1.0, a) for a in adv_list) if adv_list else 0.0
     n = ev.get("n", 0.0)
-    out = dict(dmg=0.0, ph=0.0, pc=0.0, casts=n, hits=0.0, crits=0.0, dmg_instances=0.0, fail=0.0)
+    # the Advantage the character's own gear and features give (not a Prone target): an Advantage the plan can rely on
+    own = 1.0 - math.prod(1 - min(1.0, a) for a in m["adv"]) if m["adv"] else 0.0
+    out = dict(dmg=0.0, ph=0.0, pc=0.0, casts=n, hits=0.0, crits=0.0, dmg_instances=0.0, fail=0.0, adv_own=own)
     if ev["kind"] == "spell":
         sp = ev["sp"]
         spell = st.sheet.get("spell") or {"dc": 8 + st.prof, "atk": st.prof}
@@ -1260,16 +1324,20 @@ def scenario(name):
     result crosses over and an optimizer run outside the block is unchanged."""
     g = globals()
     names = ("ROUNDS", "FIGHTS", "SR_WINDOWS", "SR_COVER", "ENEMIES", "STEALTH_OPENERS", "INCOMING_ATTACKS_ONLY",
-             "ENEMY_DMG_SCALE")
-    keep, keep_hp, keep_tg = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS
+             "ENEMY_DMG_SCALE", "SLOT_SHARE", "NUKE_ROUNDS")
+    keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
+    keep_mc = mech.MELEE_CONTACT
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
              SR_COVER=min(1.0, s["sr_windows"] / s["fights"]), ENEMIES=s["enemies"], STEALTH_OPENERS=s["stealth"],
-             INCOMING_ATTACKS_ONLY=s["attacks_only"], ENEMY_DMG_SCALE=s["dmg_scale"])
+             INCOMING_ATTACKS_ONLY=s["attacks_only"], ENEMY_DMG_SCALE=s["dmg_scale"], SLOT_SHARE=s["slot_share"],
+             NUKE_ROUNDS=s["nuke_rounds"])
     if s["enemy_hp"]:
         ENEMY_HP.update({a: s["enemy_hp"] for a in ENEMY_HP})
     mech.MAX_TARGETS = s["enemies"] if name != "day" else None
+    mech.TARGET_HP_PCT = s.get("target_hp_pct")
+    mech.MELEE_CONTACT = s.get("melee_contact") or 0.0
     for c in _caches():
         c.clear()
     try:
@@ -1278,6 +1346,8 @@ def scenario(name):
         g.update(keep)
         ENEMY_HP.update(keep_hp)
         mech.MAX_TARGETS = keep_tg
+        mech.TARGET_HP_PCT = keep_pct
+        mech.MELEE_CONTACT = keep_mc
         for c, k in zip(_caches(), kept):
             c.clear()
             c.update(k)
@@ -1351,6 +1421,12 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
                 kill = min(0.95, (mr["dmg"] / mr["hits"] if mr["hits"] else 0.0) / ENEMY_HP[st.act])
                 p_one = min(1.0, mr["pc"] + mr["ph"] * kill)
                 ev["n"] = min(ev["gwm_ba"], 1 - (1 - p_one) ** max(0.0, mev["n"]))
+        # Trip adds its die to a hit that has Advantage already: with every attack's Advantage sure the dice are kept
+        # for Riposte (plan.py plans no Trip then); the same rule both ways
+        main0 = next((r for ev, r in zip(evs, results) if ev.get("name") == "attack"), None)
+        if special.get("dice_fight") and main0 and main0.get("adv_own", 0.0) >= ADV_SURE:
+            special["superiority"] = special["trip_prone"] = 0.0
+            special["riposte_dice"] = special["dice_fight"]
         # Enraged Throw knocks Prone on a hit (Throw_FrenziedThrow: ApplyStatus(PRONE,100,1)), before the action throws
         p_prone = 0.0
         for ev, r in zip(evs, results):
@@ -1407,10 +1483,83 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
             pf = mech.p_fail(sp_dc + extra_dc, E["save"] - tgt["save_pen"])
             ctrl += pf * CTRL_EQ * E["dmg"] / ROUNDS
     ctrl += tgt["control"] * E["dmg"] * 0.5
+    # buff item spells (extra actions, weapon damage dice) of a weapon build, kept only when worth their action
+    if st.plan["mode"] != "caster":
+        for ev, r in buff_events(st, evs, results, special, hits):
+            dmg += r["dmg"]
+            evs.append(ev)
+            results.append(r)
     offence = dmg + ctrl
     # ---------------------------------------------------------------- durability
     dur = durability(st, E, all_extra_boosts(st, dyn), names, tgt, heal)
+    rip = riposte_event(st, evs, results, special, dur)
+    if rip:
+        dmg += rip[1]["dmg"]
+        offence += rip[1]["dmg"]
+        evs.append(rip[0])
+        results.append(rip[1])
     return Result(st, offence, dmg, ctrl, dur, evs, results, extra, sa, tgt, detail)
+
+
+def _buff_spells(st):
+    """[(spell, item name, buff, casts per long rest)] of the loadout's per-rest buff spells (mech.item_buff)."""
+    out, seen = [], set()
+    for slot, im in st.mechs.items():
+        for spid, hand in im.spells:
+            if hand == "o" and slot not in ("OffHand", "RangedOff") or hand == "m" and slot not in ("MainHand", "Ranged"):
+                continue
+            if spid in seen:
+                continue
+            seen.add(spid)
+            b = mech.item_buff(st.W.stats, spid)
+            cdn = (st.W.stats.get(spid) or {}).get("Cooldown") or ""
+            per_lr = SR_WINDOWS if "ShortRest" in cdn else 1 if "Rest" in cdn else 0
+            if b and per_lr and "ActionPoint" in ((st.W.stats.get(spid) or {}).get("UseCosts") or ""):
+                out.append((spid, st.W.items[im.sid].get("name") or spid, b, per_lr))
+    return out
+
+
+def buff_events(st, evs, results, special, hits):
+    """Buff item spells: an extra action a turn while the status is on at the turn's start (the turns after the cast
+    one, up to the fight's end) and weapon dice on every hit while it lasts, against the action the cast takes (the
+    attacks of one action). A concentration buff also stops a concentration mark (Hunter's Mark / Hex) for its turns.
+    Kept (n > 0) only when the gain is positive; plan.py casts exactly the kept ones. -> [(event, result)]"""
+    main = next(((ev, r) for ev, r in zip(evs, results) if ev.get("name") == "attack" and ev.get("n")), None)
+    if not main:
+        return []
+    ev0, r0 = main
+    per_attack = r0["dmg"] / ev0["n"]
+    action = st.sheet["nAtt"] * per_attack
+    out = []
+    for spid, name, b, per_lr in _buff_spells(st):
+        turns = min(b["turns"], ROUNDS)
+        gain = b["actions"] * max(0, turns - 1) * action + b["wdmg"] * hits * turns - action
+        if b["conc"] and special.get("mark"):
+            gain -= special["mark"] * hits * turns
+        n = per_lr / (ROUNDS * FIGHTS)
+        kept = gain > 0
+        out.append((dict(name="item buff: " + name, spell_id=spid, n=n if kept else 0.0, kind="buff", cost="action",
+                         dropped=not kept, buff=b, turns=turns, gain_per_cast=round(gain, 2)),
+                    dict(dmg=n * gain if kept else 0.0, hits=0.0, crits=0.0, ph=0.0, pc=0.0, casts=n)))
+    return out
+
+
+def riposte_event(st, evs, results, special, dur):
+    """Riposte (Battle Master reaction): a melee attack plus a superiority die when an enemy attack misses, while the
+    dice the plan keeps for it last (all of them when every attack's Advantage is sure, so no Trip is planned).
+    -> (event, result) or None"""
+    dice = special.get("riposte_dice") or 0.0
+    if not dice or st.plan["mode"] != "melee":
+        return None
+    main = next(((ev, r) for ev, r in zip(evs, results) if ev.get("name") == "attack" and ev.get("n")), None)
+    if not main:
+        return None
+    ev0, r0 = main
+    misses = ROUNDS * dur.get("enemy_attacks", 0.0) * (1 - dur.get("enemy_ph", 1.0))
+    n = min(dice, misses) / ROUNDS
+    per = r0["dmg"] / ev0["n"] + r0["ph"] * special.get("die", 0.0)
+    return (dict(name="Riposte", spell_id="Target_Riposte", n=n, kind="reaction", cost="reaction"),
+            dict(dmg=n * per, hits=n * r0["ph"], crits=0.0, ph=r0["ph"], pc=r0["pc"], casts=n))
 
 
 def durability(st, E, boosts, names, tgt, heal):
@@ -1571,6 +1720,7 @@ def durability(st, E, boosts, names, tgt, heal):
     incoming = max(0.5 * raw, raw - heal)      # healing can at most halve the damage taken (model rule)
     R = (hp + temp) / incoming
     return dict(ac=ac, hp=hp, temp=temp, R=R, incoming=incoming, saves=save_b, dr=sum(dr.values()), dis=dis,
+                enemy_attacks=n_att, enemy_ph=ph,
                 lost=lost_turns, sv=sv, cover=cover, mult={t: v for t, v in mult.items() if v != 1.0},
                 threats=out_rows)
 
@@ -1611,7 +1761,8 @@ class Result:
             else None
         self.plan_events = [dict(name=ev.get("name"), n=ev.get("n"), slot=ev.get("slot"), spell=ev.get("spell_id"),
                                  kind=ev.get("kind"), cost=ev.get("cost"), dropped=bool(ev.get("dropped")),
-                                 dmg=round(r["dmg"], 2), toggle=bool(r.get("toggle")))
+                                 dmg=round(r["dmg"], 2), toggle=bool(r.get("toggle")), adv=round(r.get("adv_own", 0.0), 3),
+                                 turns=ev.get("turns"), gain=ev.get("gain_per_cast"))
                             for ev, r in zip(evs, results)] if detail else None
 
     def raw_value(self):
