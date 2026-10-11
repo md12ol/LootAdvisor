@@ -31,6 +31,8 @@
   planned, the character's own summon's turn ended, bystanders in a lane moved away and back;
 - the control pair: equal damage and equal damage taken in the model, and the search for one.
 """
+import contextlib
+import io
 import itertools
 import json
 import math
@@ -154,7 +156,7 @@ def lua_tests():
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
               rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
-              carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests):
+              carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -521,7 +523,8 @@ def watchdog_tests(L):
       Ext.IO.SaveFile = function() end
     """)
     g = L.globals()
-    check("watchdog: a missing turn is recovered first, not ended", g.T_r1 == "wait" and g.T_rec == 2, str(g.T_rec))
+    check("watchdog: a missing turn is recovered first (once), not ended", g.T_r1 == "wait" and g.T_rec == 1,
+          str(g.T_rec))
     check("watchdog: after the recoveries the run ends, invalid, with the cause",
           g.T_end == "done" and g.T_valid is False and "turn never came" in str(g.T_why), str(g.T_why))
     check("watchdog: an own turn that will not end is retried, then the run ends invalid",
@@ -532,6 +535,258 @@ def watchdog_tests(L):
           g.T_after == "done" and "bad request" in str(g.T_bad) and g.T_saved >= 1, str(g.T_bad))
     check("run start: prep that never finishes -> invalid run, not a hang",
           "prep timed out" in str(g.T_prep) and g.T_prep_valid is False, str(g.T_prep))
+
+
+def speed_tests(L):
+    """Fail fast and the time cuts: a start mismatch ends the run before round 1, a round that already voids the run
+    ends it after that round; a combat that ended is reacted to at once (one recovery); the run ends as round 16's
+    turn is released and damage taken counts per enemy turn fought (one before round 1 too); corpses cost no cleanup
+    wait; the set goes on in one frame (rings one at a time) and is asked for until READY_MS while nothing is worn
+    (just after a save load); buffs are put on again until they read back; the enemies are reset to 99% at each of
+    our turns."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local wf, mt = Ext.Timer.WaitFor, Ext.Utils.MonotonicTime
+      local function base(state)
+        return { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                 started = 1, state = state, deadline = 1e12, next = 0 }
+      end
+      -- a round without a confirmed action ends the run as its turn ends
+      G.reset(); G.round = 2
+      local F = base("ending")
+      G.F = F
+      G.rounds = { { r = 1, done = { action = true }, actions = {}, casts = {} }, { r = 2, done = {}, actions = {}, casts = {} } }
+      G.step(F, 0)
+      T_idle, T_idle_why, T_idle_valid = F.state, G.results.ended, G.results.valid
+      -- a refused cast ends it too; a good round goes on to end the turn
+      G.reset(); G.round = 1
+      F = base("ending"); G.F = F
+      G.rounds = { { r = 1, done = { action = true }, cast_misses = 1, actions = {}, casts = {} } }
+      G.step(F, 0)
+      T_ref_why = G.results.ended
+      G.reset(); G.round = 1
+      F = base("ending"); G.F = F
+      G.rounds = { { r = 1, done = { action = true }, actions = {}, casts = {} } }
+      G.step(F, 0)
+      T_good = F.state
+      -- off: the round is fought to the end
+      G.FAIL_FAST = false
+      G.reset(); G.round = 2
+      F = base("ending"); G.F = F
+      G.rounds = { { r = 1, done = { action = true }, actions = {}, casts = {} }, { r = 2, done = {}, actions = {}, casts = {} } }
+      G.step(F, 0)
+      T_off = F.state
+      G.FAIL_FAST = true
+      -- the combat ended: reacted to after COMBAT_LOST_MS (not TURN_WAIT_MS), one recovery, then the run ends
+      local inC, entered = 0, 0
+      Osi.IsInCombat = function() return inC end
+      Osi.EnterCombat = function() entered = entered + 1 end
+      G.reset(); G.round = 3
+      F = base("wait"); G.F = F
+      F.inCombatAt = 0
+      G.rounds = {}
+      G.step(F, 100)
+      T_lost0 = #(G.results.turn_recoveries or {})
+      G.step(F, G.COMBAT_LOST_MS + 1)
+      T_lost1, T_entered = #(G.results.turn_recoveries or {}), entered
+      G.step(F, 2 * G.COMBAT_LOST_MS + 2)
+      T_lost_state, T_lost_why, T_lost_valid = F.state, G.results.ended, G.results.valid
+      -- in combat: only the turn watchdog
+      inC = 1
+      G.reset(); G.round = 3
+      F = base("wait"); G.F = F
+      F.inCombatAt = 0
+      G.step(F, 10 * G.COMBAT_LOST_MS)
+      T_inc = F.state .. ":" .. #(G.results.turn_recoveries or {})
+      Osi.IsInCombat, Osi.EnterCombat = nil, nil
+      -- round 16 released: the run ends without waiting for a 17th turn; taken per enemy turn fought
+      G.reset(); G.round = 16
+      F = base("ended"); G.F = F
+      F.enemyFirst = true
+      G.rounds = {}
+      for r = 1, 16 do G.rounds[r] = { r = r, done = { action = true }, actions = {}, casts = {} } end
+      G.dmg = { { r = 0, target = "c1", source = "e1", amount = 8 }, { r = 5, target = "c1", source = "e1", amount = 8 },
+                { r = 16, target = "e1", source = "c1", amount = 40 } }
+      G.step(F, 0)
+      T_cut_state, T_cut_why = F.state, G.results.ended
+      T_cut_sum = G.results.summary
+      G.reset(); G.round = 16
+      F = base("ended"); G.F = F
+      G.rounds = {}
+      for r = 1, 16 do G.rounds[r] = { r = r, done = { action = true }, actions = {}, casts = {} } end
+      G.dmg = { { r = 5, target = "c1", source = "e1", amount = 9 } }
+      G.step(F, 0)
+      T_cut_sum2 = G.results.summary
+      -- corpses: forgotten, no wait
+      local waits = 0
+      Ext.Timer.WaitFor = function(_, f) waits = waits + 1; f() end
+      Osi.IsDead = function(u) return u == "corpse" and 1 or nil end
+      G.spawned = { corpse = true, gone = true }
+      G.clearLeftovers("c1", nil, function(rep) T_cl = rep end)
+      T_cl_waits, T_cl_left = waits, G.spawned.corpse
+      Osi.IsDead = nil
+      G.spawned = nil
+      -- the set in one frame: every item but the rings asked for before the first ring, the rings one after another
+      local clock, calls = 0, {}
+      Ext.Timer.WaitFor = function(ms, f) clock = clock + ms; calls[#calls + 1] = "wait"; f() end
+      Ext.Utils.MonotonicTime = function() return clock end
+      local made = 0
+      Osi.CreateAt = function() made = made + 1; return "it" .. made end
+      local worn = {}
+      Osi.Equip = function(_, it) calls[#calls + 1] = it; worn[it] = true end
+      Osi.IsEquipped = function(it) return worn[it] and 1 or 0 end
+      G.results = { items = {} }
+      G._equipAll("c1", { { slot = "Breast", template = "t", stats = "A" }, { slot = "Ring", template = "t", stats = "R1" },
+        { slot = "Boots", template = "t", stats = "B" }, { slot = "Ring2", template = "t", stats = "R2" },
+        { slot = "Helmet", template = "t", stats = "H" } }, 1, function() T_eq_done = true end)
+      T_eq_calls = calls
+      T_eq_items = G.results.items
+      -- nothing goes on (a save just loaded): asked again until READY_MS, then given up
+      local q, asks = {}, 0
+      clock = 0
+      Ext.Timer.WaitFor = function(ms, f) q[#q + 1] = { ms, f } end
+      Osi.Equip = function() asks = asks + 1 end
+      Osi.IsEquipped = function() return 0 end
+      G.results = { items = {} }
+      T_ready_done = false
+      G._equipAll("c1", { { slot = "Boots", template = "t", stats = "B" } }, 1, function() T_ready_done = true end)
+      local n = 0
+      while #q > 0 and n < 2000 do n = n + 1; local x = table.remove(q, 1); clock = clock + x[1]; x[2]() end
+      T_ready_clock, T_ready_asks = clock, asks
+      T_ready_got = G.results.items[1] and G.results.items[1].got
+      -- a buff the game ignored at first is put on again until it reads back
+      local applied, has = 0, false
+      Osi.ApplyStatus = function() applied = applied + 1; if applied >= 3 then has = true end end
+      Osi.HasActiveStatus = function() return has and 1 or 0 end
+      q = {}
+      G.awaitStatuses("c1", { "BLESS" }, function(m) T_aw_missing = #m end)
+      n = 0
+      while #q > 0 and n < 2000 do n = n + 1; local x = table.remove(q, 1); x[2]() end
+      T_aw_applied = applied
+      Osi.ApplyStatus, Osi.HasActiveStatus = nil, nil
+      Ext.Timer.WaitFor, Ext.Utils.MonotonicTime = wf, mt
+      Osi.CreateAt, Osi.Equip, Osi.IsEquipped = nil, nil, nil
+      -- the fight waits for the enemies' forced stats (one poll when they are there), not a fixed pause
+      local ready = { Stats = { Abilities = { 0, 10, 10, 10, 10, 10, 10 }, ProficiencyBonus = 2 }, Resistances = { AC = 10 } }
+      Ext.Entity.Get = function(u) if u == "e9" then return ready end end
+      Osi.CreateAt = function() return "e9" end
+      Osi.GetMaxHitpoints = function() return 5000 end
+      local spawnF = base("prep"); spawnF.manual = true; spawnF.enemies = nil
+      G.F = spawnF
+      G.reset()
+      G.enemyForced = nil
+      local goF = G.goFight
+      G.goFight = function() T_spawn_go = true end
+      G.spawnAndFight(spawnF, { { 1, 0, 1 } }, { template = "t", ac = 10, save = 0, atk = 2, dmg = 1, dc = 10, hp = 5000 },
+        {}, {})
+      T_spawn_ms = G.results.spawn_ms
+      ready.Stats.Abilities = { 0, 0, 0, 0, 0, 0, 0 }
+      G.enemyForced = nil
+      G.reset()
+      G.spawnAndFight(spawnF, { { 1, 0, 1 } }, { template = "t", ac = 10, save = 0, atk = 2, dmg = 1, dc = 10, hp = 5000 },
+        {}, {})
+      T_spawn_ms2 = G.results.spawn_ms
+      G.goFight = goF
+      Ext.Entity.Get = function() return nil end
+      Osi.CreateAt, Osi.GetMaxHitpoints = nil, nil
+      -- max HP without temporary hit points (Health.MaxHp; else the Osiris answer less the temporary ones)
+      local hpEnt = { Health = { MaxHp = 111, TemporaryHp = 8 } }
+      Ext.Entity.Get = function(u) if u == "c1" then return hpEnt end end
+      Osi.GetMaxHitpoints = function() return 119 end
+      T_hp1 = G.maxHp("c1")
+      hpEnt.Health = { TemporaryHp = 8 }
+      T_hp2 = G.maxHp("c1")
+      Ext.Entity.Get = function() return nil end
+      Osi.GetMaxHitpoints = nil
+      -- an elixir whose status lands 800 ms after the use is still recorded (and taken off in the next prep)
+      local clk2 = 0
+      Ext.Utils.MonotonicTime = function() return clk2 end
+      Ext.Timer.WaitFor = function(ms, f) clk2 = clk2 + ms; f() end
+      local usedAt
+      Osi.CreateAt = function() return "elx" end
+      Osi.Use = function() usedAt = clk2 end
+      local stEnt = { StatusContainer = { Statuses = {} } }
+      Ext.Entity.Get = function(u)
+        if u == "c1" then
+          stEnt.StatusContainer.Statuses = (usedAt and clk2 - usedAt >= 800) and { "ELIXIR_LATE" } or {}
+          return stEnt
+        end
+      end
+      G.results = { items = {} }
+      G.usedStatuses = nil
+      G._equipAll("c1", { { slot = "Elixir", template = "t", stats = "ELX", use = true } }, 1, function() end)
+      T_elx = G.results.items[1].statuses
+      T_elx_used = G.usedStatuses and G.usedStatuses.c1 and G.usedStatuses.c1.ELIXIR_LATE
+      Ext.Entity.Get = function() return nil end
+      Osi.Use = nil
+      -- item creation refused at first (just after a load): asked again until the game makes the items
+      local fails = 2
+      Osi.CreateAt = function() if fails > 0 then fails = fails - 1; return nil end; return "made" end
+      Osi.Equip = function() end
+      Osi.IsEquipped = function() return 1 end
+      G.results = { items = {} }
+      G._equipAll("c1", { { slot = "Boots", template = "t", stats = "B" } }, 1, function() end)
+      T_cr_got, T_cr_tries = G.results.items[1].got, G.results.create_tries
+      Osi.CreateAt, Osi.Equip, Osi.IsEquipped = nil, nil, nil
+      Ext.Timer.WaitFor, Ext.Utils.MonotonicTime = wf, mt
+      -- the enemies at 99% as each of our turns starts
+      local set = {}
+      Osi.SetHitpointsPercentage = function(d, p) set[d] = p end
+      G.reset(); G.round = 0
+      F = base("wait"); G.F = F
+      G._roundStart(F)
+      T_hp99 = set.e1
+      Osi.SetHitpointsPercentage = nil
+    """)
+    g = L.globals()
+    G = g.GAUNTLET
+    check("fail fast: a round without a confirmed action ends the run as its turn ends, invalid, with the round",
+          g.T_idle == "done" and "round 2: no action confirmed" in str(g.T_idle_why) and g.T_idle_valid is False,
+          f"{g.T_idle} {g.T_idle_why}")
+    check("fail fast: a refused planned cast ends the run after its round", "refused" in str(g.T_ref_why),
+          str(g.T_ref_why))
+    check("fail fast: a round with its action confirmed goes on (the turn is ended)", g.T_good == "ended", str(g.T_good))
+    check("fail fast: off -> the run goes on", g.T_off == "ended", str(g.T_off))
+    check("watchdog: a combat that ended is entered again after COMBAT_LOST_MS, once, then the run ends",
+          g.T_lost0 == 0 and g.T_lost1 == 1 and g.T_entered >= 1 and g.T_lost_state == "done" and
+          "combat ended" in str(g.T_lost_why) and g.T_lost_valid is False,
+          f"{g.T_lost0} {g.T_lost1} {g.T_lost_state} {g.T_lost_why}")
+    check("watchdog: in combat the combat check does nothing", g.T_inc == "wait:0", str(g.T_inc))
+    s_ = g.T_cut_sum
+    check("last round: the run ends as round 16's turn is released, valid ending",
+          g.T_cut_state == "done" and g.T_cut_why == "rounds done", f"{g.T_cut_state} {g.T_cut_why}")
+    check("last round: damage taken per enemy turn fought (15 after our rounds + 1 before round 1)",
+          s_ is not None and s_.enemy_turns == 16 and s_.taken_before_round1 == 8 and
+          abs(s_.taken_per_round - 1.0) < 1e-9,
+          str(s_ and (s_.enemy_turns, s_.taken_before_round1, s_.taken_per_round)))
+    s2 = g.T_cut_sum2
+    check("last round: no enemy turn before round 1 -> 15 enemy turns", s2.enemy_turns == 15 and
+          abs(s2.taken_per_round - 9 / 15) < 1e-9, str((s2.enemy_turns, s2.taken_per_round)))
+    check("cleanup: corpses and deleted creatures cost no wait and are forgotten",
+          g.T_cl_waits == 0 and g.T_cl.removed == 0 and g.T_cl_left is None, f"{g.T_cl_waits} {g.T_cl_left}")
+    calls = lst(g.T_eq_calls)
+    eq = [c for c in calls if c != "wait"]
+    one_frame = calls.index("it1") < calls.index("it5") and "wait" not in calls[calls.index("it1"):calls.index("it5")]
+    rings_apart = calls.index("it2") < calls.index("it4") and "wait" in calls[calls.index("it2"):calls.index("it4")]
+    check("equip: every item but the rings asked for in one frame, then the rings one after another",
+          g.T_eq_done is True and sorted(eq[:3]) == ["it1", "it3", "it5"] and one_frame and rings_apart, str(calls))
+    got = sorted((i.stats, i.got) for i in g.T_eq_items.values())
+    check("equip: each item recorded as worn", got == [("A", "Breast"), ("B", "Boots"), ("H", "Helmet"),
+                                                       ("R1", "Ring"), ("R2", "Ring2")], str(got))
+    check("equip: nothing on (a save just loaded) -> asked for again until READY_MS, then given up",
+          g.T_ready_done is True and g.T_ready_clock >= G.READY_MS and g.T_ready_asks >= 40 and g.T_ready_got is None,
+          f"{g.T_ready_done} {g.T_ready_clock} {g.T_ready_asks}")
+    check("buffs: put on again until they read back", g.T_aw_missing == 0 and g.T_aw_applied == 3,
+          f"{g.T_aw_missing} {g.T_aw_applied}")
+    check("boss: the enemies are reset to 99% (a hurt target) at each of our turns", g.T_hp99 == 99, str(g.T_hp99))
+    check("sheet: max HP read without temporary hit points", g.T_hp1 == 111 and g.T_hp2 == 111, f"{g.T_hp1} {g.T_hp2}")
+    check("elixir: a status that lands late is waited for and recorded for removal",
+          g.T_elx is not None and lst(g.T_elx) == ["ELIXIR_LATE"] and g.T_elx_used is True, str(g.T_elx and lst(g.T_elx)))
+    check("items: a creation the game refused is asked for again", g.T_cr_got == "Boots" and g.T_cr_tries == 3,
+          f"{g.T_cr_got} {g.T_cr_tries}")
+    check("spawn: the fight starts once the enemies' stats are forced, at most SPAWN_MS when they never are",
+          g.T_spawn_go is True and g.T_spawn_ms == G.POLL_MS and g.T_spawn_ms2 == G.SPAWN_MS,
+          f"{g.T_spawn_ms} {g.T_spawn_ms2}")
 
 
 def verdict_tests(L):
@@ -598,13 +853,16 @@ def equip_tests(L):
       G._equipAll("c1", { { slot = "Boots", template = "t", stats = "MAG_Boots" } }, 1, function() done = true end)
       T_eqr = G.results.items[1]
       T_eqdone, T_equips = done, equips
-      -- a slow frame: the first check comes after the whole wait
-      equips = 0
-      local calls = 0
-      Ext.Timer.WaitFor = function(ms, f) calls = calls + 1; clock = clock + (calls == 2 and 3000 or ms); f() end
+      -- a slow frame: the first check of the boots comes after the whole wait (the helmet went on at once)
+      local per, calls, made = {}, 0, 0
+      Osi.CreateAt = function() made = made + 1; return made == 1 and "helm" or "boots" end
+      Osi.Equip = function(_, it) per[it] = (per[it] or 0) + 1 end
+      Osi.IsEquipped = function(it) return (it == "helm" and per[it] or (per[it] or 0) >= 2) and 1 or 0 end
+      Ext.Timer.WaitFor = function(ms, f) calls = calls + 1; clock = clock + (calls == 3 and 3000 or ms); f() end
       G.results = { items = {} }
-      G._equipAll("c1", { { slot = "Boots", template = "t", stats = "MAG_Boots" } }, 1, function() end)
-      T_eqslow = G.results.items[1]
+      G._equipAll("c1", { { slot = "Helmet", template = "t", stats = "MAG_Helm" },
+        { slot = "Boots", template = "t", stats = "MAG_Boots" } }, 1, function() end)
+      for _, r in ipairs(G.results.items) do if r.stats == "MAG_Boots" then T_eqslow = r end end
       Ext.Timer.WaitFor, Ext.Utils.MonotonicTime = wf, mt
       Osi.CreateAt, Osi.Equip, Osi.IsEquipped = nil, nil, nil
     """)
@@ -906,6 +1164,10 @@ def start_tests(L):
           g.T_res.leftovers is not None and g.T_res.encumbered is not None and g.T_res.precheck is not None and
           len(g.T_res.precheck) == 1 and g.T_res.precheck[1].spell == "Target_MAG_Gaze",
           f"state {g.T_state}")
+    check("fail fast: a setup mismatch at the start ends the run before round 1, invalid, every cause kept",
+          g.T_state == "done" and g.T_res.ended == "setup mismatch at the start" and g.T_res.summary.rounds == 0 and
+          g.T_res.valid is False and any(c.startswith("setup mismatch at the start: ") for c in lst(g.T_res.invalid)),
+          f"{g.T_state} {g.T_res.ended}")
 
 
 def rules_tests(L):
@@ -1163,6 +1425,8 @@ def lane_tests(L):
       G.prep = function() G.status = "prepped"; G.results = { items = {} } end
       G.parkOthers = function() T_selfparked = true; return 0 end
       G.LANES = { on = true, order = { "A" }, members = {}, t0 = 0, parkedCount = 3 }
+      -- the stubbed world fails the setup check: this start is followed past it
+      G.FAIL_FAST = false
       G.inLane("A", function()
         G.F = nil
         G.run({ mode = "scripted", scenario = "boss", label = "l", char = "cL", enemy = { template = "t", ac = 10,
@@ -1173,6 +1437,7 @@ def lane_tests(L):
       T_lstate = G.laneField("A", "F").state
       T_lres = G.laneField("A", "results")
       T_lfac, T_lmem = facs2.eL, G.LANES.members.A
+      G.FAIL_FAST = true
       G.inLane("A", function() G.F.state = "done"; G.fighting = false end)
       G.prep, G.parkOthers = prep2, park2
       Ext.Timer.WaitFor = function(_, f) f() end
@@ -2009,7 +2274,7 @@ def py_tests():
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
-              lambda: plan_effect_tests(P)):
+              lambda: plan_effect_tests(P), lambda: scheduler_tests(R)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -2157,6 +2422,113 @@ def reach_tests(P):
           P.item_proficiency(items, "ARM_H", {"LightArmor"}) is False and P.item_proficiency(items, "RING", set()) is None)
     check("proficiency: proficiencies an item grants (also through its equip passive)",
           P.granted_proficiencies(items, ["HELM", "RING"]) == ["HeavyArmor"])
+
+
+def _sched_rec(p, side, dealt, invalid=None):
+    """A run record as the game writes it (spec ids, rounds with their confirmed action, the summary)."""
+    return {"mode": "scripted", "scenario": "boss", "haste": False,
+            "spec_id": {"build": p["build"], "act": p["act"], "set_name": p["specs"][side]["set"]},
+            "rounds": [{"r": r + 1, "done": {"action": True}} for r in range(len(dealt))],
+            "results": {"summary": {"dealt": dealt, "taken": [0] * len(dealt), "max_hp": 100}},
+            "valid": not invalid, "invalid": invalid or []}
+
+
+def scheduler_tests(R):
+    """run.py's scheduling: rounds compared by their number (a round-1 burst does not swamp the interval), the other
+    side's runs read from the results file (a pair decided there is not run again; repeats count the runs there), a
+    side whose first run failed for a reason every run would meet is not repeated (recorded), and the lanes take two
+    different pairs' sides with different characters at once when their spells allow (a far-reaching set runs alone)."""
+    import random as _r
+    rnd = _r.Random(3)
+    shape = [220.0, 120.0] + [60.0] * 14
+    ra = [[(r + 1, v + rnd.uniform(-3, 3)) for r, v in enumerate(shape)] for _ in range(2)]
+    rb = [[(r + 1, v + rnd.uniform(-3, 3)) for r, v in enumerate(shape)] for _ in range(2)]
+    st, why = R.decisive(ra[:1], rb[:1], 0.15)
+    flat_a, flat_b = [v for _k, v in ra[0]], [v for _k, v in rb[0]]
+    pooled = R.boot_ratio(flat_a, flat_b)
+    check("stopping: rounds compared by their number decide what pooled rounds cannot",
+          st is True and "within" in why and pooled[0] < 0.85, f"{why} pooled {pooled}")
+    gap = [[(k, v * 0.7) for k, v in r] for r in rb]
+    check("stopping: a 30% gap with the same round shape is decisive", R.decisive(ra, gap, 0.15)[0] is True and
+          "excludes 1" in R.decisive(ra, gap, 0.15)[1])
+    check("stopping: rounds only one side has are not compared",
+          R.decisive([[(1, 50.0)] * 1], [[(2, 50.0)] * 1], 0.15)[0] is False)
+    d = tempfile.mkdtemp(prefix="gauntlet_sched_")
+    old = (R.engine.load, R.engine.run, R.engine.run_lanes)
+    try:
+        def pair(char, reach=18):
+            return {"char": char, "build": char + "b", "act": 3,
+                    "specs": {x: {"set": f"{char} {x}", "act": 3, "reach": {"m": reach}, "expect": {"score": 1}}
+                              for x in ("a", "b")}}
+        pairs = [pair("laezel"), pair("shadowheart"), pair("gale", 36), pair("astarion")]
+        specs = os.path.join(d, "specs.json")
+        with open(specs, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        res = os.path.join(d, "res.jsonl")
+        even = [60.0] * 16
+        with open(res, "w", encoding="utf-8") as f:
+            # pair 0 side b measured from the other save already; pair 3 decided already (both sides there)
+            f.write(json.dumps(dict(_sched_rec(pairs[0], "b", even), pair=0, side="b")) + "\n")
+            f.write(json.dumps(dict(_sched_rec(pairs[0], "b", [1.0] * 16), pair=0, side="b",
+                                    spec_id={"build": "x", "act": 3, "set_name": "other"})) + "\n")
+            for x in ("a", "b"):
+                f.write(json.dumps(dict(_sched_rec(pairs[3], x, even), pair=3, side=x)) + "\n")
+        pr = R.prior_runs(res, 0, pairs[0], ["boss"])
+        check("scheduling: the results file's runs of the same set count, another set's not",
+              len(pr["b"]) == 1 and len(pr["a"]) == 0, str({k: len(v) for k, v in pr.items()}))
+        log = {"lanes": [], "single": []}
+
+        def fake_run(req, spec):
+            i = int(req["label"].split(":")[0][4:])
+            log["single"].append((i, req["char"]))
+            bad = ["setup mismatch at the start: spell X (want true, got false)", "ended: setup mismatch at the start"]
+            return _sched_rec(pairs[i], req["label"][-1], even, bad if i == 2 else None)
+
+        def fake_lanes(lanes, entries, first, gap_need=None):
+            log["lanes"].append(([(e[1]["label"], e[1]["char"]) for e in entries], first, gap_need))
+            out = {}
+            for lane, req, _sp in entries:
+                i = int(req["label"].split(":")[0][4:])
+                bad = ["setup mismatch at the start: feat (want 1, got 0)"] if i == 1 else None
+                out[lane] = dict(_sched_rec(pairs[i], req["label"][-1], even, bad), lane=lane)
+            return out
+        R.engine.load, R.engine.run, R.engine.run_lanes = (lambda: "loaded"), fake_run, fake_lanes
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            R.main([specs, "--results", res, "--sides", "a", "--scenarios", "boss", "--repeats", "3",
+                    "--lanes", "undercity_lanes", "--chars", "laezel=cL,shadowheart=cS,gale=cG,astarion=cA"])
+        recs = [json.loads(x) for x in open(res, encoding="utf-8") if x.strip()]
+        lanes = log["lanes"]
+        check("lanes across pairs: two pairs' sides with different characters fight at once",
+              len(lanes) >= 1 and sorted(c for _l, c in lanes[0][0]) == ["cL", "cS"] and lanes[0][2] is not None,
+              str(lanes))
+        check("lanes across pairs: a set reaching too far runs alone", any(i == 2 for i, _c in log["single"]) and
+              not any("pair2" in lab for b in lanes for lab, _c in b[0]), str(log))
+        check("scheduling: a pair decided in the results file is not run again",
+              not any(i == 3 for i, _c in log["single"]) and not any("pair3" in lab for b in lanes for lab, _c in b[0]))
+        p0 = [r for r in recs if r.get("pair") == 0 and r.get("side") == "a"]
+        check("scheduling: the other save's side is read from the results (pair 0 decided after one run of a)",
+              len(p0) == 1, f"{len(p0)} runs of pair 0 a")
+        nr = [r for r in recs if r.get("not_repeated")]
+        check("scheduling: a side whose first run failed for a reason every run would meet is not repeated, with why",
+              sum(1 for i, _c in log["single"] if i == 2) == 1 and any(r["pair"] == 2 for r in nr) and
+              any(r["pair"] == 1 for r in nr) and all("not repeated" in r["invalid"][0] for r in nr), str(nr))
+        p1 = [lab for b in lanes for lab, _c in b[0] if lab.startswith("pair1")]
+        check("scheduling: the not-repeated side stays out of later lanes", len(p1) == 1, str(lanes))
+        rev = R.lane_batches(type("A", (), {"lanes": "undercity_lanes", "chars": "laezel=cL,shadowheart=cS",
+                                            "char": None})(), pairs, [(0, "a"), (1, "a")], R.load_arenas(), 1)
+        check("lanes across pairs: the lanes swap every repeat", rev[0][0] == [(1, "a"), (0, "a")], str(rev))
+        one = R.lane_batches(type("A", (), {"lanes": "undercity_lanes", "chars": "laezel=cX,shadowheart=cX",
+                                            "char": None})(), pairs, [(0, "a"), (1, "a")], R.load_arenas(), 0)
+        check("lanes across pairs: one character cannot fight in both lanes", [len(b) for b, _n in one] == [1, 1],
+              str(one))
+        far = R.lane_batches(type("A", (), {"lanes": "undercity_lanes", "chars": "laezel=cL,gale=cG",
+                                            "char": None})(), pairs, [(2, "a"), (0, "a")], R.load_arenas(), 0)
+        check("lanes across pairs: a set reaching the other lane runs alone", [len(b) for b, _n in far] == [1, 1],
+              str(far))
+    finally:
+        R.engine.load, R.engine.run, R.engine.run_lanes = old
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def lanes_py_tests(R):
@@ -2617,10 +2989,12 @@ MUTATIONS = [
      "                scan(p, 1)", "            pass"),
     ("engine: no retry on a missed eval", EN, "if misses >= max_misses:", "if misses >= 1:"),
     ("engine: start never re-sent", EN, "elif not seen and not resent and polls >= 3:", "elif False:"),
-    ("equip: no second ask", GL, "if not again and waited >= G.EQUIP_MS / 2 then again = true; t0 = now() - G.EQUIP_MS / 2; pcall(Osi.Equip, u, it, 1, 0, 0) end", ""),
-    ("equip: no wait for the equip", GL, "if not where and (waited < G.EQUIP_MS or not again) then", "if false then"),
-    ("equip: a slow frame skips the second ask", GL, "if not where and (waited < G.EQUIP_MS or not again) then",
-     "if not where and waited < G.EQUIP_MS then"),
+    ("equip: no second ask", GL, "          pcall(Osi.Equip, u, e.it, 1, 0, 0)\n", ""),
+    ("equip: no wait for the equip", GL, "    if #open > 0 and (waited < G.EQUIP_MS or loading or not open[1].again) then",
+     "    if false then"),
+    ("equip: a slow frame skips the second ask", GL,
+     "    if #open > 0 and (waited < G.EQUIP_MS or loading or not open[1].again) then",
+     "    if #open > 0 and (waited < G.EQUIP_MS or loading) then"),
     ("rescore: a down-ended run voided as too short", RN, "if not left and not downed and sum(clean)", "if not left and sum(clean)"),
     ("enemies: damage not scaled", GL, "  local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)",
      "  local E = E0"),
@@ -2766,6 +3140,54 @@ MUTATIONS = [
     ("item checks: weapon dice not from the sheet row", PL,
      r'            m = re.match(r"(\d+d\d+)\s+(\w+)", ((row.get("dmgf") or [""])[0]) or "")', "            m = None"),
     ("riders: none listed", PL, "            if hit and (hit[0], hit[1]) not in seen:", "            if False:"),
+    ("fail fast: a start mismatch fought anyway", GL,
+     'if sc and #sc.mismatches > 0 and G.FAIL_FAST then return stop(F, "setup mismatch at the start") end', ""),
+    ("fail fast: a void round fought on", GL, "    if fault then return finish(F, fault) end\n", ""),
+    ("fail fast: an idle round is no fault", GL,
+     "if (F.S or {}).char_acts ~= false and not (R.done and (R.done.action or R.done.item)) then", "if false then"),
+    ("fail fast: a refused cast is no fault", GL, "  if (R.cast_misses or 0) > 0 then\n", "  if false then\n"),
+    ("watchdog: a combat that ended is waited out", GL, "    elseif not F.manual and G.combatLost(F, t) then",
+     "    elseif false then"),
+    ("watchdog: no reading of the combat", GL, "  return inC == 0 and t - F.inCombatAt > G.COMBAT_LOST_MS",
+     "  return false"),
+    ("last round: a 17th turn waited for", GL,
+     "      if G.round >= F.rounds then\n        F.lastCut = true\n        return finish(F)\n      end\n", ""),
+    ("summary: damage before round 1 dropped", GL,
+     "if row.r == 0 and row.target == me then pre = pre + (row.amount or 0) end", ""),
+    ("summary: damage taken over all rounds", GL, "local turns = #G.rounds - (F.lastCut and 1 or 0) + (F.enemyFirst and 1 or 0)",
+     "local turns = #G.rounds"),
+    ("cleanup: corpses waited for", GL, "  if #list == 0 then\n    if cb then cb({ removed = 0, killed = {} }) end",
+     "  if false then\n    if cb then cb({ removed = 0, killed = {} }) end"),
+    ("equip: one item per frame", GL, "        worn[#worn + 1] = e\n", "        rings[#rings + 1] = { e }\n"),
+    ("equip: rings asked together", GL, "        rings[#rings + 1] = { e }\n", "        worn[#worn + 1] = e\n"),
+    ("equip: given up while nothing is worn", GL, "local loading = S.worn == 0 and waited < G.READY_MS",
+     "local loading = false"),
+    ("buffs: never put on again", GL, "      for _, st in ipairs(missing) do pcall(Osi.ApplyStatus, u, st, -1, 1, u) end\n",
+     ""),
+    ("spawn: forced stats not waited for", GL, "    if not forced() and polls * G.POLL_MS < G.SPAWN_MS then",
+     "    if polls * G.POLL_MS < G.SPAWN_MS then"),
+    ("sheet: max HP with temporary hit points", GL, "  return o - ((e and try(function() return e.Health.TemporaryHp end)) or 0)", "  return o"),
+    ("elixir: statuses read at once", GL, "G.POLL_MS, G.EQUIP_MS, G.USE_MS, G.READY_MS = 100, 2000, 3000, 45000",
+     "G.POLL_MS, G.EQUIP_MS, G.USE_MS, G.READY_MS = 100, 2000, 500, 45000"),
+    ("items: a refused creation not asked again", GL, "    return #todo == 0 or made > 0 or tries * G.REAPPLY_MS >= G.READY_MS",
+     "    return true"),
+    ("stopping: rounds pooled, not compared by number", RN, "    mk = {k: mean(v) for k, v in pool.items()}",
+     "    mk = {k: 0.0 for k in pool}"),
+    ("scheduling: the results file not read", RN, "    got = {i: prior_runs(a.results, i, pairs[i], scen) for i in todo}",
+     '    got = {i: {"a": [], "b": []} for i in todo}'),
+    ("scheduling: another set's runs counted", RN, ' or not same_set(r, p, r["side"]):', ":"),
+    ("scheduling: a deterministic failure repeated", RN, "                    if why and k == 0:",
+     "                    if False:"),
+    ("lanes across pairs: never", RN, '        if getattr(a, "lanes", None):\n            for j, (i2, side2)',
+     '        if False:\n            for j, (i2, side2)'),
+    ("lanes across pairs: spacing ignored", RN, "                if ok:\n                    mate = (left.pop(j), need)",
+     "                if True:\n                    mate = (left.pop(j), need)"),
+    ("lanes across pairs: one character in both lanes", RN,
+     "if i2 == i or char_for(a, pairs[i]) == char_for(a, pairs[i2]) or not char_for(a, pairs[i]):", "if i2 == i:"),
+    ("lanes across pairs: no swap", RN, "out.append((pair_ if k % 2 == 0 else pair_[::-1], mate[1]))",
+     "out.append((pair_, mate[1]))"),
+    ("boss: full hit points at our turn", GL, "pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT)",
+     "pcall(Osi.SetHitpointsPercentage, d, 100)"),
 ]
 
 

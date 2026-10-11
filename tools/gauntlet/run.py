@@ -5,6 +5,7 @@
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
     python tools/gauntlet/run.py --rescore results.jsonl[,more.jsonl] --specs specs.json
     python tools/gauntlet/run.py specs.json --lanes undercity_lanes --char A_UUID --char-b B_UUID --repeats 3
+    python tools/gauntlet/run.py specs.json --sides a --lanes undercity_lanes --chars laezel=UUID,shadowheart=UUID
 
 Two lanes (--lanes, a "lanes" entry of arenas.json): both sets of a pair fight at once, each with its own character,
 enemies and arena spot, in two separate combats. Both characters have the same build (two party members respecced to
@@ -14,6 +15,20 @@ neither set keeps the better spot or the head start. With one character (no --ch
 pair's spells the sides run one after the other in lane A's spot, the first side alternating per repeat.
 --respec real (the default) expects the character's own levels, as a real respec in a test save made them; emulated
 rebuilds the sheet with boosts on whatever character runs.
+
+Lanes across pairs: when a save holds one character per build (the two sides of a pair come from two saves), the
+lanes take the same side of two different pairs at once instead (--chars names each pair's character by its "char";
+--char is the default). Two sides share a repeat only when their characters differ and the lanes lie far enough apart
+for both sets' spells; the rest run one after the other in lane A's spot. The lanes swap from one repeat to the next.
+
+Repeats and early stopping: --repeats is the most usable runs a side gets, counting the ones already in --results for
+the same pair, set and scenario; so the side of a pair run from the other save first (--sides b after --sides a) sees
+the other side's runs, and a pair already decided is not run again. After every run the pair is decisive when the 95%
+interval of the ratio of the two sides' damage per round excludes 1 or lies within +-control-tol; the interval compares
+rounds by their number (each round's mean over both sides is taken out and the rest resampled per side), because a
+round's damage depends on its number far more than on the dice (round 1's Action Surge, item spells, slots running out).
+A side whose first run failed for a reason that would fail every run (a setup mismatch at the start, a bad request, a
+combat that ended) is not repeated; the record says why.
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
 the same script, enemies and buffs; every run appends one record to results.jsonl. Manual runs from the in-game
@@ -133,42 +148,244 @@ def lanes_possible(a, p, arenas):
     return True, need
 
 
+# Causes that would fail every run of the side the same way: the side is not repeated after its first run fails so.
+DETERMINISTIC = ("setup mismatch at the start", "ended: setup mismatch at the start", "ended: bad request",
+                 "ended: unknown arena", "ended: unknown scenario", "ended: no enemy stats",
+                 "ended: the combat ended or never started")
+
+
+def deterministic(rec):
+    """The cause of an invalid run that would fail every repeat of the side the same way, or None."""
+    _ok, causes = run_validity(rec)
+    for c in causes:
+        if str(c).startswith(DETERMINISTIC):
+            return c
+    return None
+
+
+def same_set(rec, p, side):
+    """Is the record a run of this pair's side with the same set (the spec ids the game wrote back)?"""
+    sid = rec.get("spec_id") or {}
+    spec = p["specs"][side]
+    return sid.get("set_name") == spec.get("set") and sid.get("build") == p.get("build") and \
+        str(sid.get("act")) == str(p.get("act"))
+
+
+def prior_runs(path, i, p, scen):
+    """The usable runs already in the results file, per side of pair i: {side: [run]} (run: [(round key, damage)])."""
+    out = {"a": [], "b": []}
+    if not path or not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as f:
+        recs = [json.loads(x) for x in f if x.strip()]
+    for r in recs:
+        if r.get("pair") != i or r.get("side") not in out or r.get("scenario") not in scen or not same_set(r, p, r["side"]):
+            continue
+        run = usable_run(r)
+        if run:
+            out[r["side"]].append(run)
+    return out
+
+
+def usable_run(rec):
+    """A record's fair rounds as [((scenario, haste, round), damage)], or [] when the record is no measurement."""
+    if rec.get("scenario") == "defence" or (rec.get("req") or {}).get("scenario") == "defence":
+        return []
+    ok, _causes, clean = rescore(rec)
+    d = ((rec.get("results") or {}).get("summary") or {}).get("dealt") or []
+    if not ok or len(d) != len(clean):
+        return []
+    key = (rec.get("scenario"), bool(rec.get("haste")))
+    return [(key + (r + 1,), x) for r, (x, c) in enumerate(zip(d, clean)) if c]
+
+
+def char_for(a, p):
+    """The character that runs this pair (--chars by the pair's "char", else --char)."""
+    m = dict(x.split("=", 1) for x in (getattr(a, "chars", None) or "").split(",") if "=" in x)
+    return m.get(p.get("char")) or a.char
+
+
+def lane_batches(a, pairs, todo, arenas, k):
+    """One repeat's runs: [(pair, side)] in order -> batches of one (one after the other) or two (two lanes at once:
+    two different pairs' sides with different characters, the lanes far enough apart for both sets). Repeat k decides
+    which side of a batch takes lane A. -> [[(pair, side)]], with the spacing two lanes need per batch."""
+    out, left = [], list(todo)
+    while left:
+        i, side = left.pop(0)
+        mate = None
+        if getattr(a, "lanes", None):
+            for j, (i2, side2) in enumerate(left):
+                if i2 == i or char_for(a, pairs[i]) == char_for(a, pairs[i2]) or not char_for(a, pairs[i]):
+                    continue
+                ok, need, _have = lane_gap(arenas, a.lanes, [(pairs[x]["specs"][s].get("reach") or {}).get("m")
+                                                             for x, s in ((i, side), (i2, side2))])
+                if ok:
+                    mate = (left.pop(j), need)
+                    break
+        if mate:
+            pair_ = [(i, side), mate[0]]
+            out.append((pair_ if k % 2 == 0 else pair_[::-1], mate[1]))
+        else:
+            out.append(([(i, side)], None))
+    return out
+
+
 def do_runs(a):
     with open(a.specs, encoding="utf-8") as f:
         pairs = json.load(f)
     only = {int(x) for x in a.only.split(",")} if a.only else None
     scen = a.scenarios.split(",")
+    sides = tuple(a.sides.split(","))
     arenas = load_arenas()
     print(engine.load())
-    for i, p in enumerate(pairs):
-        if only is not None and i not in only:
-            continue
-        got = {"a": [], "b": []}
-        both, gap = lanes_possible(a, p, arenas)
-        if a.lanes and not both:
-            print(f"pair {i}: lanes one after the other: {gap}")
-        for k in range(min(3, max(1, a.repeats))):
-            if both:
-                for side, dealt in run_lanes(a, i, p, scen, k, gap).items():
-                    got[side] += dealt
+    todo = [i for i in range(len(pairs)) if only is None or i in only]
+    got = {i: prior_runs(a.results, i, pairs[i], scen) for i in todo}
+    for i in todo:
+        if got[i]["a"] or got[i]["b"]:
+            print(f"pair {i}: usable runs in the results already: a {len(got[i]['a'])}, b {len(got[i]['b'])}")
+    done, skip = {}, {}
+    same_pair = {i: lanes_possible(a, pairs[i], arenas) for i in todo}
+    for i in todo:
+        if a.lanes and not same_pair[i][0]:
+            print(f"pair {i}: no two lanes for its own sides: {same_pair[i][1]}")
+
+    def settle(i):
+        if i in done:
+            return
+        stop, why = decisive(got[i]["a"], got[i]["b"], a.control_tol)
+        print(f"  pair {i} ({len(got[i]['a'])} + {len(got[i]['b'])} usable runs): {why}")
+        if stop:
+            done[i] = why
+    for i in todo:
+        if got[i]["a"] and got[i]["b"]:
+            settle(i)
+    for k in range(min(3, max(1, a.repeats))):
+        queue = []
+        for i in todo:
+            if i in done:
+                continue
+            if same_pair[i][0]:
+                if min(len(got[i]["a"]), len(got[i]["b"])) <= k:
+                    for side, run in run_lanes(a, i, pairs[i], scen, k, same_pair[i][1]).items():
+                        got[i][side] += run
+                    settle(i)
+                continue
+            for side in sequential_order(k, sides):
+                if (i, side) in skip:
+                    continue
+                if len(got[i][side]) > k:
+                    continue
+                queue.append((i, side))
+        for batch, need in lane_batches(a, pairs, queue, arenas, k):
+            batch = [(i, s_) for i, s_ in batch if i not in done]
+            if len(batch) == 2:
+                results = run_cross(a, pairs, batch, scen, k, need)
             else:
-                order = sequential_order(k, tuple(a.sides.split(",")))
-                for side in order:
-                    got[side] += run_side(a, i, p, side, scen, extra={"repeat": k, "order": order,
-                                                                       "lanes_fallback": gap if a.lanes else None})
-            stop, why = decisive(got["a"], got["b"], a.control_tol)
-            print(f"  pair {i} after {k + 1} repeat(s): {why}")
-            if stop:
-                break
+                results = {}
+                for i, side in batch:
+                    results[(i, side)] = run_side(a, i, pairs[i], side, scen,
+                                                  extra={"repeat": k, "lanes_fallback": a.lanes and "one after the "
+                                                         "other" or None})
+            for (i, side), (runs, recs) in results.items():
+                got[i][side] += runs
+                if not runs and (i, side) not in skip and len(got[i][side]) == 0:
+                    why = next((deterministic(r) for r in recs if deterministic(r)), None)
+                    if why and k == 0:
+                        skip[(i, side)] = why
+                        print(f"  pair {i} {side}: not repeated, its first run failed for a reason every run would "
+                              f"meet: {why}")
+                        not_repeated(a, i, side, scen, why)
+                settle(i)
 
 
-def decisive(xa, xb, tol=None):
-    """Sequential stopping: -> (stop, why). The 95% interval of the ratio of the two sides' mean damage per round is
-    decisive when it excludes 1 (one set is better) or lies inside 1 +- tol (the sets measure alike)."""
+def not_repeated(a, i, side, scen, why):
+    """Records that a side is not repeated, and why (the report lists it with the invalid runs)."""
+    rec = {"mode": "scripted", "pair": i, "side": side, "scenario": scen[0], "not_repeated": True, "valid": False,
+           "invalid": [f"not repeated: the first run failed for a reason every run would meet ({why})"]}
+    with open(a.results, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec) + "\n")
+
+
+def run_cross(a, pairs, batch, scen, k, need):
+    """Two sides of different pairs at once, one per lane (the first of the batch in lane A). -> {(pair, side): (usable
+    runs, records)}."""
+    lanes = ("A", "B")
+    first = lanes[k % 2]
+    out = {(i, s_): ([], []) for i, s_ in batch}
+    for sc in scen:
+        for haste in ([False, True] if a.haste else [False]):
+            entries = []
+            for lane, (i, side) in zip(lanes, batch):
+                req = dict(_req(a, i, pairs[i], side, sc, haste, char_for(a, pairs[i])), arena=None)
+                entries.append((lane, req, pairs[i]["specs"][side]))
+            print("lanes across pairs: " + ", ".join(f"{lane} = pair {i} {pairs[i]['char']} {side}"
+                                                      for lane, (i, side) in zip(lanes, batch))
+                  + f" {sc}{' haste' if haste else ''}, lane {first} first")
+            t0 = time.time()
+            try:
+                recs = engine.run_lanes(a.lanes, entries, first, gap_need=need)
+            except Exception as e:
+                recs = {lane: {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
+                        for lane, req, _s in entries}
+                print("  ERROR", e)
+            for lane, (i, side) in zip(lanes, batch):
+                rec = recs.get(lane) or {"error": "no record from the lane", "valid": False,
+                                         "invalid": ["no record from the lane"], "req": {"scenario": sc}}
+                rec.setdefault("scenario", sc)
+                run = _record(a, rec, i, side, t0, {"repeat": k, "lane": lane, "first_lane": first, "concurrent": True,
+                                                    "lanes_across_pairs": True})
+                if run:
+                    out[(i, side)][0].append(run)
+                out[(i, side)][1].append(rec)
+    return out
+
+
+def _keyed(run):
+    """A run as [(round key, damage)]: a plain list of numbers is keyed by its position."""
+    return [x if isinstance(x, (tuple, list)) else (i + 1, x) for i, x in enumerate(run)]
+
+
+def _runs(runs):
+    """A list of runs; a plain list of numbers is one run."""
+    return runs if runs and isinstance(runs[0], list) else [runs]
+
+
+def round_ratio(runs_a, runs_b, n=2000, seed=13):
+    """95% interval of the ratio of the two sides' mean damage per round, rounds compared by their number: each round
+    key's mean over both sides is taken out, the residuals are resampled per side and the means rebuilt. Only round
+    keys both sides have count. -> ((lo, hi), rounds on the shorter side) or (None, rounds)."""
+    ka = [kv for r in _runs(runs_a) for kv in _keyed(r)]
+    kb = [kv for r in _runs(runs_b) for kv in _keyed(r)]
+    both = {k for k, _v in ka} & {k for k, _v in kb}
+    ka, kb = [kv for kv in ka if kv[0] in both], [kv for kv in kb if kv[0] in both]
+    m = min(len(ka), len(kb))
+    if min(len(ka), len(kb)) < 2:
+        return None, m
+    pool = {}
+    for k, v in ka + kb:
+        pool.setdefault(k, []).append(v)
+    mk = {k: mean(v) for k, v in pool.items()}
+    base_a, base_b = mean([mk[k] for k, _v in ka]), mean([mk[k] for k, _v in kb])
+    ra, rb = [v - mk[k] for k, v in ka], [v - mk[k] for k, v in kb]
+    rnd = random.Random(seed)
+    rs = []
+    for _ in range(n):
+        a_ = base_a + mean([ra[rnd.randrange(len(ra))] for _ in ra])
+        b_ = base_b + mean([rb[rnd.randrange(len(rb))] for _ in rb])
+        if b_ > 0:
+            rs.append(a_ / b_)
+    rs.sort()
+    return ((rs[int(0.025 * len(rs))], rs[int(0.975 * len(rs)) - 1]) if rs else None), m
+
+
+def decisive(runs_a, runs_b, tol=None):
+    """Sequential stopping: -> (stop, why). runs_x: the side's usable runs, each [(round key, damage)] of its fair
+    rounds (round_ratio). The 95% interval of the ratio of the two sides' damage per round is decisive when it excludes
+    1 (one set is better) or lies inside 1 +- tol (the sets measure alike)."""
     tol = CONTROL_TOL if tol is None else tol
-    if min(len(xa), len(xb)) < CONTROL_MIN_ROUNDS:
-        return False, f"{min(len(xa), len(xb))} fair rounds on the shorter side, not decisive"
-    ci = boot_ratio(xa, xb)
+    ci, m = round_ratio(runs_a, runs_b)
+    if m < CONTROL_MIN_ROUNDS:
+        return False, f"{m} fair rounds on the shorter side, not decisive"
     if not ci:
         return False, "no interval"
     if ci[0] > 1 or ci[1] < 1:
@@ -203,15 +420,11 @@ def _record(a, rec, i, side, t0, extra=None):
     print(f"  {side}: dpr {s.get('dpr', 0):.1f}{summ} taken/round {s.get('taken_per_round', 0):.1f} "
           f"not done {s.get('actions_not_done')} survived {s.get('rounds_survived')} ({rec['secs']} s; "
           f"prep {tm.get('prep_ms', 0) / 1000:.1f} s, fight {tm.get('fight_ms', 0) / 1000:.1f} s)")
-    if rec.get("scenario") == "defence" or (rec.get("req") or {}).get("scenario") == "defence":
-        return []
-    ok, _causes, clean = rescore(rec)
-    d = s.get("dealt") or []
-    return [x for x, c in zip(d, clean) if c] if ok and len(d) == len(clean) else []
+    return usable_run(rec)
 
 
 def run_lanes(a, i, p, scen, k, gap):
-    """Repeat k of a pair in two lanes at once, per scenario. -> {side: damage per fair round}."""
+    """Repeat k of a pair in two lanes at once, per scenario. -> {side: [usable run]}."""
     plan = lane_schedule(k)
     chars = {"A": a.char, "B": a.char_b}
     dealt = {"a": [], "b": []}
@@ -233,18 +446,20 @@ def run_lanes(a, i, p, scen, k, gap):
                 rec = recs.get(lane) or {"error": "no record from the lane", "valid": False,
                                          "invalid": ["no record from the lane"], "req": {"scenario": sc}}
                 rec.setdefault("scenario", sc)
-                dealt[side] += _record(a, rec, i, side, t0, {"repeat": k, "lane": lane, "first_lane": plan["first"],
-                                                             "concurrent": True})
+                run = _record(a, rec, i, side, t0, {"repeat": k, "lane": lane, "first_lane": plan["first"],
+                                                    "concurrent": True})
+                if run:
+                    dealt[side].append(run)
     return dealt
 
 
 def run_side(a, i, p, side, scen, extra=None):
-    """One side of a pair over the scenarios -> the damage per round of its usable runs, fair rounds only."""
+    """One side of a pair over the scenarios -> ([usable run], [record]) (run: its fair rounds, keyed)."""
     spec = p["specs"][side]
-    dealt = []
+    runs, recs = [], []
     for sc in scen:
         for haste in ([False, True] if a.haste else [False]):
-            req = _req(a, i, p, side, sc, haste, a.char)
+            req = _req(a, i, p, side, sc, haste, char_for(a, p))
             t0 = time.time()
             print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
                   f"{' haste' if haste else ''}")
@@ -254,8 +469,11 @@ def run_side(a, i, p, side, scen, extra=None):
                 rec = {"error": str(e), "req": req, "valid": False, "invalid": [str(e)]}
                 print("  ERROR", e)
             rec.setdefault("scenario", sc)
-            dealt += _record(a, rec, i, side, t0, extra)
-    return dealt
+            run = _record(a, rec, i, side, t0, extra)
+            if run:
+                runs.append(run)
+            recs.append(rec)
+    return runs, recs
 
 
 def run_validity(rec):
@@ -509,12 +727,15 @@ def main(argv=None):
     ap.add_argument("--scenarios", default="boss,pack,defence,longday")
     ap.add_argument("--haste", action="store_true", help="also run every scenario with Haste")
     ap.add_argument("--only")
-    ap.add_argument("--repeats", type=int, default=1, help="up to this many runs per side (at most 3), stopping "
-                    "early once the 95%% interval of the two sides' ratio is decisive")
+    ap.add_argument("--repeats", type=int, default=1, help="up to this many usable runs per side (at most 3; the "
+                    "ones already in --results count), stopping early once the 95%% interval of the two sides' ratio "
+                    "is decisive")
     ap.add_argument("--rounds", type=int, default=16)
     ap.add_argument("--sides", default="a,b", help="a, b or a,b: one set of each pair only (e.g. a reload between)")
     ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")
     ap.add_argument("--char", help="uuid of the test character (default: the host); lane A's with --lanes")
+    ap.add_argument("--chars", help="the character per pair, by the pair's char: laezel=UUID,gale=UUID (default --char); "
+                    "with --lanes two pairs' sides with different characters run at once")
     ap.add_argument("--char-b", help="uuid of lane B's character: a second party member with the same build")
     ap.add_argument("--lanes", help="a lanes entry of tools/gauntlet/arenas.json: both sides at once (see above)")
     ap.add_argument("--respec", choices=("real", "emulated"), default="real",
