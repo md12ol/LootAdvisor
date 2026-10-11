@@ -198,7 +198,9 @@ def _record(a, rec, i, side, t0, extra=None):
         f.write(json.dumps(rec, default=str) + "\n")
     s = (rec.get("results") or {}).get("summary") or {}
     tm = (rec.get("results") or {}).get("timing") or {}
-    print(f"  {side}: dpr {s.get('dpr', 0):.1f} taken/round {s.get('taken_per_round', 0):.1f} "
+    # summon damage is part of dpr; its share is shown apart
+    summ = f" (summons {s['summon_damage'] / max(1, len(s.get('dealt') or [])):.1f})" if s.get("summon_damage") else ""
+    print(f"  {side}: dpr {s.get('dpr', 0):.1f}{summ} taken/round {s.get('taken_per_round', 0):.1f} "
           f"not done {s.get('actions_not_done')} survived {s.get('rounds_survived')} ({rec['secs']} s; "
           f"prep {tm.get('prep_ms', 0) / 1000:.1f} s, fight {tm.get('fight_ms', 0) / 1000:.1f} s)")
     if rec.get("scenario") == "defence" or (rec.get("req") or {}).get("scenario") == "defence":
