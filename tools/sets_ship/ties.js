@@ -5,7 +5,7 @@
      2. else the pick made on this page (kept in the browser);
      3. else nobody yet: the page asks.
    Only party members count (other players' characters too); fewer than two of them in the party is no tie.
-   say() words a tie for the item cards. Pure functions, also run by the offline tests (node). */
+   say() words a tie for the item cards, naming whoever wears it (state.wear[stats id]). Pure functions, also run by the offline tests (node). */
 (function (root) {
   "use strict";
   // the item's tie members, or [] when nobody is tied with its owner
@@ -31,10 +31,12 @@
     if (present.indexOf(me) < 0) return { k: "give", who: [present[0]], pick: null, by: null, cands: present };
     return { k: "shared", who: present.filter(function (c) { return c !== me; }), pick: null, by: null, cands: present };
   }
-  // the wording of an exact tie, keeper first: "Equal for X and Y; X keeps it". The keeper is the game's or the page's
-  // pick, else the one tie member in the party, else the data's owner; an open tie in the party has none yet.
-  // lc: contest()'s answer in the live game, or null; nameOf(c) -> display name.
-  function say(it, lc, nameOf) {
+  // the wording of an exact tie, keeper first: "Equal for X and Y; X keeps it". The keeper is the tie member wearing
+  // it (party or camp), else the game's or the page's pick, else the one tie member in the party, else the data's
+  // owner; an open tie in the party has none yet. Someone outside the tie wearing it is named instead of a keeper.
+  // lc: contest()'s answer in the live game, or null; wear: the live state's wearer {c: key or null, name} or null;
+  // nameOf(c) -> display name.
+  function say(it, lc, nameOf, wear) {
     var mem = members(it);
     if (!mem.length) return "";
     var keep = (it.o || [])[0] || null, shown = mem;
@@ -45,10 +47,14 @@
       else if (lc.k === "give" && lc.who.length) keep = lc.who[0];
       else if (lc.cands && lc.cands.length === 1) keep = lc.cands[0];
     }
-    var order = keep && shown.indexOf(keep) >= 0 ? [keep] : [];
+    var other = null;
+    if (wear && wear.c && mem.indexOf(wear.c) >= 0) keep = wear.c;
+    else if (wear && (wear.c || wear.name)) other = wear.c ? nameOf(wear.c) : wear.name;
+    var order = keep ? [keep] : [];
     shown.forEach(function (c) { if (c !== keep) order.push(c); });
     var nm = order.map(nameOf);
     var list = nm.length < 2 ? nm.join("") : nm.slice(0, -1).join(", ") + " and " + nm[nm.length - 1];
+    if (other) return "Equal for " + list + "; " + other + " wears it";
     return "Equal for " + list + (keep ? "; " + nameOf(keep) + " keeps it" : "; pick who gets it");
   }
   var T = { members: members, contest: contest, say: say };

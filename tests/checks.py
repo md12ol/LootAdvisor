@@ -1805,6 +1805,7 @@ const nm = (c) => N[c] || c;
 const inP = (s) => (c) => s.includes(c);
 const it = { o: ["astarion"], ot: ["astarion", "darkurge"] };
 const it3 = { o: ["gale"], ot: ["gale", "wyll", "astarion"] };
+const itGW = { o: ["gale"], ot: ["gale", "wyll"] };
 console.log(JSON.stringify({
   page: T.say(it, null, nm),
   picked: T.say(it, T.contest("astarion", it, inP(["astarion", "darkurge"]), { c: "darkurge", by: "pick" }, null), nm),
@@ -1813,6 +1814,12 @@ console.log(JSON.stringify({
   alone: T.say(it, T.contest("astarion", it, inP(["darkurge"]), null, null), nm),
   three: T.say(it3, null, nm),
   none: T.say({ o: ["gale"], ot: [] }, null, nm),
+  wornCamp: T.say(it, T.contest("astarion", it, inP(["astarion"]), null, null), nm, { c: "darkurge", name: "Vex" }),
+  wornOverPick: T.say(it, T.contest("astarion", it, inP(["astarion", "darkurge"]), null, "astarion"), nm,
+                      { c: "darkurge", name: "Vex" }),
+  wornOutside: T.say(itGW, T.contest("astarion", itGW, inP(["astarion", "darkurge"]), null, null), nm,
+                     { c: "darkurge", name: "Vex" }),
+  wornTav: T.say(itGW, null, nm, { c: null, name: "Tav" }),
 }));
 """
 TIE_SAY_WANT = {
@@ -1823,12 +1830,17 @@ TIE_SAY_WANT = {
     "alone": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
     "three": "Equal for Gale, Wyll and Astarion; Gale keeps it",
     "none": "",
+    "wornCamp": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
+    "wornOverPick": "Equal for The Dark Urge and Astarion; The Dark Urge keeps it",
+    "wornOutside": "Equal for Gale and Wyll; The Dark Urge wears it",
+    "wornTav": "Equal for Gale and Wyll; Tav wears it",
 }
 
 
 def check_tie_wording(env):
-    """An exact tie is worded "Equal for X and Y; X keeps it" (X = the owner, or whoever the game / the page gave it
-    to): the Sets page (tools/sets_ship/ties.js say(), run in node; app.js uses it for the item cards and their
+    """An exact tie is worded "Equal for X and Y; X keeps it" (X = the tie member wearing it, party or camp, else
+    whoever the game / the page gave it to, else the owner; someone outside the tie wearing it: "...; W wears it"):
+    the Sets page (tools/sets_ship/ties.js say(), run in node; app.js uses it for the item cards and their
     labels) and the F6 list (Window.lua) for a settled tie. app.js never words a tie as "gets more from it"."""
     import subprocess
     src = getattr(env, "file_overrides", {}).get("ties.js")
@@ -2028,7 +2040,7 @@ def check_live_names(env):
     if "function charName(c) { var ch = LIVE && (LIVE.chars || {})[c]; return (ch && ch.name) || CHAR_NAME[c]" not in app:
         fails.append("app.js: no charName() preferring the live game's name")
     for what, frag in (("names()", "function names(ids) { return (ids || []).map(charName)"),
-                       ("tie wording", "T.say(it, lc || null, charName)"),
+                       ("tie wording", "T.say(it, lc || null, charName, "),
                        ("character rail", "<span class=\"nm\">' + esc(charName(c.id))")):
         if frag not in app:
             fails.append(f"app.js: {what} does not use the live name")
@@ -2319,6 +2331,61 @@ def check_wear_slot_names(env):
     return fails
 
 
+
+def check_state_wearers(env):
+    """The Sets page's live state names who wears each tied item (state.wear, from S.Wearers): party and camp, with
+    or without an origin key, a party member over the camp when both wear a copy; untied items are left out.
+    PageSync.BuildState writes it into the state and app.js hands it to the tie wording."""
+    from lupa import LuaRuntime
+    rel = os.path.join(env.mods_lua, "Server", "State.lua")
+    with open(rel, encoding="utf-8") as f:
+        src = f.read()
+    for old, new in env.lua_patches.get("State.lua", []):
+        if old not in src:
+            raise RuntimeError(f"lua patch target not found in State.lua: {old[:60]!r}")
+        src = src.replace(old, new)
+    L = LuaRuntime(unpack_returned_tuples=True)
+    L.execute("""
+      LA = { try = function(f, ...) local ok, r = pcall(f, ...); if ok then return r end end,
+             Data = { items = { { id = "SID_TIE", o = { "gale" }, ot = { "gale", "wyll" } },
+                                { id = "SID_TIE2", o = { "karlach" }, ot = { "karlach", "wyll" } },
+                                { id = "SID_TIE3", o = { "gale" }, ot = { "gale", "shadowheart" } },
+                                { id = "SID_PLAIN", o = { "gale" } } } } }
+      local worn = { u_vex = { Boots = "i_tie", Helmet = "i_plain" }, u_tav = { Gloves = "i_tie2" },
+                     u_camp = { Boots = "i_tie_b", Amulet = "i_tie3" }, u_wyll = { Gloves = "i_tie2_b" } }
+      local stat = { i_tie = "SID_TIE", i_tie_b = "SID_TIE", i_plain = "SID_PLAIN", i_tie2 = "SID_TIE2",
+                     i_tie2_b = "SID_TIE2", i_tie3 = "SID_TIE3" }
+      Osi = { GetEquippedItem = function(u, slot) return (worn[u] or {})[slot] end,
+              GetStatString = function(i) return stat[i] end }
+    """)
+    L.execute(src)
+    G = L.globals()
+    if G.LA.State.Wearers is None:
+        return ["S.Wearers missing from Server/State.lua"]
+    people = L.table_from([
+        {"uuid": "u_camp", "key": "gale", "name": "Gale", "inParty": False},
+        {"uuid": "u_vex", "key": "darkurge", "name": "Vex", "inParty": True},
+        {"uuid": "u_tav", "name": "Tav", "inParty": True},
+        {"uuid": "u_wyll", "key": "wyll", "name": "Wyll", "inParty": False},
+    ], recursive=True)
+    got = {k: lua_dict(v) for k, v in lua_dict(G.LA.State.Wearers(people)).items()}
+    want = {"SID_TIE": {"c": "darkurge", "name": "Vex"}, "SID_TIE2": {"name": "Tav"},
+            "SID_TIE3": {"c": "gale", "name": "Gale"}}
+    fails = [f"state.wear: {got!r}, want {want!r}"] if got != want else []
+    wear = lua_dict(G.LA.State.Wear(people))
+    if wear != {"SID_TIE": "darkurge"}:
+        fails.append(f"S.Wear (party members with a key only): {wear!r}")
+    page_sync = (getattr(env, "file_overrides", {}).get("PageSync.lua")
+                 or _read(env.mods_lua, "Server", "PageSync.lua"))
+    if not re.search(r"st\.wear\s*=\s*try\(S\.Wearers", page_sync):
+        fails.append("PageSync.BuildState does not write state.wear from S.Wearers")
+    app = getattr(env, "file_overrides", {}).get("app.js") or _read(REPO, "tools", "sets_artifact", "app.js")
+    if "(LIVE.wear || {})[e.sid]" not in app:
+        fails.append("app.js: tieSay does not pass the live wearer to the tie wording")
+    env.counts["wearers"] = len(got)
+    return fails
+
+
 CHECKS = [
     ("no heavy body armour for raging builds", check_no_heavy_armour_raging, False),
     ("every Builds.lua build has a profile; sync fails loudly", check_profiles_cover_builds_lua, False),
@@ -2357,4 +2424,5 @@ CHECKS = [
     ("F6 window hidden on the build screens when Build Advisor is loaded", check_f6_hides_on_build_screens, False),
     ("sets page sheet: body armour DEX up to the item's cap (none = no cap)", check_sheet_armour_dex_cap, False),
     ("Sets page app.js: a missing DEX cap means no cap", check_page_armour_dex_cap, False),
+    ("Sets page state: who wears each tied item (party and camp, any wearer)", check_state_wearers, False),
 ]

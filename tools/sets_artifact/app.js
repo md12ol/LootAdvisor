@@ -80,7 +80,7 @@
   // an exact tie in words ("Equal for X and Y; X keeps it"), or "" for any other item (the online page has no tie data)
   function tieSay(e, lc) {
     var T = window.LA_TIES, it = ITEMS[e.sid] || {};
-    return T && T.say ? T.say(it, lc || null, charName) : "";
+    return T && T.say ? T.say(it, lc || null, charName, LIVE && (LIVE.wear || {})[e.sid] || null) : "";
   }
   function hasOwner(e) { return !!(e.owner && e.owner.length); }
   function tieBy(by) { return by === "wear" ? "wears it" : by === "game" ? "picked in the game" : "your pick on this page"; }
@@ -199,7 +199,7 @@
     set._v = v;
     return v;
   }
-  function fkey() { return JSON.stringify(F) + "|" + JSON.stringify(HAVE) + (LIVE ? "|" + JSON.stringify([LIVE.inParty, LIVE.paths, LIVE.comp, LIVE.picks, PICKS]) : ""); }
+  function fkey() { return JSON.stringify(F) + "|" + JSON.stringify(HAVE) + (LIVE ? "|" + JSON.stringify([LIVE.inParty, LIVE.paths, LIVE.comp, LIVE.picks, LIVE.wear, PICKS]) : ""); }
   // severity per shown slot (F6): story locks, theft / kills, missable, earlier act, party conflict. Mild tips not counted.
   function slotTags(set, r) {
     var t = {};

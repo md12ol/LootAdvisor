@@ -660,6 +660,23 @@ def mutations(sc):
              '{ "CCLevelUpDefinition", "CCRespecDefinition",', '{ "CCRespecDefinition",'),
             ("Main.lua: build screens never checked from the tick", "buildScreen = LA.BuildScreenOpen()", "")):
         out.append((names[n29], desc, lua_mut("Main.lua", old, new), "red"))
+    # 30a-30f. wearers of tied items on the Sets page: camp wearers left out; the camp copy beats the party's; no
+    # state.wear; the page ignores it; a tie member wearing it not the keeper; a wearer outside the tie not named
+    n30 = names.index("Sets page state: who wears each tied item (party and camp, any wearer)")
+    out.append((names[n30], "State.lua: only the party's wearers listed", lua_mut(
+        "State.lua", "    eachTiedWorn(p, function(sid)", "    eachTiedWorn(p.inParty and p or {}, function(sid)"), "red"))
+    out.append((names[n30], "State.lua: a camp copy wins over the party's", lua_mut(
+        "State.lua", "if not out[sid] or (p.inParty and not out[sid].party) then", "if true then"), "red"))
+    out.append((names[n30], "PageSync.lua: no wearers in the state", file_mut(
+        "PageSync.lua", ("LootAdvisor", "Mods", "LootAdvisor", "ScriptExtender", "Lua", "Server", "PageSync.lua"),
+        "st.wear = try(S.Wearers, people) or {}", "st.wear = {}"), "red"))
+    out.append((names[n30], "app.js: the tie wording never sees the wearer", file_mut(
+        "app.js", ("tools", "sets_artifact", "app.js"), "LIVE && (LIVE.wear || {})[e.sid] || null", "null"), "red"))
+    n22 = names.index("exact ties worded 'Equal for X and Y; X keeps it' (Sets page + F6)")
+    out.append((names[n22], "ties.js: a tie member wearing it does not keep it", file_mut(
+        "ties.js", ties_rel, "if (wear && wear.c && mem.indexOf(wear.c) >= 0) keep = wear.c;", "if (false) {}"), "red"))
+    out.append((names[n22], "ties.js: a wearer outside the tie is not named", file_mut(
+        "ties.js", ties_rel, 'if (other) return "Equal for "', 'if (false) return "Equal for "'), "red"))
     return out, by
 
 
