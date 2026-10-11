@@ -313,21 +313,38 @@ end
 local EQUIP_SLOTS = { "Helmet", "Breast", "Cloak", "Melee Main Weapon", "Melee Offhand Weapon", "Ranged Main Weapon",
                       "Ranged Offhand Weapon", "Ring", "Ring2", "Boots", "Gloves", "Amulet" }
 local tiedIds
-function S.Wear(people)
+local function eachTiedWorn(p, f)
   if not tiedIds then
     tiedIds = {}
     for _, it in ipairs(LA.Data.items or {}) do if type(it.ot) == "table" and #it.ot > 0 then tiedIds[it.id] = true end end
   end
+  for _, slot in ipairs(EQUIP_SLOTS) do
+    local item = try(Osi.GetEquippedItem, p.uuid, slot)
+    local sid = item and try(Osi.GetStatString, item)
+    if sid and tiedIds[sid] then f(sid) end
+  end
+end
+function S.Wear(people)
   local out = {}
   for _, p in ipairs(people or {}) do
-    if p.inParty and p.key then
-      for _, slot in ipairs(EQUIP_SLOTS) do
-        local item = try(Osi.GetEquippedItem, p.uuid, slot)
-        local sid = item and try(Osi.GetStatString, item)
-        if sid and tiedIds[sid] then out[sid] = p.key end
-      end
-    end
+    if p.inParty and p.key then eachTiedWorn(p, function(sid) out[sid] = p.key end) end
   end
+  return out
+end
+
+-- tied items anyone on the team wears, camp and characters without an origin key included (the Sets page names
+-- the wearer even when it is not one of the tie's members): [stats id] = { c = key or nil, name = shown name }.
+-- A party member wins over the camp when two copies are worn.
+function S.Wearers(people)
+  local out = {}
+  for _, p in ipairs(people or {}) do
+    eachTiedWorn(p, function(sid)
+      if not out[sid] or (p.inParty and not out[sid].party) then
+        out[sid] = { c = p.key, name = p.name, party = p.inParty or nil }
+      end
+    end)
+  end
+  for _, w in pairs(out) do w.party = nil end
   return out
 end
 
