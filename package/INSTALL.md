@@ -38,6 +38,28 @@
 2. Copy `LootAdvisor.pak` to `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\Mods\`.
 3. Enable it in the load order (a mod manager is the safe way to edit `modsettings.lsx`).
 
+## Linux and Steam Deck (untested)
+**Nobody has tested Loot Advisor on Linux or a Steam Deck yet.** These notes say what should differ when the game runs
+through Steam's Proton; points marked *(unverified)* are the least certain. If you try it, please report what worked
+and what did not in [issue #80](https://github.com/md12ol/LootAdvisor/issues/80).
+
+- **Script Extender** loads under Proton only with this Steam launch option (game *Properties > General > Launch
+  Options*): `WINEDLLOVERRIDES="DWrite=n,b" %command%`. The game's `bin` folder (for the Devel channel file above)
+  is inside the game's install folder: Steam *Manage > Browse local files*.
+- **The game's user-data folder** (Windows `%LOCALAPPDATA%\Larian Studios\Baldur's Gate 3\`) is inside the Proton
+  prefix:
+  `~/.steam/steam/steamapps/compatdata/1086940/pfx/drive_c/users/steamuser/AppData/Local/Larian Studios/Baldur's Gate 3/`.
+  If the game is in another Steam library folder, `steamapps/compatdata/1086940/` is under that library instead.
+  Flatpak Steam keeps its files under `~/.var/app/com.valvesoftware.Steam/` *(unverified: the exact path below it)*.
+- **Mods folder** for installing by hand: the `Mods` folder inside that user-data folder.
+- **BG3 Mod Manager:** the steps above are the same *(unverified on Linux)*.
+- **The Sets page** is written to `Script Extender/LootAdvisor/Sets.html` inside that user-data folder. Win+R does
+  not exist on Linux: open the page in your browser as a `file://` path (`file://` followed by the full path) and
+  bookmark it. The path the mod shows in F6 and the Script Extender console is the Windows path inside the prefix
+  (`C:\users\steamuser\...` is `pfx/drive_c/users/steamuser/...`) *(unverified)*. Whether the page follows the
+  running game in a Linux browser reading from the prefix is not checked yet; Firefox and Chromium differ on
+  `file://` access *(unverified)*.
+
 ## Where to find it in the game
 - Items the advisor recommends get a rainbow frame and an extra tooltip line; their spots are marked on the map.
 - **F6** opens the list of recommended items with direction and distance, including items that have no fixed spot.
