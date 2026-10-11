@@ -211,6 +211,11 @@ def optimize(W, cid, bid, act, switches=None, ownership="party", log=print):
     rs = research_loadouts(W, cid, bid, act, ownership)
     best, r = S.run([lo for _s, lo in rs] + [{}])
     best, owned_alt = owned_pass(W, S, best)
+    if owned_alt:
+        # the rest of the set was picked around the items the owned pass took out (Gloves of Dexterity made Armour
+        # of Agility the best chest), so it is searched again without the earlier-act items it did not keep
+        gone = {sid for lst in S.cands.values() for sid in lst if W.obtainable(sid, act) == "owned"}
+        best, _r = S.without(gone - set(best.values())).descend(best)
     r = model.score(W, cid, bid, act, best, switches, detail=True)
     comp = []
     for st, lo in rs:

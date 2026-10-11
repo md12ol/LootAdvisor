@@ -93,6 +93,19 @@ def legal(W, slot, sid, loadout):
         return False
 
 
+def place(W, loadout, slot, sid):
+    """`loadout` with `sid` in `slot` and every item that clashes with it removed (a two-handed main hand drops the
+    shield), or None when `sid` is not legal in `slot` even alone."""
+    if not legal(W, slot, sid, {}):
+        return None
+    out = {slot: sid}
+    for s in ORDER:
+        v = loadout.get(s)
+        if s != slot and v and legal(W, s, v, out):
+            out[s] = v
+    return out
+
+
 def drop_illegal(W, loadout):
     """Remove items that clash with the rest (keep the earlier slot in ORDER)."""
     out = {}
@@ -173,7 +186,8 @@ class Searcher:
 
     def descend(self, best, slots=ORDER):
         """Coordinate descent with the FULL candidate lists (finds items the pruning dropped) over `slots` until no
-        single-slot change improves the score. -> (loadout, Result)"""
+        single-slot change improves the score. A candidate that clashes with another slot replaces that slot's item
+        too: without it a one-handed weapon and shield can never become a two-handed weapon. -> (loadout, Result)"""
         for _pass in range(4):
             improved = False
             for s in slots:
@@ -185,10 +199,12 @@ class Searcher:
                     t = dict(best)
                     if sid is None:
                         t.pop(s, None)
-                    else:
-                        if not legal(self.W, s, sid, {k: v for k, v in best.items() if k != s}):
-                            continue
+                    elif legal(self.W, s, sid, {k: v for k, v in best.items() if k != s}):
                         t[s] = sid
+                    else:
+                        t = place(self.W, best, s, sid)
+                        if t is None:
+                            continue
                     v = self.score(t).score
                     if v > cur + 1e-6:
                         cur, pick = v, (sid, t)

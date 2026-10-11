@@ -746,9 +746,11 @@ def check_set_rules(out):
     return fails, n
 
 
-def check_local_optimum(out, sample=None, seed=7):
-    """No single-slot swap (any legal candidate or empty) improves an optimized set's score: the definition of the
-    search's end point, checked with the candidate lists and the model."""
+def check_local_optimum(out, sample=None, seed=7, always=()):
+    """No single-slot change improves an optimized set's score: the definition of the search's end point, checked
+    with the candidate lists and the model. A candidate that clashes with another slot replaces that slot's item too
+    (two-handed weapon for weapon + shield). An item obtainable now must not improve it at all (the search runs again
+    after the owned pass); an earlier-act item may by up to 3% (sets rule: keep it only if it is clearly better)."""
     import model
     import search
     W = _world()
@@ -756,7 +758,7 @@ def check_local_optimum(out, sample=None, seed=7):
     sets = [s for s in out["sets"]]
     if sample:
         random.Random(seed).shuffle(sets)
-        sets = sets[:sample]
+        sets = sets[:sample] + [s for s in sets[sample:] if s["id"] in always]
     for st in sets:
         cid, bid, act = st["char"], st["build"], st["act"]
         sw = (st.get("model") or {}).get("switches") or {}
@@ -770,16 +772,16 @@ def check_local_optimum(out, sample=None, seed=7):
                 t = dict(lo)
                 if sid is None:
                     t.pop(slot, None)
-                elif not search.legal(W, slot, sid, {k: v for k, v in lo.items() if k != slot}):
-                    continue
                 else:
-                    t[slot] = sid
+                    t = search.place(W, lo, slot, sid)
+                    if t is None:
+                        continue
                 n += 1
                 v = S.score(t).score
-                # the owned-item pass may keep an earlier-act item that is up to 3% weaker (sets rule)
-                if v > cur * 1.031 + 1e-6:
-                    fails.append(f"{st['id']} {slot}: {W.items[sid]['name'] if sid else '(empty)'} scores {v:.1f} "
-                                 f"> {cur:.1f}")
+                owned = sid is not None and W.obtainable(sid, act) == "owned"
+                if v > (cur * 1.031 if owned else cur) + 1e-6:
+                    fails.append(f"{st['id']} {slot}: {W.items[sid]['name'] if sid else '(empty)'} scores {v:.2f} "
+                                 f"> {cur:.2f}")
                     break
     if n == 0:
         fails.append("nothing to check")
@@ -1402,10 +1404,14 @@ def check_plan_gaps(out=None):
     return fails, n
 
 
+# a weapon + shield set that could not become two-handed, and a chest picked around gloves the owned pass removed
+LOCAL_OPT_ALWAYS = ("wyll.lockadin.a2.opt", "gale.tempestevoker.a3.opt.free")
+
 LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_set_rules),
                 ("research sets never beat the optimizer", check_research_not_better),
                 ("why text has no leaks", check_why_text), ("switches", check_switches),
-                ("local optimum (sample of 6 sets)", lambda o: check_local_optimum(o, sample=6)),
+                ("local optimum (sample of 6 sets + two that once missed one)",
+                 lambda o: check_local_optimum(o, sample=6, always=LOCAL_OPT_ALWAYS)),
                 ("party ownership", check_ownership), ("defensive value (status immunities)", check_defence),
                 ("wearer conditions (BoostConditions)", check_wearer_conditions),
                 ("stealth openers", check_stealth), ("action economy of item spells", check_action_economy),
