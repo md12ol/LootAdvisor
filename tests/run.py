@@ -52,7 +52,7 @@ LOGIC_OWNER_FIX = "return cs ~= nil and cs.team and cs.party == true and not cs.
 # itself with a function attribute `local_only = True`. Any check not marked here runs in CI and must pass there.
 LOCAL_ONLY = {"check_no_heavy_armour_raging", "check_profiles_cover_builds_lua", "check_class_proficiencies",
               "check_subclass_names", "check_sheet_subclass_features", "check_sheet_weapon_riders",
-              "check_ranged_offhand_hand_crossbow"}
+              "check_ranged_offhand_hand_crossbow", "check_sheet_armour_dex_cap"}
 
 
 def local_only(fn):
@@ -305,6 +305,24 @@ def mutations(sc):
         sc.patch("tools/build_sets_artifact.py", 'if x["name"] == "WeaponDamage" and (d0, t) in riders:', "if False:")
         return sc.env()
     out.append((names[7], "sheet: the weapon's own WeaponDamage boost counted again next to its rider", m8b, "red"))
+
+    # 8c / 8d. a body armour without a DEX cap read as capped at +2 again (sheet, then the page's own copy)
+    def m8c():
+        sc.reset()
+        sc.patch("tools/build_sets_artifact.py", 'dx = M["DEX"] if cap is None else min(M["DEX"], cap)',
+                 'dx = M["DEX"] if cap is None and cat == "Light" else min(M["DEX"], 2 if cap is None else cap)')
+        return sc.env()
+    n8c = names.index("sets page sheet: body armour DEX up to the item's cap (none = no cap)")
+    out.append((names[n8c], "sheet: no DEX cap read as +2 (Armour of Agility)", m8c, "red"))
+
+    def m8d():
+        sc.reset()
+        env = sc.env()
+        app = open(os.path.join(LA, "tools", "sets_artifact", "app.js"), encoding="utf-8").read()
+        env.file_overrides = {"app.js": app.replace("cap != null ? Math.min(M.DEX, cap) : M.DEX",
+                                                    "Math.min(M.DEX, cap != null ? cap : 2)")}
+        return env
+    out.append((names[n8c + 1], "app.js: no DEX cap read as +2 again", m8d, "red"))
 
     # 9. the validator lets any ranged weapon into the ranged off hand again
     def m9():

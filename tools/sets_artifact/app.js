@@ -367,9 +367,10 @@
     // AC
     var body = items.Breast || {}, brec = body.sid ? ITEMS[body.sid] : null, ba = (brec && brec.arm) || {}, cat = ba.cat, acF = [], ac, armoured;
     if ((cat === "Light" || cat === "Medium" || cat === "Heavy") && ba.ac != null) {
-      var cap = ba.cap, dx = cat === "Light" ? M.DEX : cat === "Medium" ? Math.min(M.DEX, cap != null ? cap : 2) : 0;
+      // cap null = no cap (light armour, or a medium armour whose entry clears it)
+      var cap = ba.cap, dx = cat === "Heavy" ? 0 : cap != null ? Math.min(M.DEX, cap) : M.DEX;
       ac = ba.ac + dx;
-      acF.push(brec.n + " " + cat.toLowerCase() + " armour " + ba.ac + " + DEX " + pctd(dx) + (cat === "Medium" ? " (max " + (cap != null ? cap : 2) + ")" : cat === "Heavy" ? " (none)" : ""));
+      acF.push(brec.n + " " + cat.toLowerCase() + " armour " + ba.ac + " + DEX " + pctd(dx) + (cat === "Heavy" ? " (none)" : cap != null ? " (max " + cap + ")" : cat === "Medium" ? " (no cap)" : ""));
       armoured = true;
     } else {
       armoured = false;
@@ -875,7 +876,7 @@
     if (it.arm) {
       var a = it.arm, acv = a.sh ? "+" + (a.ac || 2) : (a.ac != null ? (a.ac + (a.boost || 0)) : sgn(a.boost));
       h += '<div class="tt-main">' + uimg("ico_ac") + '<span class="big">' + esc(acv) + '</span><span class="dt">Armour Class' +
-        (a.cat === "Medium" ? " (+ DEX max " + (a.cap != null ? a.cap : 2) + ")" : a.cat === "Light" ? " (+ DEX)" : "") + "</span></div>";
+        (a.cat !== "Medium" && a.cat !== "Light" ? "" : a.cap != null ? " (+ DEX max " + a.cap + ")" : " (+ DEX)") + "</span></div>";
     }
     var props = [];
     if (it.wpn) {

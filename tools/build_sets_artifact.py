@@ -981,17 +981,18 @@ def compute_sheet(D, BI, set_items, IB, level=LEVEL):
     cat = ba_.get("category")
     ac_f = []
     if cat in ("Light", "Medium", "Heavy") and ba_.get("ac") is not None:
+        # extract_armour writes the cap per body armour: None = no cap (light armour, or a medium armour whose
+        # entry clears it, Armour of Agility)
         cap = ba_.get("dex_cap")
-        if cat == "Light":
-            dx = M["DEX"]
-        elif cat == "Medium":
-            dx = min(M["DEX"], cap if cap is not None else 2)
-        else:
+        if cat == "Heavy":
             dx = 0
+        else:
+            dx = M["DEX"] if cap is None else min(M["DEX"], cap)
         ac = ba_["ac"] + dx
         ac_f.append("%s %s armour %d + DEX %s%s" % (brec.get("name"), cat.lower(), ba_["ac"], fmt_mod(dx),
-                                                    " (max %s)" % (cap if cap is not None else 2) if cat == "Medium" else
-                                                    " (none)" if cat == "Heavy" else ""))
+                                                    " (none)" if cat == "Heavy" else
+                                                    " (max %s)" % cap if cap is not None else
+                                                    " (no cap)" if cat == "Medium" else ""))
         armoured = True
     else:
         armoured = False

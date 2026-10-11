@@ -570,6 +570,54 @@ def check_sheet_weapon_riders(env):
     return fails
 
 
+def _dex_part(cat, cap, dex):
+    """The DEX part of body armour AC: none in heavy armour, else the modifier up to the item's cap (None: no cap)."""
+    return 0 if cat == "Heavy" else dex if cap is None else min(dex, cap)
+
+
+def check_sheet_armour_dex_cap(env):
+    """Sets page sheet: body armour adds DEX up to the item's own cap, and a cap of None means no cap (Armour of
+    Agility is medium armour without one). Every body armour, worn alone by a build with DEX +3 or more."""
+    B, D = sheet_data(env)
+    probe = None
+    for char, d in env.scores().items():
+        for bk, b in d["builds"].items():
+            BI = B.build_input(D, char, d.get("race"), bk, b)
+            if B.compute_sheet(D, BI, {}, {}, 12)["mods"]["DEX"] >= 3:
+                probe = BI
+                break
+        if probe:
+            break
+    if not probe:
+        return ["no build with DEX +3 or more to probe the cap with"]
+    fails, n_arm, n_uncapped = [], 0, 0
+    for sid, rec in sorted(D.items.items()):
+        a = rec.get("armour") or {}
+        if rec.get("slot") != "Breast" or a.get("category") not in ("Light", "Medium", "Heavy") or a.get("ac") is None:
+            continue
+        n_arm += 1
+        n_uncapped += a["category"] == "Medium" and a.get("dex_cap") is None
+        sh = B.compute_sheet(D, probe, {"Breast": {"sid": sid}}, {sid: B.item_boosts(D, sid)}, 12)
+        want = "+ DEX %+d" % _dex_part(a["category"], a.get("dex_cap"), sh["mods"]["DEX"])
+        if want not in sh["F"]["ac"][0]:
+            fails.append(f"{rec.get('name') or sid} ({a['category']}, cap {a.get('dex_cap')}): want {want!r}, "
+                         f"sheet says {sh['F']['ac'][0]!r}")
+    env.counts["body armours"] = n_arm
+    env.counts["medium armours without a cap"] = n_uncapped
+    if n_arm == 0 or n_uncapped == 0:
+        fails.append(f"nothing checked: {n_arm} body armours, {n_uncapped} medium armours without a cap")
+    return fails
+
+
+def check_page_armour_dex_cap(env):
+    """Sets page (app.js): the live sheet and the item card read a missing DEX cap as no cap, never as a number."""
+    app = getattr(env, "file_overrides", {}).get("app.js") or _read(REPO, "tools", "sets_artifact", "app.js")
+    fails = [f"app.js turns a missing DEX cap into a number: {m.group(0)!r}"
+             for m in re.finditer(r"cap\s*!=\s*null\s*\?\s*[\w.]*cap\s*:\s*\d", app)]
+    if "cap != null ? Math.min(M.DEX, cap) : M.DEX" not in app:
+        fails.append("app.js: the sheet's DEX part is not 'cap != null ? Math.min(M.DEX, cap) : M.DEX'")
+    return fails
+
 def check_ranged_offhand_hand_crossbow(env):
     """Only hand crossbows can be dual-wielded as ranged weapons: the set validator (score_items.slot_ok) refuses any
     other ranged weapon in the ranged off hand, and every current set's ranged off hand (and its main) is one.
@@ -2307,4 +2355,6 @@ CHECKS = [
     ("gear sets for other mods (LA.Api.GearSets: ranked sets, a list per act)", check_gear_sets_api, False),
     ("worn tied items: weapon slots asked by the names Osiris uses", check_wear_slot_names, False),
     ("F6 window hidden on the build screens when Build Advisor is loaded", check_f6_hides_on_build_screens, False),
+    ("sets page sheet: body armour DEX up to the item's cap (none = no cap)", check_sheet_armour_dex_cap, False),
+    ("Sets page app.js: a missing DEX cap means no cap", check_page_armour_dex_cap, False),
 ]

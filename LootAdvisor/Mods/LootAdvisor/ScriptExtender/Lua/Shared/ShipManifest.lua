@@ -4,7 +4,7 @@
 --   text = loca handles (Ext.Loca.GetTranslatedString), page = files copied from the pak (Mods/LootAdvisor/Page).
 LA = LA or {}
 LA.Ship = {
-  version = "68fa675f8ed7",
+  version = "73e5800e238a",
   artVersion = "e795543f9251",
   page = { "Sets.html" },
   art = {
