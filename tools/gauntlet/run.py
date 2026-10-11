@@ -184,7 +184,8 @@ def _req(a, i, p, side, sc, haste, char):
     if not arena and getattr(a, "lanes", None):
         arena = ((load_arenas().get(a.lanes) or {}).get("lanes") or {}).get("A", {}).get("arena")
     return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds, "arena": arena,
-            "char": char, "label": f"pair{i}:{side}", "respec": getattr(a, "respec", "real")}
+            "char": char, "label": f"pair{i}:{side}", "respec": getattr(a, "respec", "real"),
+            "retry_any_refusal": True if getattr(a, "retry_any_refusal", False) else None}
 
 
 def _record(a, rec, i, side, t0, extra=None):
@@ -516,6 +517,9 @@ def main(argv=None):
     ap.add_argument("--lanes", help="a lanes entry of tools/gauntlet/arenas.json: both sides at once (see above)")
     ap.add_argument("--respec", choices=("real", "emulated"), default="real",
                     help="real: the characters were levelled to the build (test save per build); emulated: boosts")
+    ap.add_argument("--retry-any-refusal", action="store_true",
+                    help="ask again for any cast the engine refused, not only one an Attack of Opportunity interrupted "
+                    "(off by default; the control passed without it)")
     ap.add_argument("--report")
     ap.add_argument("--rescore", help="older run records (comma-separated files): re-judge them and run the gate")
     ap.add_argument("--md")

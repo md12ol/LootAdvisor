@@ -15,7 +15,7 @@
   ]
  },
  "undercity_north": {
-  "about": "Act 3, Lower City level: the second lane, 72 m north-east of undercity_cistern (centre to centre), the spot where a two-combat probe ran its second fight (a character there and an enemy 4 m east formed their own combat). Same layout as undercity_cistern: start, then the enemies along +x. Ground and bystanders not surveyed yet: run engine.py survey undercity_lanes before the first lane run.",
+  "about": "Act 3, Lower City level: the second lane, 72 m north-east of undercity_cistern (centre to centre), the spot where a two-combat probe ran its second fight (a character there and an enemy 4 m east formed their own combat). Same layout as undercity_cistern: start, then the enemies along +x. Survey (one game run): ground fine; two living NPCs stand at the start (about -157,939 and -157,941), moved away for a lanes' run (undercity_lanes npc_park); not confirmed in a lane run yet.",
   "level": "CTY_Main_A",
   "center": [-142.0, 17.4, 937.5],
   "radius": 16.0,
@@ -25,7 +25,7 @@
   "surveyed": false
  },
  "undercity_lanes": {
-  "about": "Two fights at once: lane A in undercity_cistern, lane B in undercity_north, both facing +x (mirrored side by side, every spell aimed away from the other lane). Each lane's enemies get their own faction (factions with no member in the world), set hostile to that lane's character and neutral to the other lane; when the two characters share a faction, each gets its lane's character faction for the run. The rest of the party is parked at the grease-floored clearing far west (no NPC there in the survey), out of combat.",
+  "about": "Two fights at once: lane A in undercity_cistern, lane B in undercity_north, both facing +x (mirrored side by side, every spell aimed away from the other lane). Each lane's enemies get their own faction (factions with no member in the world), set hostile to that lane's character and neutral to the other lane; when the two characters share a faction, each gets its lane's character faction for the run. The rest of the party is parked at the grease-floored clearing far west (no NPC there in the survey), out of combat. Living characters outside the party within a lane's radius + margin (lane B's start had two in a survey) are moved by engine to npc_park (the same clearing, far from both lanes) for the run and put back after the last lane.",
   "level": "CTY_Main_A",
   "lanes": {
    "A": {"arena": "undercity_cistern", "enemy_faction": "Debug_Mimic_Hostile_a25b2927-132a-4d22-8aad-bdac45e73c91",
@@ -34,6 +34,7 @@
          "char_faction": "Hero Player2_9fac6ec7-642b-3553-1bc8-6b8e0edae7d5"}
   },
   "park": [-1328.0, 2.0, 528.0],
+  "npc_park": [-1328.0, 2.0, 528.0],
   "margin": 10.0
  }
 }

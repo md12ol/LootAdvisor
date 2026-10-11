@@ -13,7 +13,8 @@ Per set the spec holds
   passives   class / subclass / feat / fighting-style passives of the build at that level (game Progressions,
              Feats); passives_remove = every other class passive (the test character's own class)
   spells     spells the progressions grant + the spells the round plan casts
-  slots      spell slots (multiclass caster level), resources (Rage, Channel Divinity, ...)
+  slots      spell slots (multiclass caster level), resources (Rage, Channel Divinity, ...); item_resources = what
+             the worn items add on top (a boost, or a status they put on: Amulet of the Devout's Channel Divinity)
   boosts     the armour / weapon proficiencies the class levels and feats grant (Proficiency(...))
   items      root template per slot
   plan       the scripted round plan + the item actions the shared adaptive rule may use
@@ -413,7 +414,8 @@ def hotbar_rows(plan, passives, spells, item_acts, stats):
             toggles.append(p)
         for kind, sid in re.findall(r"Unlock(Spell|Interrupt)\((\w+)", st_.get("Boosts") or ""):
             (react if kind == "Interrupt" else unlocked).append(sid)
-    class_actions = [x for x in list(dict.fromkeys(unlocked + list(spells))) if not NOT_IN_FIGHT.search(x)]
+    class_actions = [x for x in list(dict.fromkeys(unlocked + list(spells)))
+                     if not NOT_IN_FIGHT.search(x) and not out_of_combat_only(stats, x)]
     take(res, [x for x in class_actions if re.search(r"(Rage|ChannelDivinity|ChannelOath|KiPoint|SuperiorityDie|"
                                                        r"BardicInspiration|SorceryPoint|WildShape|LayOnHands)",
                                                        (stats.get(x) or {}).get("UseCosts") or "")])
@@ -474,9 +476,18 @@ def spell_requirements(stats, spid):
     return out
 
 
+def out_of_combat_only(stats, spid):
+    """Can the spell only be cast out of combat? Its Requirements say so with "!Combat" (Arcane Recovery, Speak with
+    Dead, the rituals)."""
+    return "!Combat" in ((stats.get(spid) or {}).get("Requirements") or "").replace(" ", "")
+
+
 def unusable_reason(stats, spid, main_hand, proficiencies):
-    """Why the character could never cast this spell with the set (None when it can): a weapon action without a melee
-    weapon in the main hand, or with a weapon the build is not proficient with. The game refuses such a cast."""
+    """Why the character could never cast this spell with the set (None when it can): a spell the game allows only
+    out of combat, a weapon action without a melee weapon in the main hand, or with a weapon the build is not
+    proficient with. The game refuses such a cast."""
+    if out_of_combat_only(stats, spid):
+        return "cast only out of combat"
     reqs = spell_requirements(stats, spid)
     if "melee weapon" in reqs and not main_hand:
         return "needs a melee weapon in the main hand"
@@ -560,6 +571,50 @@ def granted_proficiencies(stats, sids):
     return out
 
 
+RES_BOOST = re.compile(r"ActionResource\((\w+),\s*(\d+),\s*(\d+)\)")
+
+
+def _applied_statuses(functors, stats):
+    """The statuses ApplyStatus(...) in a functor list puts on (the argument that names a status; the target, chance and
+    duration are skipped)."""
+    out = []
+    for args in re.findall(r"ApplyStatus\(([^)]*)\)", functors or ""):
+        out += [a.strip() for a in args.split(",") if a.strip() in stats][:1]
+    return out
+
+
+def item_resources(stats, sids):
+    """Class resources and spell slots the worn items add while worn, as the setup check reads them at the fight's start:
+    ActionResource boosts of the item, its equip passives and equip statuses, and of the statuses those put on as the
+    item goes on or at a long rest (Amulet of the Devout: its equip status puts on a status whose boost is one more
+    Channel Divinity charge). A status or passive reached twice counts once. Turn resources, reaction charges and
+    conditional boosts (IF(...): low hit points) are left out. -> [{kind, level, n, items}]"""
+    total, seen = {}, set()
+
+    def visit(sid, item, depth=0):
+        if sid in seen or depth > 4:
+            return
+        seen.add(sid)
+        st = stats.get(sid) or {}
+        for kind, n, lv in RES_BOOST.findall(";".join(b for b in _split(st.get("Boosts")) if not b.startswith("IF("))):
+            if kind in TURN_RESOURCES or kind.startswith("Interrupt_"):
+                continue
+            rec = total.setdefault((kind, int(lv)), {"kind": kind, "level": int(lv), "n": 0, "items": []})
+            rec["n"] += int(n)
+            if item not in rec["items"]:
+                rec["items"].append(item)
+        for nxt in _split(st.get("PassivesOnEquip")) + _split(st.get("StatusOnEquip")) + _split(st.get("Passives")):
+            visit(nxt, item, depth + 1)
+        nxt = _applied_statuses(st.get("OnApplyFunctors"), stats)
+        if "OnLongRest" in (st.get("StatsFunctorContext") or ""):
+            nxt += _applied_statuses(st.get("StatsFunctors"), stats)
+        for s in nxt:
+            visit(s, item, depth + 1)
+    for sid in sids:
+        visit(sid, sid)
+    return [total[k] for k in sorted(total)]
+
+
 # ------------------------------------------------------------------------------------------------ specs
 def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=None, maneuvers=None):
     """respec: the test plan's tuned respec (pairs.tuned_respec) the test character was given, or None for the
@@ -618,6 +673,8 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
     item_unlocks = re.findall(r"UnlockSpell\((\w+)", ";".join((stats.get(it["stats"]) or {}).get("Boosts") or ""
                                                                  for it in items))
     slots = {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))}
+    # what the worn items add on top of the class levels (kind SpellSlot: slots of that level)
+    item_res = item_resources(stats, [it["stats"] for it in items if not it.get("use")])
     set_interrupts = granted_interrupts([], [it["stats"] for it in items], stats)
     build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
     return {
@@ -632,11 +689,12 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
         "passives_add": g["passives"], "passives_remove": g["passives_remove"],
         "spells_add": sorted(set(g["spells"]) | used),
         "slots": slots,
-        "resources": g["resources"], "boosts": g["boosts"], "items": items, "statuses": sorted(set(choice.values())),
+        "resources": g["resources"], "item_resources": item_res, "boosts": g["boosts"], "items": items,
+        "statuses": sorted(set(choice.values())),
         "plan": dict(core, item_actions=acts, item_skipped=skipped,
                      hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats),
                      reactions=reaction_policy(build_interrupts, set_interrupts), reactions_default="never",
-                     forecast=forecast(core, slots, g["resources"], stats)),
+                     forecast=forecast(core, slots, g["resources"] + item_res, stats)),
         "expect": {"ac": st.sheet["ac"], "hp": st.sheet["hp"], "attacks": st.sheet.get("attacks"),
                    "spell": st.sheet.get("spell"), "dpr": round(pred.dpr, 1), "offence": round(pred.offence, 1),
                    "R": round(pred.R, 2), "score": round(pred.score, 2), "events": pred.events},
