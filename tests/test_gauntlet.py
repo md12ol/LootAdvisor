@@ -146,11 +146,127 @@ def lua_tests():
               len({ar[x["arena"]]["radius"] for x in a["lanes"].values()}) == 1 for a in lane_sets))
     for t in (reaction_tests, item_cost_tests, cast_tests, plan_round_tests, watchdog_tests, verdict_tests, equip_tests,
               encumbrance_tests, refusal_tests, precheck_tests, downed_tests, cleanup_tests, start_tests,
-              rules_tests, setup_tests, lane_tests, respec_tests):
+              rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
             check(f"{t.__name__} ran", False, repr(e)[:300])
+
+
+def enemy_tests(L):
+    """The model's enemy: a creature made by CreateAt has no stats in its first frames, so its abilities are set to 10
+    and its gear taken off only once its stats are there; the setup check reads every ability and the worn items."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local queue, boosts, unequipped = {}, {}, {}
+      local reads, ready = 0, false
+      Ext.Timer.WaitFor = function(_, f) queue[#queue + 1] = f end
+      Osi.AddBoosts = function(_, b) boosts[#boosts + 1] = b end
+      Osi.Unequip = function(_, it) unequipped[#unequipped + 1] = it end
+      Osi.CreateAt = function() return "e1" end
+      Osi.GetEquippedItem = function(_, slot) if ready and slot == "Melee Main Weapon" and #unequipped == 0 then return "w" end end
+      Ext.Entity.Get = function(u)
+        reads = reads + 1
+        if reads > 3 then ready = true end
+        local a = ready and { 0, 16, 14, 12, 8, 10, 10 } or { 0, 0, 0, 0, 0, 0, 0 }
+        return { Stats = { Abilities = a, ProficiencyBonus = 2 }, Resistances = { AC = 12, Resistances = {} },
+                 Replicate = function() end }
+      end
+      G.spawnEnemies({ { 0, 0, 0 } }, { template = "t", ac = 19, save = 4, atk = 9, dmg = 9, dc = 17, hp = 5000 })
+      for _ = 1, 200 do if #queue == 0 then break end; table.remove(queue, 1)() end
+      T_eb, T_un = boosts, unequipped
+      ready = true
+      Ext.Entity.Get = function(u)
+        if u == "e1" then return { Stats = { Abilities = { 0, 16, 10, 10, 10, 10, 10 } }, Resistances = { AC = 19 } } end
+      end
+      Osi.GetEquippedItem = function(u, slot) if u == "e1" and slot == "Melee Main Weapon" then return "w" end end
+      local sc = G.setupCheck({ char = "c1" }, { items = {} }, "start",
+        { enemies = { "e1" }, E = { ac = 19, damage_scale = 0.5 }, scale = 0.5, encumbered = {} })
+      T_em = {}
+      for _, m in ipairs(sc.mismatches) do T_em[#T_em + 1] = m.field end
+      Ext.Timer.WaitFor = function(_, f) f() end
+      Osi.AddBoosts, Osi.Unequip, Osi.CreateAt, Osi.GetEquippedItem = nil, nil, nil, nil
+      Ext.Entity.Get = function() return nil end
+    """)
+    g = L.globals()
+    b = lst(g.T_eb)
+    check("enemy: abilities set to 10 from the stats the creature has once they are there (not +10 from a zero read)",
+          "Ability(Strength,-6)" in b and "Ability(Dexterity,-4)" in b and not any(x.startswith("Ability(") and
+                                                                               x.endswith(",10)") for x in b), str(b))
+    check("enemy: its weapon is taken off once its gear is there", lst(g.T_un) == ["w"], str(lst(g.T_un)))
+    em = lst(g.T_em)
+    check("setup: an enemy ability other than 10 and a worn item fail the setup check",
+          "enemy 1 Strength" in em and "enemy 1 items worn" in em and "enemy 1 Dexterity" not in em, str(em))
+
+
+def party_tests(L):
+    """The party: DB_Players and every player character the database misses (a companion made a player by script)."""
+    L.execute(r"""
+      local G = GAUNTLET
+      Osi.DB_Players = { Get = function() return { { "Host_11111111-1111-1111-1111-111111111111" } } end }
+      Osi.IsPlayer = function(u) return (u == "22222222-2222-2222-2222-222222222222" or
+        u == "11111111-1111-1111-1111-111111111111") and 1 or 0 end
+      local ents = {}
+      for _, u in ipairs({ "11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222",
+                           "33333333-3333-3333-3333-333333333333" }) do ents[#ents + 1] = { Uuid = { EntityUuid = u } } end
+      local gae = Ext.Entity.GetAllEntitiesWithComponent
+      Ext.Entity.GetAllEntitiesWithComponent = function() return ents end
+      T_party = G.partyMembers()
+      Ext.Entity.GetAllEntitiesWithComponent = gae
+      Osi.DB_Players, Osi.IsPlayer = nil, nil
+    """)
+    L.execute(r"""
+      local G = GAUNTLET
+      local rel = { ["Evil|Gale"] = 50, ["Gale|Evil"] = 50 }
+      Osi.GetFaction = function(u) return u == "d" and "Template" or "Gale" end
+      Osi.GetRelation = function(a, b) return rel[a .. "|" .. b] end
+      Osi.SetRelation = function(a, b, v) rel[a .. "|" .. b] = v end
+      Osi.IsEnemy = function() return 0 end
+      local st = G.makeHostile("gale", "d", "Evil")
+      T_h1 = rel["Evil|Gale"] == 0 and rel["Gale|Evil"] == 0
+      T_hr = G.laneFactionsRestore(st)
+      T_h2 = rel["Evil|Gale"] == 50 and rel["Gale|Evil"] == 50
+      Osi.IsEnemy = function() return 1 end
+      T_h3 = G.makeHostile("gale", "d", "Evil") == nil
+      Osi.GetFaction, Osi.GetRelation, Osi.SetRelation, Osi.IsEnemy = nil, nil, nil, nil
+    """)
+    g = L.globals()
+    check("hostility: a character the enemies are not hostile to gets both factions (the enemies' given one) set "
+          "hostile, put back after",
+          g.T_h1 is True and g.T_hr == 2 and g.T_h2 is True and g.T_h3 is True)
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local args
+      Osi.UseSpell = function(...) args = { ... } end
+      Osi.GetPosition = function() return 0, 0, 0 end
+      local F = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end }
+      local R = { r = 1, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G.rounds = { R }
+      G._doAction(F, { spell = "Projectile_FireBolt", group = "action", target = "@boss", cost = "free" }, R)
+      T_nomove = args and #args == 5 and args[5] == 1
+      Osi.UseSpell, Osi.GetPosition = nil, nil
+      F.pending = nil
+    """)
+    check("cast: the character casts from where it stands (UseSpell without move; the harness moves it first)",
+          L.globals().T_nomove is True)
+    L.execute(r"""
+      local G = GAUNTLET
+      local removed = {}
+      Osi.RemoveStatus = function(_, st) removed[#removed + 1] = st end
+      G.usedStatuses = { ["11111111-1111-1111-1111-111111111111"] = { POTION_X = true } }
+      T_used = G.removeUsedStatuses("Laezel_11111111-1111-1111-1111-111111111111")
+      T_used2 = G.removeUsedStatuses("11111111-1111-1111-1111-111111111111")
+      T_removed = removed
+      Osi.RemoveStatus = nil
+    """)
+    g = L.globals()
+    check("prep: the statuses an earlier run's elixir gave are taken off once",
+          lst(g.T_removed) == ["POTION_X"] and lst(g.T_used) == ["POTION_X"] and len(lst(g.T_used2)) == 0,
+          str(lst(g.T_removed)))
+    p = lst(L.globals().T_party)
+    check("party: a player character missing from DB_Players is in the party, once each, strangers are not",
+          p == ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"], str(p))
 
 
 def reaction_tests(L):
@@ -554,8 +670,18 @@ def refusal_tests(L):
       T_miss = R.actions[1].miss
       T_retry_pending = F.pending ~= nil and #R.actions == 1
       T_retry_miss = R.cast_misses
-      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused again after the retry
+      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused again after the retry: asked once more
+      T_fast15 = G.settle(F, R, 250)
+      T_retry2 = F.pending ~= nil and #R.actions == 1 and R.actions[1].retries == 2
+      G._onCastFailed("c1", "Projectile_MAG_ChainLightning")         -- refused a third time
       T_fast2 = G.settle(F, R, 300)
+      local F2 = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, afford = function() return true end }
+      local R2 = { r = 2, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {} }
+      G.rounds = { R2 }
+      G._doAction(F2, { spell = "Projectile_FireBolt", group = "action", target = "@boss" }, R2)
+      G._onCastFailed("c1", "Projectile_FireBolt")                    -- refused with no reaction: no retry
+      G.settle(F2, R2, 100)
+      T_noretry = F2.pending == nil and R2.actions[1].retried == nil and R2.cast_misses == 1
       T_res = R.actions[1].result
       T_alt = R.actions[2] and R.actions[2].spell
       T_cd = F.cooldown["Projectile_MAG_ChainLightning"]
@@ -569,6 +695,9 @@ def refusal_tests(L):
     check("refusal: after an Attack of Opportunity the same cast is asked for again once, not counted as a miss",
           g.T_fast is True and "Attack of Opportunity" in str(g.T_retried) and g.T_retry_pending is True and
           g.T_retry_miss == 0, f"{g.T_retried} {g.T_retry_pending} {g.T_retry_miss}")
+    check("refusal: refused again after the Attack of Opportunity's retry: asked once more (at most twice)",
+          g.T_fast15 is True and g.T_retry2 is True)
+    check("refusal: a refusal with no Attack of Opportunity before it is not retried", g.T_noretry is True)
     check("refusal: CastSpellFailed fails the cast at once (no timeout wait), the fallback runs",
           g.T_fast2 is True and str(g.T_res).startswith("failed: refused by the engine") and
           g.T_alt == "Zone_LightningBolt", str(g.T_res))
@@ -1239,11 +1368,75 @@ def py_tests():
     check("items: other items keep their first template", P.item_template("X", {"X": ["t1", "t2"]}) == "t1")
     import pairs as PA
     for t in (lambda: gate_tests(R), engine_tests, lambda: requirement_tests(P), lambda: rescore_tests(R),
-              lambda: control_tests(PA), lambda: reach_tests(P), lambda: lanes_py_tests(R), engine_lane_tests):
+              lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
+              lambda: lanes_py_tests(R), engine_lane_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+def grants_tests(P):
+    """What a real respec gives, as the setup check expects it: a game row held twice under two UUIDs counts once, the
+    Battle Master manoeuvres are the respec's picks, and a passive the race grants is never on the remove list."""
+    descs = {"f": {"UUID": "f", "Name": "Fighter", "ProgressionTableUUID": "tf"},
+             "bm": {"UUID": "bm", "Name": "BattleMaster", "ParentGuid": "f", "ProgressionTableUUID": "tbm"},
+             "gs": {"UUID": "gs", "Name": "GloomStalker", "ProgressionTableUUID": "tgs"}}
+    row = {"TableUUID": "tbm", "Level": "3", "ProgressionType": "1", "Boosts": "ActionResource(SuperiorityDie,4,0)"}
+    progs = {"1": dict(row, UUID="1"), "2": dict(row, UUID="2"),
+             "3": {"UUID": "3", "TableUUID": "tf", "Level": "1", "ProgressionType": "0", "PassivesAdded": "SecondWind"},
+             "4": {"UUID": "4", "TableUUID": "tgs", "Level": "3", "ProgressionType": "1",
+                   "PassivesAdded": "Darkvision;UmbralSight"},
+             "5": {"UUID": "5", "TableUUID": "tr", "Level": "1", "ProgressionType": "2", "PassivesAdded": "Darkvision"}}
+    g = P.grants((progs, descs, {}, {}), ["Fighter"] * 3, {"Fighter": "Battle Master"}, [], [],
+                 maneuvers=["MenacingAttack"])
+    check("grants: a game row held twice under two UUIDs counts once (4 superiority dice, not 8)",
+          g["resources"] == [{"kind": "SuperiorityDie", "level": 0, "n": 4}], str(g["resources"]))
+    check("grants: the Battle Master manoeuvres are the respec's picks",
+          "MenacingAttack" in g["passives"] and "Riposte" not in g["passives"], str(g["passives"]))
+    check("grants: a passive the race grants is never removed", "Darkvision" not in g["passives_remove"] and
+          "UmbralSight" in g["passives_remove"], str(g["passives_remove"]))
+    mv = P.maneuver_picks([{"picks": ["Manoeuvres: Trip Attack, Riposte"]}, {"picks": ["Feat: Alert"]},
+                           {"picks": ["Manoeuvres: Goading Attack (5th superiority die)"]}])
+    check("grants: manoeuvre picks read from a test plan, notes in brackets dropped",
+          mv == ["TripAttack", "Riposte", "GoadingAttack"], str(mv))
+
+
+def tuned_respec_tests(PA):
+    """Each side's respec is its test plan's: the tuner runs on the plan's gear only for a tuned plan, and a respec
+    whose ability scores differ from the plan's stops the spec (the setup check would test the wrong character)."""
+    calls = []
+
+    class _St:
+        def __init__(self, W, cid, bid, act, lo, sw, respec=None):
+            self.sheet = {"abBase": dict((respec or {}).get("ab") or {"DEX": 17})}
+
+    class _M:
+        State = _St
+
+    def tune(W, cid, bid, act, lo):
+        calls.append(lo)
+        return {"respec": {"ab": {"DEX": 18}}}
+    plans = {"x.b.a3.1": {"char": "x", "build": "b", "act": 3, "gear": {"Ring1": {"id": "R1"}},
+                          "respec": {"tuned": True, "abilities": {"DEX": 18}}},
+             "x.b.a3.opt": {"char": "x", "build": "b", "act": 3, "gear": {}, "respec": {"tuned": False,
+                                                                                         "abilities": {"DEX": 17}}},
+             "x.b.a3.2": {"char": "x", "build": "b", "act": 3, "gear": {}, "respec": {"tuned": True,
+                                                                                       "abilities": {"DEX": 16}}}}
+    try:
+        r = PA.tuned_respec(None, _M, tune, plans, "x.b.a3.1")
+    except SystemExit as e:
+        r = str(e)
+    check("respec: a tuned test plan's respec comes from the tuner on the plan's gear",
+          r == {"ab": {"DEX": 18}} and calls == [{"Ring1": "R1"}], f"{r} {calls}")
+    check("respec: an untuned test plan keeps the build's picks", PA.tuned_respec(None, _M, tune, plans, "x.b.a3.opt")
+          is None)
+    try:
+        PA.tuned_respec(None, _M, tune, plans, "x.b.a3.2")
+        stopped = False
+    except SystemExit:
+        stopped = True
+    check("respec: ability scores other than the plan's stop the spec", stopped)
 
 
 class _Res:
@@ -1696,6 +1889,21 @@ MUTATIONS = [
     ("control: damage taken not compared", PA, "    if _rel(na[\"taken\"], nb[\"taken\"]) > tol:", "    if False:"),
     ("control: saves not compared", PA, "    if na[\"saves\"] != nb[\"saves\"]:", "    if False:"),
     ("control: resistances not compared", PA, "    if na[\"resist\"] != nb[\"resist\"]:", "    if False:"),
+    ("enemy: abilities forced before the stats are there", GL, "  if not G.enemyReady(d) then", "  if false then"),
+    ("enemy: abilities not in the setup check", GL,
+     "      for _, n in ipairs(ABIL) do cmp(\"enemy \" .. i .. \" \" .. n, 10, ab[n]) end", ""),
+    ("enemy: worn items not in the setup check", GL, "      cmp(\"enemy \" .. i .. \" items worn\", 0, gear)", ""),
+    ("party: player characters outside DB_Players left out", GL,
+     "if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then", "if false then"),
+    ("hostility: only one way", GL, "  for _, p in ipairs({ { a, b }, { b, a } }) do", "  for _, p in ipairs({ { a, b } }) do"),
+    ("cast: the engine moves before a cast", GL, "pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)",
+     "pcall(Osi.UseSpell, F.char, a.spell, tgt)"),
+    ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
+    ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
+     "    remove = sorted(all_class_passives - set(passives))"),
+    ("grants: fixed manoeuvres", PL, "        passives.extend(maneuvers or MANEUVERS)", "        passives.extend(MANEUVERS)"),
+    ("respec: the plan's ability scores not compared", PA, "    if want and got != want:", "    if False:"),
+    ("respec: tuned plans keep the build's picks", PA, "    if rs.get(\"tuned\"):", "    if False:"),
     ("control: damage not compared", PA, "    if _rel(na[\"dpr\"], nb[\"dpr\"]) > tol:", "    if False:"),
     ("control search: items with actions swapped", PA, "if alt == cur or alt in lo.values() or has_action(alt):",
      "if alt == cur or alt in lo.values():"),
@@ -1775,8 +1983,12 @@ MUTATIONS = [
      "        boost(u, G.AOO_BOOST); G.results.ignore_leave_attack_range = false"),
     ("start: HP buffer given", GL, "G.HP_BUFFER = 0", "G.HP_BUFFER = 200"),
     ("refusal: no retry after an Attack of Opportunity", GL,
-     'if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then',
+     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
      "if false then"),
+    ("refusal: any refusal retried", GL,
+     'if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then',
+     "if refused and tries < G.CAST_RETRIES then"),
+    ("refusal: retries without a limit", GL, "G.CAST_RETRIES = 2", "G.CAST_RETRIES = 99"),
     ("foreign: own Attack of Opportunity voids the run", GL, "and not (aoo and weapon) then", "then"),
     ("down: a down does not end the run", GL,
      'if not F.manual and G.round > 0 and (try(Osi.GetHitpoints, F.char) or 1) <= 0 then return finish(F, "downed") end',

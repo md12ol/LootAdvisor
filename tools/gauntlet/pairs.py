@@ -1,7 +1,7 @@
 """Pick gauntlet pairs: the optimizer's set vs the best research set the optimizer compared it with, and the control.
 
     python tools/gauntlet/pairs.py --optimizer DIR --optimized optimized.json \
-        --select shadowheart:lightcleric:3,wyll:lockadin:3 [--control] --out pairs.json
+        --select shadowheart:lightcleric:3,wyll:lockadin:3[:1] [--control] [--test-plans FILE] --out pairs.json
     python tools/gauntlet/pairs.py --optimizer DIR --optimized optimized.json \
         --find-control astarion:gloomassassin:3,shadowheart:lightcleric:3
 
@@ -13,6 +13,11 @@ research sets of the given builds for such pairs: a set against itself with one 
 model values the same (each item adds damage, neither grants an action of its own, so both sets run the same round
 plan). CONTROL is the pair chosen from that search; --control puts it first in the output, checked again against
 the current model.
+
+--select compares the optimizer's set with the research set the optimizer compared it with, or with the research set
+named by a fourth field (its number, "1" for <char>.<build>.a<act>.1). Each side names its test plan ("respec"): the
+optimizer tunes the ability scores, feats and fighting styles to each set, a test character is respecced to that
+plan, and the model's numbers and the gauntlet's setup check follow the same respec (TEST_PLANS, --test-plans).
 """
 import argparse
 import itertools
@@ -30,6 +35,39 @@ MIN_VALUE = 1.0            # an item the control swaps adds at least this much d
 # Conduit Ring. Both rings add damage to weapon attacks and grant no action; everything defensive is the same.
 CONTROL = {"char": "astarion", "build": "gloomassassin", "act": 3, "base": "Celestial Volley",
            "swaps": {"Ring2": "MAG_Acid_AcidDamageOnWeaponAttack_Ring"}}
+
+
+TEST_PLANS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "optimizer", ".cache", "test_plans.json")
+
+
+# ------------------------------------------------------------------------------------------------ respec
+def load_test_plans(path=TEST_PLANS):
+    """{test plan id: plan} from the optimizer's test plans; {} when the file is missing."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            return {p["id"]: p for p in json.load(f).get("plans") or []}
+    except OSError:
+        return {}
+
+
+def tuned_respec(W, model, tune, plans, pid):
+    """The respec of test plan pid as the model takes it (abilities, feats, fighting styles, cantrip), re-derived by
+    the optimizer's tuner from the plan's gear; None when the plan keeps the build's own picks. The tuner is
+    deterministic, but the data may have changed since the plans were written: the derived ability scores must equal
+    the plan's, else SystemExit (a spec would check the character against a respec it was never given)."""
+    p = plans.get(pid)
+    if p is None:
+        raise SystemExit(f"no test plan {pid!r}")
+    rs = p.get("respec") or {}
+    r = None
+    if rs.get("tuned"):
+        lo = {k: v["id"] for k, v in (p.get("gear") or {}).items() if v and v.get("id")}
+        r = tune(W, p["char"], p["build"], p["act"], lo)["respec"]
+    st = model.State(W, p["char"], p["build"], p["act"], {}, {}, respec=r)
+    got, want = dict(st.sheet["abBase"]), rs.get("abilities")
+    if want and got != want:
+        raise SystemExit(f"test plan {pid}: the tuner now gives {got}, the plan says {want}")
+    return r
 
 
 # ------------------------------------------------------------------------------------------------ model numbers
@@ -158,21 +196,23 @@ def build_sets(W, opt, cid, bid, act):
     return out
 
 
-def control_pair(W, model, opt, ctl=None, tol=CONTROL_EQ):
-    """The control pair record from CONTROL (or ctl), with the model's numbers for both sets checked again."""
+def control_pair(W, model, opt, ctl=None, tol=CONTROL_EQ, respec=None):
+    """The control pair record from CONTROL (or ctl), with the model's numbers for both sets checked again. respec =
+    (test plan id, respec) of the test character, the same on both sides: the base set's research plan."""
     ctl = ctl or CONTROL
     cid, bid, act = ctl["char"], ctl["build"], ctl["act"]
     base = next((lo for n, lo in build_sets(W, opt, cid, bid, act) if n == ctl["base"]), None)
     if base is None:
         raise SystemExit(f"control base set {ctl['base']!r} not found for {cid} {bid} act {act}")
     lob = dict(base, **ctl["swaps"])
-    na = numbers(model.score(W, cid, bid, act, base, None))
-    nb = numbers(model.score(W, cid, bid, act, lob, None))
+    pid, r = respec or (None, None)
+    na = numbers(model.score(W, cid, bid, act, base, None, respec=r))
+    nb = numbers(model.score(W, cid, bid, act, lob, None, respec=r))
     ok, why = control_check(na, nb, tol)
     swapped = ", ".join(f"{W.items[s].get('name')} in {k}" for k, s in ctl["swaps"].items())
     return {"char": cid, "build": bid, "act": act, "control": True, "control_check": {"ok": ok, "why": why},
-            "a": {"name": ctl["base"], "id": None, "items": _items(W, base)},
-            "b": {"name": f"{ctl['base']} ({swapped})", "id": None, "items": _items(W, lob)},
+            "a": {"name": ctl["base"], "id": None, "items": _items(W, base), "respec": pid},
+            "b": {"name": f"{ctl['base']} ({swapped})", "id": None, "items": _items(W, lob), "respec": pid},
             "model": {"a_dpr": na["dpr"], "b_dpr": nb["dpr"], "a_taken": na["taken"], "b_taken": nb["taken"],
                       "a_R": na["R"], "b_R": nb["R"], "a": na, "b": nb,
                       "delta": round(nb["dpr"] / na["dpr"] - 1, 4) if na["dpr"] else None}}
@@ -182,7 +222,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--optimizer", required=True)
     ap.add_argument("--optimized", required=True, help="the optimizer's export (sets + compare rows)")
-    ap.add_argument("--select", default="", help="char:build:act,...")
+    ap.add_argument("--select", default="", help="char:build:act[:research set number],...")
+    ap.add_argument("--test-plans", default=TEST_PLANS, help="the optimizer's test plans (each side's respec)")
     ap.add_argument("--control", action="store_true", help="put the control pair (CONTROL) first")
     ap.add_argument("--find-control", help="char:build:act,...: list control candidates of these builds")
     ap.add_argument("--out")
@@ -190,7 +231,9 @@ def main(argv=None):
     sys.path.insert(0, os.path.abspath(a.optimizer))
     import model
     import odata
+    import respec as RS
     W = odata.World()
+    plans = load_test_plans(a.test_plans)
     with open(a.optimized, encoding="utf-8") as f:
         opt = json.load(f)
     if a.find_control:
@@ -214,27 +257,37 @@ def main(argv=None):
         return
     out = []
     if a.control:
-        p = control_pair(W, model, opt)
+        rid = next((r.get("id") for r in W.research_sets(CONTROL["char"], CONTROL["build"], CONTROL["act"])
+                    if r.get("name") == CONTROL["base"]), None)
+        rr = (rid, tuned_respec(W, model, RS.tune, plans, rid)) if rid in plans else None
+        p = control_pair(W, model, opt, respec=rr)
         if not p["control_check"]["ok"]:
             print("WARNING: the model no longer rates the control's sets alike:", "; ".join(p["control_check"]["why"]))
         out.append(p)
     for key in [k for k in a.select.split(",") if k]:
-        cid, bid, act = key.split(":")
+        cid, bid, act, *num = key.split(":")
         act = int(act)
         oset = next(s for s in opt["sets"] if (s["char"], s["build"], s["act"]) == (cid, bid, act))
         comp = next(c for c in opt["compare"] if (c["char"], c["build"], c["act"]) == (cid, bid, act))
-        ref = next((s for s in W.research_sets(cid, bid, act) if s.get("name") == comp["ref_set"]), None)
+        ref_id = f"{cid}.{bid}.a{act}.{num[0]}" if num else None
+        ref = next((s for s in W.research_sets(cid, bid, act)
+                    if (s.get("id") == ref_id if ref_id else s.get("name") == comp["ref_set"])), None)
         if ref is None:
             print("no research set", key, comp["ref_set"])
             continue
-        na = numbers(model.score(W, cid, bid, act, _loadout(W, oset["items"]), None))
-        nb = numbers(model.score(W, cid, bid, act, _loadout(W, ref.get("items")), None))
-        out.append({"char": cid, "build": bid, "act": act, "a": {"name": oset["name"], "id": oset["id"],
-                                                                 "items": oset["items"]},
-                    "b": {"name": ref.get("name"), "id": ref.get("id"), "items": ref.get("items")},
-                    "model": {"a_score": comp["opt_score"], "b_score": comp["ref_score"], "a_dpr": comp["opt_dpr"],
-                              "b_dpr": comp["ref_dpr"], "delta": comp["delta"], "a_taken": na["taken"],
-                              "b_taken": nb["taken"], "a_R": na["R"], "b_R": nb["R"]}})
+        pa = oset.get("id") if oset.get("id") in plans else None
+        pb = ref.get("id") if ref.get("id") in plans else None
+        sa = model.score(W, cid, bid, act, _loadout(W, oset["items"]), None,
+                         respec=pa and tuned_respec(W, model, RS.tune, plans, pa))
+        sb = model.score(W, cid, bid, act, _loadout(W, ref.get("items")), None,
+                         respec=pb and tuned_respec(W, model, RS.tune, plans, pb))
+        na, nb = numbers(sa), numbers(sb)
+        out.append({"char": cid, "build": bid, "act": act,
+                    "a": {"name": oset["name"], "id": oset["id"], "items": oset["items"], "respec": pa},
+                    "b": {"name": ref.get("name"), "id": ref.get("id"), "items": ref.get("items"), "respec": pb},
+                    "model": {"a_score": round(sa.score, 2), "b_score": round(sb.score, 2), "a_dpr": na["dpr"],
+                              "b_dpr": nb["dpr"], "delta": round(sa.score / sb.score - 1, 4) if sb.score else None,
+                              "a_taken": na["taken"], "b_taken": nb["taken"], "a_R": na["R"], "b_R": nb["R"]}})
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)

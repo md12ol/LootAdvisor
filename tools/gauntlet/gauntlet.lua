@@ -341,9 +341,18 @@ local function equipAll(u, items, i, cb)
       return equipAll(u, items, i + 1, cb)
     end
     if spec.use then
+      local before = G.statusSet(u)
       pcall(Osi.Use, u, it, "")
       G.results.items[#G.results.items + 1] = { want = spec.slot, stats = spec.stats, got = "used", uuid = it }
-      return wait(G.USE_MS, function() equipAll(u, items, i + 1, cb) end)
+      return wait(G.USE_MS, function()
+        -- the statuses the elixir gave are taken off in the next run's prep, before the bare sheet is read
+        G.usedStatuses = G.usedStatuses or {}
+        G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
+        for st in pairs(G.statusSet(u)) do
+          if not before[st] then G.usedStatuses[uuid(u)][st] = true end
+        end
+        equipAll(u, items, i + 1, cb)
+      end)
     end
     pcall(Osi.Equip, u, it, 1, 0, 0)
     -- worn yet? asked every POLL_MS; an equip that has not taken by half of EQUIP_MS is asked for once more (two runs
@@ -429,6 +438,7 @@ function G.prep(spec)
   wait(G.SETTLE_MS, function()
     G.results.items_deleted = G.dropSpawnedItems(u)
     G.unencumber(u, true)
+    G.results.used_statuses_removed = G.removeUsedStatuses(u)
     for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -475,6 +485,25 @@ function G.prep(spec)
     end)
   end)
   return G.status
+end
+-- The character's active statuses as a set of ids.
+function G.statusSet(u)
+  local out = {}
+  local e = ent(u)
+  for _, v in pairs(e and try(function() return e.StatusContainer.Statuses end) or {}) do out[tostring(v)] = true end
+  return out
+end
+-- An elixir or potion an earlier run used lasts until a long rest: its statuses (Cloud Giant Strength, STR 27) were
+-- still on in the next run's bare sheet and failed the setup check. Takes off what a run's consumable gave.
+function G.removeUsedStatuses(u)
+  local out = {}
+  for st in pairs((G.usedStatuses or {})[uuid(u)] or {}) do
+    pcall(Osi.RemoveStatus, u, st, "")
+    out[#out + 1] = st
+  end
+  if G.usedStatuses then G.usedStatuses[uuid(u)] = nil end
+  table.sort(out)
+  return out
 end
 -- prep, last part: the bare sheet is read, then the set goes on, the fixed statuses, full resources
 function G.prepItems(u, spec, gen)
@@ -561,11 +590,22 @@ local function sameFlags(a, b)
   for _, f in ipairs(b) do if not s[f] then return false end; s[f] = nil end
   return next(s) == nil
 end
+-- The party: DB_Players plus every player character the database misses (a companion made a player by
+-- Osi.MakePlayer, as in test saves, is not in it; left out, it failed the arena check as a stranger and was never
+-- parked)
 local function partyMembers()
-  local out = {}
-  for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do out[#out + 1] = uuid(row[1]) end
+  local out, seen = {}, {}
+  for _, row in ipairs(try(function() return Osi.DB_Players:Get(nil) end) or {}) do
+    local u = uuid(row[1])
+    if u and not seen[u] then seen[u] = true; out[#out + 1] = u end
+  end
+  for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
+    local u = try(function() return e.Uuid.EntityUuid end)
+    if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then seen[u] = true; out[#out + 1] = u end
+  end
   return out
 end
+G.partyMembers = partyMembers
 -- Scripted runs only. Saves each character's own settings once (a second call keeps the first copy), applies the
 -- plan's policy and reads it back. Returns { [uuid] = { name, reactions = { Interrupt_X = policy }, verified } }.
 function G.reactionsApply(plan, chars)
@@ -658,7 +698,20 @@ end
 -- ------------------------------------------------------------------------------------------------ enemies
 -- E = {template, ac, save, atk, dmg, dc, hp}. Stats are forced, then VERIFIED in G.results.enemies (a difficulty
 -- setting or the template could change them).
-local function forceEnemy(d, E)
+-- A creature made by CreateAt has no stats and no equipment yet in the frame it was made: its abilities read 0, so
+-- "set every ability to 10" added +10 to each (the pilot's enemy had STR 26) and its weapon stayed on (+8 to hit and
+-- damage beyond the model's enemy). Abilities and gear are forced once the stats are there (G.enemyReady).
+G.ENEMY_READY_TRIES = 20
+function G.enemyReady(d)
+  local cur = abilities(d)
+  return (cur.Strength or 0) > 0 and (cur.Dexterity or 0) > 0
+end
+local function forceEnemy(d, E, tries)
+  tries = tries or 0
+  if not G.enemyReady(d) then
+    if tries < G.ENEMY_READY_TRIES then wait(100, function() forceEnemy(d, E, tries + 1) end) end
+    return
+  end
   for _, it in pairs(G.equipped(d)) do pcall(Osi.Unequip, d, it) end
   local cur = abilities(d)
   for _, n in ipairs(ABIL) do
@@ -898,6 +951,13 @@ function G.setupCheck(F, spec, phase, extra)
       local E = extra.E or {}
       local de = ent(d)
       cmp("enemy " .. i .. " AC", E.ac, de and try(function() return de.Resistances.AC end))
+      cmp("enemy " .. i .. " hostile to the character", 1, try(Osi.IsEnemy, F.char, d))
+      -- the model's enemy: every ability 10, unarmed (its attack and damage come from the forced boosts alone)
+      local ab = abilities(d)
+      for _, n in ipairs(ABIL) do cmp("enemy " .. i .. " " .. n, 10, ab[n]) end
+      local gear = 0
+      for _ in pairs(G.equipped(d)) do gear = gear + 1 end
+      cmp("enemy " .. i .. " items worn", 0, gear)
       cmp("enemy " .. i .. " damage scale", extra.scale, E.damage_scale)
     end
     for m in pairs(extra.parked or {}) do
@@ -1332,13 +1392,18 @@ local function doAction(F, a, R, rec0)
     local x, y, z = Osi.GetPosition(tgt)
     okc, err = pcall(Osi.UseSpellAtPosition, F.char, a.spell, x, y, z, 1)
   else
-    okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt)
+    -- cast from where the character stands (the 5-argument UseSpell, "without move"): the harness moved it first when
+    -- the target was out of range or sight. Left to itself the engine stepped away from an enemy in melee before a
+    -- ranged attack or a projectile spell, the enemy's Attack of Opportunity interrupted the step and the cast was
+    -- refused (every Fire Bolt once the enemy stood 1 m away); the game lets a player shoot from where they stand
+    okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)
   end
   if not okc then return fallback("engine refused " .. tostring(err)) end
   rec.result = "pending"
   F.pending = P
 end
 
+G.CAST_RETRIES = 2
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
 -- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
 function G.settle(F, R, t)
@@ -1378,13 +1443,17 @@ function G.settle(F, R, t)
       return out
     end) }
   -- an Attack of Opportunity interrupted the engine's step to the cast: once the step has settled the same cast is asked
-  -- for again from where the character stands (once); it is not a miss and the round is not idle
-  if refused and reason.why:find("Attack of Opportunity", 1, true) and not P.a.retried then
+  -- for again from where the character stands; it is not a miss and the round is not idle. The engine can refuse the
+  -- first ask after the reaction too (no reason shown; seen when the enemy had just stepped into melee), so a cast
+  -- an Attack of Opportunity interrupted gets up to G.CAST_RETRIES asks, and only such a cast
+  local tries = P.a.retried or 0
+  if refused and tries < G.CAST_RETRIES and (tries > 0 or reason.why:find("Attack of Opportunity", 1, true)) then
     R.cast_misses = R.cast_misses - 1
-    P.rec.retried = P.rec.result
+    P.rec.retried = P.rec.retried or P.rec.result
+    P.rec.retries = tries + 1
     local again = {}
     for k, v in pairs(P.a) do again[k] = v end
-    again.retried = true
+    again.retried = tries + 1
     doAction(F, again, R, P.rec)
     return true
   end
@@ -1831,7 +1900,11 @@ local function finish(F, why)
   F.state = "done"
   if not F.manual then
     G.results.reactions_restored = G.reactionsRestore()
-    if not F.lane then G.unparkOthers() end
+    if not F.lane then
+      G.unparkOthers()
+      G.results.hostility_restored = G.laneFactionsRestore(F.hostility)
+      F.hostility = nil
+    end
   end
   -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
   local gone = {}
@@ -2024,11 +2097,29 @@ function G.start(F)
   wait(G.POLL_MS, waitPrep)
 end
 
+-- A companion made a player by script keeps its own faction, which the enemies' faction may not be hostile to: the
+-- fight never started for one (it left combat each time it was put in). The two factions are set hostile both ways
+-- for the run (the game applies a relation a tick later) and put back when it ends; the setup check reads IsEnemy.
+-- enemy_faction: the faction the enemies were given (read back from a creature made this frame it is still the
+-- template's). -> the changes, in G.laneFactions' shape, or nil when the enemy is hostile already.
+function G.makeHostile(u, d, enemy_faction)
+  if try(Osi.IsEnemy, u, d) == 1 then return nil end
+  local a, b = enemy_faction or try(Osi.GetFaction, d), try(Osi.GetFaction, u)
+  if not a or not b then return nil end
+  local out = { relations = {} }
+  for _, p in ipairs({ { a, b }, { b, a } }) do
+    out.relations[p[1] .. "|" .. p[2]] = { a = p[1], b = p[2], was = try(Osi.GetRelation, p[1], p[2]) }
+    pcall(Osi.SetRelation, p[1], p[2], 0)
+  end
+  return out
+end
+
 -- The enemies, the setup check, then the fight.
 function G.spawnAndFight(F, pts, E, buffs, C)
   local u, spec = F.char, F.spec
   F.enemies = G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)
   if #F.enemies == 0 then return stop(F, "no enemies") end
+  if not F.lane then F.hostility = G.makeHostile(u, F.enemies[1], C.enemy_faction) end
   if F.lane and G.LANES then
     local m = G.LANES.members[F.lane.id] or {}
     m[uuid(u)] = true
