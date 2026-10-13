@@ -403,7 +403,7 @@ local function useAll(u, list, k, cb)
     G.results.items[#G.results.items + 1] = { want = e.spec.slot, stats = e.spec.stats, got = "inventory", uuid = e.it }
     return useAll(u, list, k + 1, cb)
   end
-  local before = G.statusSet(u)
+  local before = G.statusEntities(u)
   pcall(Osi.Use, u, e.it, "")
   local rec = { want = e.spec.slot, stats = e.spec.stats, got = "used", uuid = e.it, statuses = {} }
   G.results.items[#G.results.items + 1] = rec
@@ -411,12 +411,21 @@ local function useAll(u, list, k, cb)
   local function check()
     polls = polls + 1
     local new = {}
-    for st in pairs(G.statusSet(u)) do if not before[st] then new[#new + 1] = st end end
+    for st, h in pairs(G.statusEntities(u)) do if before[st] ~= h then new[#new + 1] = st end end
     -- done once the new statuses stopped changing between two reads, or at USE_MS
     if (#new == 0 or #new ~= seen) and math.max(now() - t0, polls * G.POLL_MS) < G.USE_MS then
       seen = #new > 0 and #new or seen
       return wait(G.POLL_MS, check)
     end
+    -- nothing new and the item is still in the pack: the game did not take the use (seen right after a prep's
+    -- equips: the status of a consumable used then arrived only after the setup check); used once more
+    if #new == 0 and not rec.retried and try(Osi.GetInventoryOwner, e.it) then
+      rec.retried = true
+      pcall(Osi.Use, u, e.it, "")
+      t0, seen, polls = now(), -1, 0
+      return wait(G.POLL_MS, check)
+    end
+    rec.ms = now() - t0
     G.usedStatuses = G.usedStatuses or {}
     G.usedStatuses[uuid(u)] = G.usedStatuses[uuid(u)] or {}
     for _, st in ipairs(new) do G.usedStatuses[uuid(u)][st] = true end
@@ -550,7 +559,7 @@ function G.prep(spec)
     for _, sp in ipairs(emulate and spec.spells_add or {}) do pcall(Osi.AddSpell, u, sp, 0, 1) end
     for _, b in ipairs(emulate and spec.boosts or {}) do boost(u, b) end
     -- a real respec boosts nothing: one settle for the statuses taken off above, then the bare sheet
-    if not emulate then return wait(G.SETTLE_MS, function() G.prepItems(u, spec, gen) end) end
+    if not emulate then return wait(G.SETTLE_MS, function() G.waitGone(u, function() G.prepItems(u, spec, gen) end) end) end
     wait(G.SETTLE_MS, function()
       local cur = abilities(u)
       for short, want in pairs(emulate and spec.sheet.abilities or {}) do
@@ -583,11 +592,20 @@ function G.prep(spec)
           for _, entry in ipairs(resList(u, r.kind) or {}) do m = math.max(m, entry.MaxAmount) end
           if r.n - m ~= 0 then boost(u, string.format("ActionResource(%s,%d,%d)", r.kind, r.n - m, r.level or 0)) end
         end
-        wait(G.SETTLE_MS, function() G.prepItems(u, spec, gen) end)
+        wait(G.SETTLE_MS, function() G.waitGone(u, function() G.prepItems(u, spec, gen) end) end)
       end)
     end)
   end)
   return G.status
+end
+-- The character's active statuses: id -> the status entity's handle as text. A status put on again while an older
+-- copy is still on (an elixir drunk while the last run's one was being taken off) is a new entity, so a consumable's
+-- status counts as given even when its id was already there.
+function G.statusEntities(u)
+  local out = {}
+  local e = ent(u)
+  for se, v in pairs(e and try(function() return e.StatusContainer.Statuses end) or {}) do out[tostring(v)] = tostring(se) end
+  return out
 end
 -- The character's active statuses as a set of ids.
 function G.statusSet(u)
@@ -609,6 +627,34 @@ function G.removeUsedStatuses(u)
   return out
 end
 
+-- A status taken off above can still be on when the next consumable is used (seen: an elixir's status taken off at
+-- prep was still there as the same elixir was drunk again, so the drink showed no new status and the old one counted
+-- as carried over). Waits until every status prep took off is gone, asking again each poll, at most USE_MS; what is
+-- still on then is listed in results.carry_left and the setup check reports it.
+function G.waitGone(u, cb)
+  local names = {}
+  for _, st in ipairs(G.results.used_statuses_removed or {}) do names[st] = true end
+  for _, r in ipairs(((G.results.carry_over or {}).removed) or {}) do
+    local st, who = r:match("^(%S+) on (.+)$")
+    if st and who == "the character" then names[st] = true end
+  end
+  local t0 = now()
+  local function poll()
+    local left = {}
+    local cur = G.statusSet(u)
+    for st in pairs(names) do if cur[st] then left[#left + 1] = st end end
+    if #left == 0 then return cb() end
+    if now() - t0 >= G.USE_MS then
+      table.sort(left)
+      G.results.carry_left = left
+      return cb()
+    end
+    for _, st in ipairs(left) do pcall(Osi.RemoveStatus, u, st, "") end
+    wait(G.POLL_MS, poll)
+  end
+  poll()
+end
+
 -- ------------------------------------------------------------------------------------------------ carried state
 -- A run left state behind that the next run started with: the Hunter's Mark concentration was still held (Strange
 -- Conduit's concentration rider was on the next run's very first hit), kill stacks and consumable statuses last until
@@ -618,8 +664,13 @@ end
 G.CARRY_STATUSES = { "HUNTERS_MARK" }
 -- the game ends a concentration by this status (its story procedure PROC_GLO_BreakConcentration does the same)
 G.BREAK_CONCENTRATION = "AI_HELPER_BREAKCONCENTRATION"
--- engine helpers that come and go on their own and say nothing about the sheet
-G.TECHNICAL_STATUS = { "^AI_HELPER", "TECHNICAL" }
+-- engine helpers that come and go on their own and say nothing about the sheet; *_VFX statuses only show an effect
+G.TECHNICAL_STATUS = { "^AI_HELPER", "TECHNICAL", "_VFX$" }
+-- Statuses that come from where the fighters stand as the fight starts, not from an earlier run: the arenas' natural
+-- surfaces (undercity_cistern's boss spot lies in caustic brine) and being flanked by the spawned enemies. The same
+-- for every run in an arena, so the character and the enemies may start with them (an enemy's are listed in the
+-- setup notes).
+G.GROUND_STATUS = { INSURFACE = true, CAUSTIC_BRINE = true, FLANKED = true }
 function G.technicalStatus(st)
   for _, pat in ipairs(G.TECHNICAL_STATUS) do if tostring(st):find(pat) then return true end end
   return false
@@ -671,12 +722,15 @@ end
 -- ------------------------------------------------------------------------------------------------ boosts
 -- The boosts on a creature as "Type(params)" text, or nil when the container cannot be read. BoostsContainer maps a
 -- boost type to the boost entities of that type; each has its BoostInfo (the boost's name and its parameters).
+-- After a save load (and for boosts the game adds itself) the text fields of BoostInfo.Params read empty; such a
+-- boost is then given by its type only, which hasBoost matches by type.
 local function boostText(b, ty)
   local txt = try(function()
     local P = b.BoostInfo.Params
+    if tostring(P.Boost or "") == "" then return nil end
     return tostring(P.Boost) .. "(" .. tostring(P.Params) .. ")"
   end)
-  return txt or tostring(try(function() return b.BoostInfo.Type end) or ty)
+  return txt or tostring(ty or try(function() return b.BoostInfo.Type end))
 end
 function G.boostList(u)
   local e = ent(u)
@@ -694,12 +748,15 @@ function G.boostList(u)
 end
 local function normBoost(s) return (tostring(s or ""):lower():gsub("%s", "")) end
 -- Is a boost given as "Type(params)" among the boosts read? A boost read without its parameters counts by its type.
+-- Boost types the container files under another type's name (Advantage and Disadvantage share one boost component).
+G.BOOST_TYPE_ALIAS = { disadvantage = "advantage" }
 function G.hasBoost(list, want)
   local w = normBoost(want)
   local wtype = w:match("^([%w_]+)")
+  local alias = wtype and G.BOOST_TYPE_ALIAS[wtype]
   for _, b in ipairs(list or {}) do
     local n = normBoost(b)
-    if n == w or (not n:find("(", 1, true) and n == wtype) then return true end
+    if n == w or (not n:find("(", 1, true) and (n == wtype or n == alias)) then return true end
   end
   return false
 end
@@ -1138,10 +1195,16 @@ function G.removeCreature(d)
   pcall(Osi.RequestDelete, d)
 end
 local function standing(u) return try(Osi.IsDead, u) == 0 end
+-- IsSummon.Owner holds the summon itself (read in game: Spiritual Weapon, Find Familiar, Glyph of Warding);
+-- the creature that summoned it is IsSummon.Summoner, which Osi.CharacterGetOwner also returns.
 function G.summonOwner(u)
   local e = ent(u)
-  return e and (try(function() return e.IsSummon.Owner.Uuid.EntityUuid end)
-    or try(function() return e.IsSummon.Summoner.Uuid.EntityUuid end))
+  local me = uuid(u)
+  local s = e and try(function() return e.IsSummon.Summoner.Uuid.EntityUuid end)
+  if s and s ~= me then return s end
+  local o = e and try(function() return e.IsSummon.Owner.Uuid.EntityUuid end)
+  if o and o ~= me then return o end
+  return try(Osi.CharacterGetOwner, u)
 end
 local function inArena(u, A)
   if not A then return false end
@@ -1374,7 +1437,7 @@ end
 -- in the model's state, every worn item's equip passives, equip statuses and unconditional boosts, the elixir's
 -- statuses, the weapons' dice as their sheet rows have them, the item spells in the book and ready; nothing carried
 -- over from an earlier run (no concentration, no status outside the baseline and what the set and the buffs put on);
--- enemies that can be critically hit and carry no status. All of it is read before round 1, so a mismatch can stop
+-- enemies that can be critically hit and carry no status but their arena surface's. All of it is read before round 1, so a mismatch can stop
 -- the run before it is fought.
 function G.effectChecks(F, spec, cmp, book, extra, out)
   local u = F.char
@@ -1430,7 +1493,9 @@ function G.effectChecks(F, spec, cmp, book, extra, out)
   local base = (G.baseStatuses or {})[uuid(u)]
   if base then
     for st in pairs(G.statusSet(u)) do
-      if not base[st] and not allowed[st] and not G.technicalStatus(st) then cmp("no carried status " .. st, false, true) end
+      if not base[st] and not allowed[st] and not G.technicalStatus(st) and not G.GROUND_STATUS[st] then
+        cmp("no carried status " .. st, false, true)
+      end
     end
   else
     note_("no status baseline for the character: carried statuses not compared")
@@ -1441,8 +1506,14 @@ function G.effectChecks(F, spec, cmp, book, extra, out)
     for _, b in ipairs(bl) do names[#names + 1] = b.kind .. " " .. b.id end
     cmp("enemy " .. i .. " can be critically hit", "yes", #bl == 0 and "yes" or table.concat(names, ", "))
     local sts = {}
-    for st in pairs(G.statusSet(d)) do if not G.technicalStatus(st) then sts[#sts + 1] = st end end
+    local ground = {}
+    for st in pairs(G.statusSet(d)) do
+      if G.GROUND_STATUS[st] then ground[#ground + 1] = st
+      elseif not G.technicalStatus(st) then sts[#sts + 1] = st end
+    end
     table.sort(sts)
+    table.sort(ground)
+    if #ground > 0 then note_("enemy " .. i .. " stands in the arena's own surface: " .. table.concat(ground, ", ")) end
     cmp("enemy " .. i .. " statuses at start", "none", #sts == 0 and "none" or table.concat(sts, ", "))
   end
 end
@@ -1527,10 +1598,14 @@ local function first(obj, paths)
   end
   return nil
 end
+-- A flag set as "A,B" text. Bitfield userdata cannot be iterated (pairs fails on them): their own text is used.
 local function flagText(v)
   if type(v) == "table" or type(v) == "userdata" then
     local parts = {}
-    for k, x in pairs(v) do parts[#parts + 1] = (type(k) == "number") and tostring(x) or tostring(k) end
+    local ok = pcall(function()
+      for k, x in pairs(v) do parts[#parts + 1] = (type(k) == "number") and tostring(x) or tostring(k) end
+    end)
+    if not ok then return tostring(v) end
     table.sort(parts)
     return table.concat(parts, ",")
   end
@@ -1616,7 +1691,9 @@ G._on = {
   hit = function(e)
     local who = { n = 2, try(function() return e.Caster.Uuid.EntityUuid end),
       try(function() return e.Target.Uuid.EntityUuid end) }
-    G.dispatch(onHit, who, e)
+    local ok, err = xpcall(G.dispatch, debug.traceback, onHit, who, e)
+    -- the first failure is kept in the record (a hit log that stays empty must say why)
+    if not ok and G.results and not G.results.hit_error then G.results.hit_error = tostring(err) end
   end,
 }
 if not G._listeners4 then
@@ -3438,7 +3515,13 @@ function G.step(F, t)
         return finish(F)
       end
       F.state, F.deadline = "wait", t + G.TURN_WAIT_MS
-    elseif t >= F.next then
+    else
+      -- a summon whose turn comes while the character's is still open (Spiritual Weapon: the character's turn was
+      -- never released, every run) is driven here too; asking the character to end its turn waits for it
+      G.summonStep(F, t)
+      if F.summon then F.next = math.max(F.next, t + G.END_TURN_MS) return end
+    end
+    if activeTurn(F.char) and t >= F.next then
       if F.endTries >= G.END_TURN_TRIES then return finish(F, "the character's turn could not be ended") end
       G.endTurn(F.char)
       F.endTries, F.next = F.endTries + 1, t + G.END_TURN_MS
