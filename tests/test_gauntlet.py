@@ -37,6 +37,8 @@
   off-hand half told by its place in the cast (a melee one comes as cause Attack); a melee attack never a Projectile;
 - between runs the cooldowns reset like a long rest (a rest cooldown reads -1), and the setup check reads the plan's
   once-per-rest steps ready;
+- the player path's next request waits until the last attack has landed (its damage row, a quiet spell, a toggled
+  attack's off-hand half), never longer than a cap and never for a self cast or a spell that is no attack;
 - real rolls (old path): the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
   reaction queue), on by default and recorded per run; a missed cast is done, with its outcome; riders and the turns
   of party members outside the fight; run.py counts and reports only runs of the same kind.
@@ -174,7 +176,8 @@ def lua_tests():
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
-              boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests):
+              boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
+              impact_wait_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -2452,6 +2455,69 @@ def offhand_melee_tests(L):
     check("player cast: a melee weapon attack never goes out as a Projectile (its own SpellType, Target)",
           mt == ["Projectile_MainHandAttack=Projectile", "Target_MainHandAttack=Target", "Target_OffhandAttack=Target",
                  "Target_DreadAmbusher=Target", "Target_TripAttack=Target"], str(mt))
+
+
+def impact_wait_tests(L):
+    """The next player-path request waits until the last attack landed: its damage row on its target, a quiet spell
+    with no new row, the off-hand half of a toggled attack too; a cast at the character itself, one that is no attack
+    and the time cap hold nothing. The step loop asks before every request."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local stats = Ext.Stats.Get
+      Ext.Stats.Get = function(s)
+        if s == "Projectile_DreadAmbusher" then return { SpellType = "Projectile", SpellFlags = {} } end
+        if s == "Target_HuntersMark" then return { SpellType = "Target", SpellFlags = {} } end
+        if s == "Target_MainHandAttack" then return { SpellType = "Target", SpellFlags = { "IsAttack" } } end
+      end
+      G.t0 = 0
+      local function F(spell, extra)
+        local P = { who = "c1", target = "b1", spell = spell, dmg0 = 0, hits0 = 0 }
+        for k, v in pairs(extra or {}) do P[k] = v end
+        return { lastCast = { P = P, t = 1000 } }
+      end
+      local function row(t, amount, target, cause)
+        return { source = "c1", owner = "c1", target = target or "b1", t = t, amount = amount, cause = cause or "Attack" }
+      end
+      -- no damage row yet: wait; the row just in: wait; IMPACT_QUIET_MS after it: go (and forget the cast)
+      local f = F("Projectile_DreadAmbusher")
+      T_iw_none = G.impactPending(f, 1300, {}, {})
+      T_iw_fresh = G.impactPending(f, 1400, { row(1300, 20) }, {})
+      T_iw_quiet = G.impactPending(f, 1300 + G.IMPACT_QUIET_MS, { row(1300, 20) }, {})
+      T_iw_forgot = f.lastCast == nil
+      -- a miss's 0 row lands the cast too; another target's row does not
+      T_iw_miss = G.impactPending(F("Projectile_DreadAmbusher"), 1600, { row(1300, 0) }, {})
+      T_iw_other = G.impactPending(F("Projectile_DreadAmbusher"), 1600, { row(1300, 20, "e9") }, {})
+      -- a rider row after the hit restarts the quiet spell
+      T_iw_rider = G.impactPending(F("Target_MainHandAttack"), 1600, { row(1300, 20), row(1500, 6) }, {})
+      -- a toggled attack waits for its off-hand half (or OFFHAND_MS)
+      local dual = { toggled = true, dual = { { kind = "BonusActionPoint", n = 1 } } }
+      T_iw_dual_wait = G.impactPending(F("Target_MainHandAttack", dual), 1600, { row(1300, 20) }, {})
+      T_iw_dual_done = G.impactPending(F("Target_MainHandAttack", dual), 2000, { row(1300, 20), row(1700, 9, nil, "Offhand") }, {})
+      -- nothing to wait for: a self cast, a spell that is no attack, the cap
+      T_iw_self = G.impactPending(F("Projectile_DreadAmbusher", { target = "c1" }), 1100, {}, {})
+      T_iw_mark = G.impactPending(F("Target_HuntersMark"), 1100, {}, {})
+      T_iw_cap = G.impactPending(F("Projectile_DreadAmbusher"), 1000 + G.IMPACT_MAX_MS, {}, {})
+      T_iw_nolast = G.impactPending({}, 1100, {}, {})
+      Ext.Stats.Get = stats
+    """)
+    g = L.globals()
+    check("impact wait: no damage row from the attack yet -> the next request waits", g.T_iw_none is True)
+    check("impact wait: the row just came -> still waits", g.T_iw_fresh is True)
+    check("impact wait: IMPACT_QUIET_MS after the row -> the next request goes, the cast forgotten",
+          g.T_iw_quiet is False and g.T_iw_forgot is True, f"{g.T_iw_quiet} {g.T_iw_forgot}")
+    check("impact wait: a miss's 0 row lands the attack", g.T_iw_miss is False)
+    check("impact wait: another target's row is not the attack's", g.T_iw_other is True)
+    check("impact wait: a rider row after the hit restarts the quiet spell", g.T_iw_rider is True)
+    check("impact wait: a toggled attack waits for its off-hand half, then goes",
+          g.T_iw_dual_wait is True and g.T_iw_dual_done is False, f"{g.T_iw_dual_wait} {g.T_iw_dual_done}")
+    check("impact wait: a self cast, a spell that is no attack, the time cap and no last cast hold nothing",
+          [g.T_iw_self, g.T_iw_mark, g.T_iw_cap, g.T_iw_nolast] == [False] * 4,
+          str([g.T_iw_self, g.T_iw_mark, g.T_iw_cap, g.T_iw_nolast]))
+    with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
+        src = fh.read()
+    check("impact wait: the step loop asks before every request and a confirmed player cast is remembered",
+          "if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end" in src
+          and "if P.player then F.lastCast = { P = P, t = t } end" in src)
 
 
 def rest_reset_tests(L):
@@ -5303,6 +5369,16 @@ MUTATIONS = [
     ("evade: a leave spot inside 3 m of the boss", GL,
      "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7",
      "    local clear = true"),
+    ("impact wait: the step loop never waits for the last attack to land", GL,
+     "    if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end\n", ""),
+    ("impact wait: the attack's damage row not waited for", GL, "  if not first then return true end\n", ""),
+    ("impact wait: no quiet spell after the row", GL,
+     "  if rel - (last or first) < G.IMPACT_QUIET_MS then return true end\n", ""),
+    ("impact wait: a toggled attack's off-hand half not waited for", GL,
+     "  if P.toggled and P.dual and not G.offhandFired(P, dmg, hits) and rel - first < G.OFFHAND_MS then return true end\n",
+     ""),
+    ("impact wait: a confirmed player cast never remembered", GL,
+     "    if P.player then F.lastCast = { P = P, t = t } end\n", ""),
     ("dual wield: the off-hand half never paid", GL, "    if G.offhandFired(P, G.dmg, G.hits) then\n", "    if false then\n"),
     ("dual wield: any Offhand row counted", GL, "    if d.source == P.who or d.owner == P.who then\n      local cause",
      "    if true then\n      local cause"),

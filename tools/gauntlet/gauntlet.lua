@@ -2772,6 +2772,43 @@ function G.offhandFired(P, dmg, hits)
   end
   return false
 end
+-- The next player-path request waits until the last attack has landed: its damage row on its target (Osiris
+-- AttackedBy, a miss's 0 row too), then IMPACT_QUIET_MS with no new row from the character, and for a toggled attack
+-- its off-hand half's row too (or OFFHAND_MS). In game (Dread Ambusher, then Action Surge): every request sent from
+-- about 0.1 s after the attack's CastedSpell to the end of its damage row was refused (CastSpellFailed), every one
+-- sent 0.1 s or more after the row was cast. A cast at the character itself or one that is no attack holds nothing;
+-- none holds the turn more than IMPACT_MAX_MS after it ended. -> true while the next request must wait
+G.IMPACT_QUIET_MS, G.IMPACT_MAX_MS = 250, 2500
+function G.landsLater(spell)
+  local st = try(Ext.Stats.Get, spell)
+  if not st then return false end
+  local ty = tostring(try(function() return st.SpellType end) or "")
+  return hasFlag(try(function() return st.SpellFlags end), "IsAttack") or ty == "Projectile" or ty == "ProjectileStrike"
+    or ty == "Throw"
+end
+function G.impactPending(F, t, dmg, hits)
+  local L = F.lastCast
+  if not L then return false end
+  local P = L.P
+  if t - L.t >= G.IMPACT_MAX_MS or not P.target or P.target == P.who or not G.landsLater(P.spell) then
+    F.lastCast = nil
+    return false
+  end
+  local first, last
+  for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
+    local d = dmg[i]
+    if d.source == P.who or d.owner == P.who then
+      if not first and d.target == P.target then first = d.t end
+      if first and d.t then last = d.t end
+    end
+  end
+  if not first then return true end
+  local rel = t - (G.t0 or 0)
+  if P.toggled and P.dual and not G.offhandFired(P, dmg, hits) and rel - first < G.OFFHAND_MS then return true end
+  if rel - (last or first) < G.IMPACT_QUIET_MS then return true end
+  F.lastCast = nil
+  return false
+end
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
 -- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
 function G.settle(F, R, t)
@@ -2804,6 +2841,7 @@ function G.settle(F, R, t)
       if P.hit and #P.hit > 0 and G.castLanded(P, G.hits, G.dmg) then pay(F.char, P.hit, P.hitBefore) end
     end
     P.rec.result, P.rec.confirmed, P.rec.ms = "done", ev, t - P.t0
+    if P.player then F.lastCast = { P = P, t = t } end
     local a = P.a
     R.done[a.done_key or a.group or "free"] = true
     if a.spell == "Shout_ActionSurge" then R.done.surge = true end
@@ -3255,6 +3293,7 @@ end
 -- ------------------------------------------------------------------------------------------------ fight
 local function roundStart(F)
   G.round = G.round + 1
+  F.lastCast = nil
   local R = { r = G.round, actions = {}, casts = {}, done = {}, cast_fails = {}, reactions_seen = {},
     char_hp_before = try(Osi.GetHitpoints, F.char), tm = { turn = now() - G.t0 } }
   R.char_hp_lost_enemy_turns = math.max(0, (F.hpChar or 0) - (R.char_hp_before or 0))
@@ -4369,6 +4408,7 @@ function G.step(F, t)
       if not G.settle(F, R, t) or F.pending then F.next = t + G.POLL_MS; return end
     end
     if casting(F.char) then F.next = t + 200; return end
+    if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end
     if not F.queue then F.queue, F.qi = G.planRound(F, R), 0 end
     if F.qi < #F.queue then
       F.qi = F.qi + 1
