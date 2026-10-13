@@ -213,8 +213,10 @@ from the boss and out of its reach (`leave_spots` in `arenas.json`, else a spot 
 the character's own Advantage. Hide is planned only where the game allows it (not while Threatened, not in the boss's
 sight in a lit room). A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark; the
 off-hand shots are optional, since a main-hand attack with the Dual Wielding Attacks toggle on fires the off-hand shot
-itself for the bonus action. The harness pays that bonus action when the off-hand half's damage row comes (a scripted
-cast skips the engine's cost checks). A run request with `player_cast: true` (or `G.PLAYER_CAST` in `gauntlet.lua`,
+itself for a bonus action (and is refused with none left). The harness sets the toggle before each main-hand attack:
+on only while a bonus action is free beyond the turn's later planned ones (Hunter's Mark, Disengage comes first), so
+with Fast Hands the action's attack and its Extra Attack fire two shots each; it pays that bonus action when the
+off-hand half's damage row comes (a scripted cast skips the engine's cost checks). A run request with `player_cast: true` (or `G.PLAYER_CAST` in `gauntlet.lua`,
 off by default until checked in the game) casts like a player instead: the request keeps the engine's cast and target
 checks and carries `FromClient`, so the engine pays the costs and checks range and line of sight.
 

@@ -977,6 +977,34 @@ def dual_cost_tests(L):
       G.settle(F2, R2, 100)
       T_none = G.settle(F2, R2, 100 + G.OFFHAND_MS + 1) and rec2.offhand_half
       G.dmg = {}
+      -- the toggle per attack: on only with a bonus action free beyond the queue's later planned ones
+      local ba, eget = 2, Ext.Entity.Get
+      local gr = Osi.GetActionResourceValuePersonal
+      Osi.GetActionResourceValuePersonal = function(_, k) if k == "BonusActionPoint" then return ba end return 1 end
+      local E = { DualWielding = {}, Replicate = function() end }
+      Ext.Entity.Get = function() return E end
+      local atk = { spell = "Projectile_MainHandAttack", group = "action" }
+      local Fq = { char = "c1", qi = 1, queue = { atk, { spell = "Target_HuntersMark", group = "bonus" },
+        { spell = "Projectile_OffhandAttack", group = "bonus", optional = true } } }
+      T_t2 = G.dualToggle(Fq, atk)
+      T_t2e = E.DualWielding.RangedToggledOn
+      ba = 1
+      T_t1 = G.dualToggle(Fq, atk)
+      T_t1e = E.DualWielding.RangedToggledOn
+      ba = 2
+      T_tno = G.dualToggle(Fq, { spell = "Target_MainHandAttack", dual = false })
+      T_tnoe = E.DualWielding.MeleeToggledOn
+      local stats2 = Ext.Stats.Get
+      Ext.Stats.Get = function(sp) if sp == "Projectile_MainHandAttack" then
+        return { UseCosts = "ActionPoint:1", DualWieldingUseCosts = "BonusActionPoint:1" } end end
+      local Rd = { r = 1, done = {}, actions = {}, casts = {} }
+      local Fd = { char = "c1", enemies = { "b1" }, cooldown = {}, afford = function() return true end, plan = {}, S = {},
+        qi = 1, queue = { atk } }
+      G._doAction(Fd, atk, Rd)
+      T_dorec = Rd.actions[1].dual_toggle
+      Fd.pending = nil
+      Ext.Stats.Get = stats2
+      Ext.Entity.Get, Osi.GetActionResourceValuePersonal = eget, gr
       Ext.Stats.Get = stats
       local req = { { Caster = { Uuid = { EntityUuid = "c1" } }, Spell = { Prototype = "S" },
                       CastOptions = { "IgnoreSpellRolls", "IgnoreCastChecks", "IgnoreTargetChecks", "Other" } },
@@ -999,6 +1027,13 @@ def dual_cost_tests(L):
     check("dual wield: a confirmed main-hand cast waits for its off-hand row, then pays its bonus action",
           g.T_wait is False and g.T_paid == "paid", f"{g.T_wait} {g.T_paid}")
     check("dual wield: no off-hand row within OFFHAND_MS: nothing more paid", g.T_none == "none", str(g.T_none))
+    check("dual wield: toggled on with a bonus action free beyond the turn's planned Hunter's Mark",
+          g.T_t2 is True and g.T_t2e is True, f"{g.T_t2} {g.T_t2e}")
+    check("dual wield: toggled off when the planned bonus action needs the last one (the attack is not refused)",
+          g.T_t1 is False and g.T_t1e is False, f"{g.T_t1} {g.T_t1e}")
+    check("dual wield: a main-hand attack sets the toggle before it is cast", g.T_dorec is True, str(g.T_dorec))
+    check("dual wield: off when the plan says so, on the melee toggle for a melee attack",
+          g.T_tno is False and g.T_tnoe is False, f"{g.T_tno} {g.T_tnoe}")
     o1, o2 = sorted(lst(g.T_opts1)), sorted(lst(g.T_opts2))
     check("player cast: checks kept and FromClient added for a player-path caster only",
           o1 == ["FromClient", "Other"] and o2 == ["IgnoreCastChecks"], f"{o1} {o2}")
@@ -4458,6 +4493,12 @@ MUTATIONS = [
     ("dual wield: any Offhand row counted", GL,
      "    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then",
      "    if tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then"),
+    ("dual wield: the turn's planned bonus actions not reserved", GL,
+     "  local on = a.dual ~= false and resAmount(F.char, \"BonusActionPoint\") - G.reservedBonus(F) >= 1",
+     "  local on = a.dual ~= false and resAmount(F.char, \"BonusActionPoint\") >= 1"),
+    ("dual wield: optional bonus actions reserved", GL, "    if q.group == \"bonus\" and not q.optional then n = n + 1 end",
+     "    if q.group == \"bonus\" then n = n + 1 end"),
+    ("dual wield: the toggle never set", GL, "  if dual then rec.dual_toggle = G.dualToggle(F, a) end\n", ""),
     ("player cast: FromClient not added", GL, "      if c.player and not from then keep[#keep + 1] = G.PLAYER_ADD; had = true end\n",
      ""),
     ("player cast: every caster's checks stripped", GL, "(c.player and G.PLAYER_STRIP[f])", "G.PLAYER_STRIP[f]"),

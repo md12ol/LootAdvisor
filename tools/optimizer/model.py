@@ -172,8 +172,9 @@ SWITCHES = {
     "rotd_char_level": dict(default=True, text="Radiance of the Dawn adds the character level (not the Cleric level)"),
     "twf_offhand_xbow": dict(default=True, text="Two-Weapon Fighting adds DEX to off-hand hand crossbow shots"),
     # The game fires the off-hand half of a main-hand attack (Dual Wielding Attacks toggle) for a bonus action
-    # (DualWieldingUseCosts), so the default count (one off-hand shot per bonus action) is the player's; on = the
-    # half for free with every main-hand attack, as a script's cast that skips cost checks got it.
+    # (DualWieldingUseCosts; with none left it refuses the attack), the same shot as the off-hand bonus attack, so the
+    # default count (one off-hand shot per free bonus action) is the player's; on = the half for free with every
+    # main-hand attack, as a script's cast that skips cost checks got it.
     "offhand_shot_with_main": dict(default=False, text="each main-hand shot also fires the off-hand hand crossbow "
                                                       "for free (CastOffhand without its bonus action)"),
 }

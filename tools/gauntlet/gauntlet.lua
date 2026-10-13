@@ -2370,6 +2370,7 @@ local function doAction(F, a, R, rec0)
   end
   -- the off-hand half's cost, paid once its damage row shows it fired (G.settle)
   local dual = G.dualCosts(a.spell)
+  if dual then rec.dual_toggle = G.dualToggle(F, a) end
   local dualBefore = {}
   for i, c in ipairs(dual or {}) do dualBefore[i] = resAmount(F.char, c.kind, c.level) end
   local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
@@ -2395,6 +2396,30 @@ local function doAction(F, a, R, rec0)
 end
 
 G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, false
+-- Bonus actions the rest of the turn's queue needs: its planned bonus actions that are not optional.
+function G.reservedBonus(F)
+  local n = 0
+  for i = (F.qi or 0) + 1, #(F.queue or {}) do
+    local q = F.queue[i]
+    if q.group == "bonus" and not q.optional then n = n + 1 end
+  end
+  return n
+end
+-- Dual Wielding Attacks, set before each main-hand attack (checked in game with two hand crossbows): toggled on, the
+-- attack fires the off-hand shot with it and takes a bonus action, and with no bonus action left the game refuses
+-- the whole attack; toggled off, one shot and the bonus action kept. On only when a bonus action is free beyond the
+-- ones the turn's later planned bonus actions need (Hunter's Mark) and the plan does not say dual = false.
+-- -> the toggle set
+function G.dualToggle(F, a)
+  local on = a.dual ~= false and resAmount(F.char, "BonusActionPoint") - G.reservedBonus(F) >= 1
+  local ranged = tostring(a.spell):find("^Projectile_") ~= nil
+  local e = ent(F.char)
+  pcall(function()
+    if ranged then e.DualWielding.RangedToggledOn = on else e.DualWielding.MeleeToggledOn = on end
+    e:Replicate("DualWielding")
+  end)
+  return on
+end
 -- The off-hand half's damage row comes about 0.4 s after the main hand's.
 G.OFFHAND_MS = 900
 -- Did the pending cast's off-hand half fire: a damage row of cause Offhand from the character since the cast.
