@@ -725,8 +725,8 @@ end
 -- No bonus the build, the set, the planned actions or the consumables do not give: the save's story and mood statuses
 -- with a roll or damage effect (ASTARION_HAPPY: +1 to every attack roll) and the tadpole powers (TAD_* passives:
 -- Favourable Beginnings adds the proficiency bonus to the first attack on each target) are taken off at every setup.
--- The baseline removeCarryOver keeps would otherwise hold them for every run. The passives go back at the run's end
--- (G.restoreCampaign); the statuses do not. -> { statuses = {}, passives = {} } (what was removed)
+-- The baseline removeCarryOver keeps would otherwise hold them for every run. Nothing is put back: the test save
+-- loses them for good. -> { statuses = {}, passives = {} } (what was removed, in the run record under prep.campaign)
 G.CAMPAIGN_BOOST = { "RollBonus", "DamageBonus", "WeaponDamage", "CharacterWeaponDamage", "Advantage",
   "Disadvantage", "CriticalHit", "ReduceCriticalAttackThreshold", "WeaponEnchantment", "AC%(", "Ability%(" }
 G.CAMPAIGN_PASSIVE = "^TAD_"
@@ -770,22 +770,8 @@ function G.removeCampaignEffects(u, spec)
   end
   table.sort(out.statuses)
   table.sort(out.passives)
-  G.campaignRemoved = G.campaignRemoved or {}
-  local was = G.campaignRemoved[me] or {}
-  for _, id in ipairs(out.passives) do was[id] = true end
-  G.campaignRemoved[me] = was
   return out
 end
--- The tadpole passives a run took off go back when it ends (the save keeps its powers if it is played on).
-function G.restoreCampaign(u)
-  local out = {}
-  for id in pairs((G.campaignRemoved or {})[uuid(u)] or {}) do
-    if try(Osi.HasPassive, u, id) ~= 1 then pcall(Osi.AddPassive, u, id); out[#out + 1] = id end
-  end
-  table.sort(out)
-  return out
-end
-
 -- ------------------------------------------------------------------------------------------------ boosts
 -- The boosts on a creature as "Type(params)" text, or nil when the container cannot be read. BoostsContainer maps a
 -- boost type to the boost entities of that type; each has its BoostInfo (the boost's name and its parameters).
@@ -3063,7 +3049,6 @@ local function finish(F, why)
     G.results.cross_lane_hits = G.crossLaneHits(G.dmg, uuid(F.char), G.LANES and G.LANES.members, F.lane.id)
   end
   if F.char and not F.manual then G.dropRunBoosts(F.char, F.hpBuffer) end
-  if F.char and not F.manual then G.results.campaign_restored = G.restoreCampaign(F.char) end
   -- a character left down after its combat dies once its death saves run out: brought back at once
   if F.char and not F.manual then G.revive(F.char) end
   if not F.manual then

@@ -3330,7 +3330,7 @@ def _load_lua(L, path):
 def campaign_tests(L):
     """No bonus from outside the build and set: a story / mood status with a roll or damage effect and every tadpole
     passive are taken off at setup and recorded (the set's own statuses stay); one still on fails the setup check;
-    the passives go back at the end."""
+    nothing is put back at the end."""
     L.execute(r"""
       local G = GAUNTLET
       local removedS, removedP, added = {}, {}, {}
@@ -3351,10 +3351,9 @@ def campaign_tests(L):
       Osi.RemovePassive = function(_, id) removedP[#removedP + 1] = id end
       Osi.AddPassive = function(_, id) added[#added + 1] = id end
       Osi.HasPassive = function() return 0 end
-      G.campaignRemoved = nil
       T_camp = G.removeCampaignEffects("c1", { item_statuses = { { status = "SET_STATUS", item = "x" } } })
       T_rs, T_rp = removedS, removedP
-      T_back = G.restoreCampaign("c1")
+      T_back = G.restoreCampaign == nil and #added == 0
       G.results = { prep = { campaign = T_camp, bare = {} } }
       local sc = G.setupCheck({ char = "c1" }, { item_statuses = { { status = "SET_STATUS" } } }, "start", nil)
       T_fields = {}
@@ -3368,7 +3367,7 @@ def campaign_tests(L):
           "status and a status without roll effects stay",
           lst(c.statuses) == ["ASTARION_HAPPY"] and lst(c.passives) == ["TAD_PeaceBreaker"] and
           lst(g.T_rs) == ["ASTARION_HAPPY"] and lst(g.T_rp) == ["TAD_PeaceBreaker"], f"{lst(c.statuses)} {lst(c.passives)}")
-    check("campaign: the tadpole passives go back at the end", lst(g.T_back) == ["TAD_PeaceBreaker"])
+    check("campaign: nothing is put back (the test save loses them for good)", g.T_back is True)
     f = lst(g.T_fields)
     check("campaign: one still on fails the setup check, named",
           any("campaign passive TAD_PeaceBreaker" in x for x in f) and
