@@ -33,6 +33,10 @@
 - the player cast path (the default): a click's request (FromClient, no Ignore* option, the spell's own SpellType as the
   TargetingType, its spell-book id); refusals with their reason and never asked for again, range or sight make the run
   invalid; what each cast spent checked against its costs; a toggled attack with no bonus action goes untoggled;
+  Action Surge's attacks booked as the engine charges them (the surge's action, then free Extra Attacks); the
+  off-hand half told by its place in the cast (a melee one comes as cause Attack); a melee attack never a Projectile;
+- between runs the cooldowns reset like a long rest (a rest cooldown reads -1), and the setup check reads the plan's
+  once-per-rest steps ready;
 - real rolls (old path): the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
   reaction queue), on by default and recorded per run; a missed cast is done, with its outcome; riders and the turns
   of party members outside the fight; run.py counts and reports only runs of the same kind.
@@ -170,7 +174,7 @@ def lua_tests():
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
-              boss_reuse_tests, campaign_tests, roll_tests):
+              boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -2290,6 +2294,176 @@ def item_rule_surge_tests(L):
           str(n))
 
 
+def offhand_melee_tests(L):
+    """The off-hand half of a dual-wield attack is told by its place in the cast, not by the damage cause: a melee
+    off-hand half's rows come with cause Attack like the main hand's. The cast's second strike (attack rows more than
+    ROLL_MERGE_MS after the first) or a hit row that is the cast's last attack and not its first is the off-hand half;
+    one strike's damage types and riders are not. The spend check then owes its bonus action. A melee weapon attack
+    always goes out with its own SpellType (Target), never as a Projectile."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local P = { who = "c1", target = "b1", dmg0 = 0, hits0 = 0 }
+      local function row(t, cause, amount, typ)
+        return { source = "c1", owner = "c1", target = "b1", t = t, cause = cause, amount = amount, type = typ }
+      end
+      -- a melee main hand (two damage types) then the off-hand half 0.56 s later, all cause Attack
+      T_om_two = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1000, "Attack", 4, "Necrotic"),
+        row(1560, "Attack", 6, "Piercing") })
+      -- the off-hand half missed: its 0 damage row is the second strike too
+      T_om_miss = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1560, "Attack", 0, nil) })
+      -- one strike with a rider row of its own (Sneak Attack) shortly after: no off-hand half
+      T_om_one = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1066, "Attack", 11, "Piercing") })
+      -- another target's row or a status tick is no second strike
+      local other = row(1600, "Attack", 5, "Piercing"); other.target = "e9"
+      T_om_other = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), other, row(1700, "Status", 3, "Fire") })
+      -- the hit log: the cast's last attack and not its first is the off-hand half; a single attack carries both
+      T_om_hit = G.offhandFired(P, {}, { { source = "c1", attack_flags = "FirstAttack" },
+        { source = "c1", attack_flags = "LastAttack" } })
+      T_om_hit1 = G.offhandFired(P, {}, { { source = "c1", attack_flags = "FirstAttack,LastAttack" } })
+      T_om_ranged = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1400, "Offhand", 5, "Piercing") })
+
+      -- the spend check on the player path: a toggled melee attack, both halves cause Attack
+      local stats, eget, gres = Ext.Stats.Get, Ext.Entity.Get, Osi.GetActionResourceValuePersonal
+      Ext.Stats.Get = function(s) if s == "Target_MainHandAttack" then return { SpellType = "Target",
+        UseCosts = "ActionPoint:1", DualWieldingUseCosts = "BonusActionPoint:1" } end end
+      local RES = { ActionPoint = 1, BonusActionPoint = 2 }
+      Osi.GetActionResourceValuePersonal = function(_, k) return RES[k] or 0 end
+      Ext.Entity.Get = function() return { DualWielding = {}, Replicate = function() end } end
+      local function pend()
+        local rec = { result = "pending" }
+        local costs = G._parseCosts("ActionPoint:1")
+        local dual = G.dualCosts("Target_MainHandAttack")
+        local F = { char = "c1", cooldown = {}, plan = {}, S = {}, playerCast = true, req = {} }
+        F.pending = { a = { spell = "Target_MainHandAttack", group = "action" }, rec = rec, costs = costs, before = {},
+          res = {}, who = "c1", spell = "Target_MainHandAttack", target = "b1", casts0 = 0, dmg0 = 0, hits0 = 0, t0 = 0,
+          fails0 = 0, using0 = 0, dual = dual, dualBefore = {}, toggled = true, player = true,
+          snap0 = G.costSnapshot("c1", { costs[1], dual[1] }) }
+        local R = { r = 2, done = {}, casts = { { who = "c1", spell = "Target_MainHandAttack" } }, actions = { rec } }
+        return F, R, rec
+      end
+      G.hits = {}
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      local F1, R1, rec1 = pend()
+      RES.ActionPoint, RES.BonusActionPoint = 0, 1
+      G.dmg = { row(1000, "Attack", 8, "Piercing"), row(1560, "Attack", 6, "Piercing") }
+      G.settle(F1, R1, 2000)
+      T_os_ok = { rec1.result, rec1.offhand_half, R1.cast_faults == nil }
+      -- both halves struck and no bonus action spent: the off-hand half's bonus action is owed
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      local F2, R2, rec2 = pend()
+      RES.ActionPoint, RES.BonusActionPoint = 0, 2
+      G.settle(F2, R2, 2000)
+      T_os_owed = { rec2.offhand_half, R2.cast_faults and R2.cast_faults[1].kind,
+        R2.cast_faults and R2.cast_faults[1].why }
+      G.dmg, G.hits = {}, {}
+
+      -- a melee weapon attack goes out with its own SpellType, never as a Projectile, whatever the toggles or the
+      -- ranged attack before it
+      local DATA = { Projectile_MainHandAttack = { SpellType = "Projectile", UseCosts = "ActionPoint:1" },
+        Target_MainHandAttack = { SpellType = "Target", UseCosts = "ActionPoint:1" },
+        Target_OffhandAttack = { SpellType = "Target", UseCosts = "BonusActionPoint:1" },
+        Target_DreadAmbusher = { SpellType = "Target", UseCosts = "" },
+        Target_TripAttack = { SpellType = "Target", UseCosts = "ActionPoint:1;SuperiorityDie:1" } }
+      Ext.Stats.Get = function(s) return DATA[s] end
+      local book = {}
+      for s in pairs(DATA) do book[#book + 1] = { Id = { Prototype = s, OriginatorPrototype = s, Source = "w" } } end
+      local E = { c1 = { SpellBook = { Spells = book }, DualWielding = { RangedToggledOn = true, MeleeToggledOn = true } },
+        b1 = {} }
+      Ext.Entity.Get = function(u) return E[u] end
+      local gpos, sys = Osi.GetPosition, Ext.System.ServerCastRequest
+      Osi.GetPosition = function(u) if u == "b1" then return 1, 0, 0 end return 0, 0, 0 end
+      local queue = {}
+      Ext.System.ServerCastRequest = { OsirisCastRequests = queue }
+      local Fp = { char = "c1", playerCast = true, realRolls = true }
+      T_mt = {}
+      for _, s in ipairs({ "Projectile_MainHandAttack", "Target_MainHandAttack", "Target_OffhandAttack",
+        "Target_DreadAmbusher", "Target_TripAttack" }) do
+        G.castRequest(Fp, "c1", s, "b1")
+        T_mt[#T_mt + 1] = s .. "=" .. tostring(queue[#queue] and queue[#queue].Targets[1].TargetingType)
+      end
+      Ext.Stats.Get, Ext.Entity.Get, Osi.GetActionResourceValuePersonal = stats, eget, gres
+      Osi.GetPosition, Ext.System.ServerCastRequest = gpos, sys
+    """)
+    g = L.globals()
+    check("off-hand half: a melee cast's second strike (cause Attack) is the off-hand half", g.T_om_two is True)
+    check("off-hand half: a missed melee off-hand half (its 0 damage row) counts too", g.T_om_miss is True)
+    check("off-hand half: one strike with its rider row is no off-hand half", g.T_om_one is False)
+    check("off-hand half: another target's row or a status tick is no second strike", g.T_om_other is False)
+    check("off-hand half: a hit row that is the cast's last attack and not its first is the off-hand half",
+          g.T_om_hit is True and g.T_om_hit1 is False, f"{g.T_om_hit} {g.T_om_hit1}")
+    check("off-hand half: a ranged off-hand row (cause Offhand) still counts", g.T_om_ranged is True)
+    ok = seq(g.T_os_ok, 3)
+    check("spent: a toggled melee attack whose halves both came as cause Attack owes and spent the bonus action",
+          ok == ["done", "fired", True], str(ok))
+    ow = seq(g.T_os_owed, 3)
+    check("spent: a melee off-hand half that struck with no bonus action spent is a cost mismatch",
+          ow[0] == "fired" and ow[1] == "costs" and "BonusActionPoint" in str(ow[2]), str(ow))
+    mt = lst(g.T_mt)
+    check("player cast: a melee weapon attack never goes out as a Projectile (its own SpellType, Target)",
+          mt == ["Projectile_MainHandAttack=Projectile", "Target_MainHandAttack=Target", "Target_OffhandAttack=Target",
+                 "Target_DreadAmbusher=Target", "Target_TripAttack=Target"], str(mt))
+
+
+def rest_reset_tests(L):
+    """Between runs the character is reset like a long rest: the game's restoration status (its ResetCooldowns), every
+    cooldown written ready and the entries dropped, so Action Surge and per-rest item spells are ready for the next
+    run. A rest cooldown reads -1 until the rest and is a running cooldown. The setup check reads the plan's
+    once-per-rest steps ready."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local eget, apply = Ext.Entity.Get, Osi.ApplyStatus
+      local function cds()
+        return { { SpellId = { Prototype = "Shout_ActionSurge" }, Cooldown = -1, CooldownType = "UntilShortRest" },
+          { SpellId = { Prototype = "Target_Item" }, Cooldown = -1, CooldownType = "UntilRest" },
+          { SpellId = { Prototype = "Target_Turn" }, Cooldown = 2, CooldownType = "OncePerTurn" } }
+      end
+      local E = { SpellBookCooldowns = { Cooldowns = cds() }, ActionResources = { Resources = {} },
+        Replicate = function() end }
+      Ext.Entity.Get = function() return E end
+      local applied = {}
+      Osi.ApplyStatus = function(_, st, d) applied[#applied + 1] = st .. ":" .. tostring(d) end
+      T_rr_before = { G._onCooldown("c1", "Shout_ActionSurge"), G._onCooldown("c1", "Target_Turn"),
+        G._onCooldown("c1", "Missing") }
+      G.refill("c1", "long")
+      T_rr_long = { #E.SpellBookCooldowns.Cooldowns, G._onCooldown("c1", "Shout_ActionSurge"), applied[1] }
+      -- a short rest: the short-rest and turn cooldowns ready, a long-rest one kept running
+      E.SpellBookCooldowns.Cooldowns = cds()
+      applied = {}
+      G.refill("c1", "short")
+      local c = E.SpellBookCooldowns.Cooldowns
+      local function cd(i) return c[i] and c[i].Cooldown or "gone" end
+      T_rr_short = { #c, cd(1), cd(2), cd(3), #applied }
+      -- the setup check: the plan's Action Surge must be ready
+      local plan = { rounds = { { { spell = "Shout_ActionSurge", group = "free", per = "short" },
+        { spell = "Projectile_MainHandAttack", group = "action" } } }, steady = {} }
+      T_rr_spells = G.restSpells(plan)
+      E.SpellBookCooldowns.Cooldowns = cds()
+      local bad = G.setupCheck({ char = "c1", plan = plan }, {}, "start")
+      E.SpellBookCooldowns.Cooldowns = {}
+      local good = G.setupCheck({ char = "c1", plan = plan }, {}, "start")
+      local function ready(sc)
+        for _, m in ipairs(sc.mismatches) do if m.field == "spell Shout_ActionSurge ready" then return false end end
+        return true
+      end
+      T_rr_check = { ready(bad), ready(good) }
+      Ext.Entity.Get, Osi.ApplyStatus = eget, apply
+    """)
+    g = L.globals()
+    b = seq(g.T_rr_before, 3)
+    check("rest reset: a rest cooldown (-1 until the rest) and a turn cooldown are running, no entry is ready",
+          b == [True, True, False], str(b))
+    lg = seq(g.T_rr_long, 3)
+    check("rest reset: between runs every cooldown is reset and the entries dropped, the restoration status applied",
+          lg[0] == 0 and lg[1] is False and lg[2] == "TUT_RESTORATION:0", str(lg))
+    sh = seq(g.T_rr_short, 5)
+    check("rest reset: a short rest readies short-rest and turn cooldowns, keeps a long-rest one, no status",
+          sh == [3, 0, -1, 0, 0], str(sh))
+    check("rest reset: the plan's once-per-rest steps listed", lst(g.T_rr_spells) == ["Shout_ActionSurge"],
+          str(lst(g.T_rr_spells)))
+    rc = seq(g.T_rr_check, 2)
+    check("setup: Action Surge still on cooldown fails the setup check; ready passes", rc == [False, True], str(rc))
+
+
 def toggle_tests(L):
     """Toggled passives: prep sets each one the spec names to the model's state (Osi.TogglePassive, else the field
     written), the setup check reads the state back, the run puts the character's own state back."""
@@ -3280,11 +3454,51 @@ def py_tests():
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
-              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R)):
+              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R),
+              lambda: surge_plan_tests(P), arena_note_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+def surge_plan_tests(P):
+    """Action Surge in the plan books what the engine charges: Action Surge costs nothing and gives one more action, the
+    surge's first attack spends that action, its Extra Attacks are free; the forecast affords all of them in round 1.
+    The other steps booked as free cost nothing in the engine either (Dread Ambusher's attack, Extra Attack)."""
+    from types import SimpleNamespace as NS
+    model = NS(slots=lambda cl: [], ADV_SURE=0.99)
+    st = NS(plan={"mode": "ranged", "dread": True}, classes={"Ranger": 5, "Fighter": 3, "Rogue": 4},
+            sheet={"nAtt": 2}, subs={}, level=12)
+    r1 = P.core_plan(model, st, {})["rounds"][0]
+    steps = [(a["spell"], a["group"], a.get("cost"), a.get("requires"), a.get("grants")) for a in r1]
+    want = [("Projectile_DreadAmbusher", "free", "free", None, None),
+            ("Shout_ActionSurge", "free", "free", None, "ActionPoint:1"),
+            ("Projectile_MainHandAttack", "action", None, None, None),
+            ("Projectile_MainHandAttack", "free", "free", "action", None),
+            ("Projectile_MainHandAttack", "action", None, "surge", None),
+            ("Projectile_MainHandAttack", "free", "free", "surge", None)]
+    check("surge plan: Action Surge free and gives an action; the surge's first attack spends it, its Extra Attack free",
+          steps == want, str(steps))
+    stats = {"Projectile_MainHandAttack": {"UseCosts": "ActionPoint:1"}, "Projectile_DreadAmbusher": {"UseCosts": ""},
+             "Shout_ActionSurge": {"UseCosts": None}}
+    fc = P.forecast({"rounds": [r1], "steady": []}, {}, [], stats, n_rounds=1)
+    check("surge plan: the forecast affords every step of the surge round",
+          fc[0] == [a["spell"] for a in r1], str(fc[0]))
+    one = P.core_plan(model, NS(plan={"mode": "melee"}, classes={"Fighter": 2}, sheet={"nAtt": 1}, subs={}, level=2),
+                      {})["rounds"][0]
+    check("surge plan: with one attack per action the surge's single attack spends the surge's action",
+          [(a["spell"], a["group"]) for a in one] == [("Shout_ActionSurge", "free"), ("Target_MainHandAttack", "action"),
+                                                      ("Target_MainHandAttack", "action")], str(one))
+
+
+def arena_note_tests():
+    """The House of Hope arena records its sight survey: the boss sees 16 m, no hide spot, the leave tactic instead."""
+    with open(os.path.join(G_DIR, "arenas.json"), encoding="utf-8") as fh:
+        a = json.load(fh)["house_of_hope"]
+    check("arenas.json: house_of_hope has the boss's sight, no hide spot and the leave tactic note",
+          a.get("boss_sight_m") == 16.0 and a.get("hide_spots") == [] and "leave its reach" in a.get("leave_spots_note", "")
+          and all(len(p) == 3 for p in a.get("out_of_sight_far", [])) and a.get("out_of_sight_far"), str(a.keys()))
 
 
 def grants_tests(P):
@@ -5011,10 +5225,39 @@ MUTATIONS = [
     ("evade: a leave spot inside 3 m of the boss", GL,
      "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7",
      "    local clear = true"),
-    ("dual wield: the off-hand half never paid", GL, "    if G.offhandFired(P, G.dmg) then\n", "    if false then\n"),
-    ("dual wield: any Offhand row counted", GL,
-     "    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then",
-     "    if tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then"),
+    ("dual wield: the off-hand half never paid", GL, "    if G.offhandFired(P, G.dmg, G.hits) then\n", "    if false then\n"),
+    ("dual wield: any Offhand row counted", GL, "    if d.source == P.who or d.owner == P.who then\n      local cause",
+     "    if true then\n      local cause"),
+    ("off-hand half: a melee second strike not counted (cause only)", GL,
+     "        if not first then first = d.t elseif d.t - first > G.ROLL_MERGE_MS then return true end\n", ""),
+    ("off-hand half: a rider row taken for a second strike", GL,
+     "elseif d.t - first > G.ROLL_MERGE_MS then return true end", "elseif d.t - first > 0 then return true end"),
+    ("off-hand half: the hit log's last attack not read", GL,
+     "    if h.source == P.who and f:find(\"LastAttack\", 1, true) and not f:find(\"FirstAttack\", 1, true) then",
+     "    if false then"),
+    ("off-hand half: the spend check ignores the damage rows", GL,
+     "  local fired = P.dual and G.offhandFired(P, G.dmg, G.hits)", "  local fired = P.dual and G.offhandFired(P, {}, G.hits)"),
+    ("surge: the surge's first attack booked free", PL,
+     'opening + [A(spell, "action", "@boss", "Action Surge attack", requires="surge")]',
+     'opening + [A(spell, "free", "@boss", "Action Surge attack", requires="surge")]'),
+    ("surge: Action Surge gives no action", PL, ', per="short", grants="ActionPoint:1")', ', per="short")'),
+    ("surge: the forecast ignores what a step gives", PL, "                        turn[k] = turn.get(k, 0) + n\n",
+     "                        pass\n"),
+    ("rest reset: a rest cooldown (-1) read as ready", GL, '  return type(v) == "number" and v ~= 0',
+     '  return type(v) == "number" and v > 0'),
+    ("rest reset: no restoration status between runs", GL,
+     '  if kind == "long" then pcall(Osi.ApplyStatus, u, G.REST_STATUS, 0, 1, u) end\n', ""),
+    ("rest reset: reset entries kept", GL,
+     "    if kept == 0 and #cds > 0 then pcall(function() e.SpellBookCooldowns.Cooldowns = {} end) end\n", ""),
+    ("rest reset: a long-rest cooldown reset on a short rest", GL,
+     '      if kind == "long" or t:match("ShortRest") or t:match("Turn") or t:match("Combat") then\n',
+     '      if true then\n'),
+    ("setup: the plan's once-per-rest steps not checked ready", GL,
+     '  for _, sp in ipairs(G.restSpells(F.plan or spec.plan)) do cmp("spell " .. sp .. " ready", false, '
+     'onCooldown(u, sp)) end\n', ""),
+    ("player cast: a melee weapon attack sent as a projectile", GL,
+     "  local target = { TargetingType = tt, Position = { x, y, z } }",
+     '  local target = { TargetingType = spell:find("Attack") and "Projectile" or tt, Position = { x, y, z } }'),
     ("dual wield: the turn's planned bonus actions not reserved", GL,
      "  local on = a.dual ~= false and resAmount(F.char, \"BonusActionPoint\") - G.reservedBonus(F) >= 1",
      "  local on = a.dual ~= false and resAmount(F.char, \"BonusActionPoint\") >= 1"),
