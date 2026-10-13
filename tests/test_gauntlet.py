@@ -2554,9 +2554,10 @@ def plan_gap_tests(P):
         a = a.get("alt")
     check("plan gaps: a kept filler between the nuke and the cantrip",
           chain[-2:] == ["Projectile_ScorchingRay", "Projectile_FireBolt"] and chain[0] == "Zone_LightningBolt_6", str(chain))
+    # a wall goes at the boss itself: a script's cast of a wall at a single position is refused
     check("plan gaps: a kept concentration zone cast at the boss in round 1",
-          cp["rounds"][0][0]["spell"].startswith("Wall_WallOfFire") and cp["rounds"][0][0]["at_target_pos"],
-          str(cp["rounds"][0][0]["spell"]))
+          cp["rounds"][0][0]["spell"].startswith("Wall_WallOfFire") and not cp["rounds"][0][0].get("at_target_pos")
+          and cp["rounds"][0][0]["target"] == "@boss", str(cp["rounds"][0][0]))
     cp2 = P.core_plan(model, cst, cstats, cch, known={"magic missile"})
     a, chain2 = cp2["steady"][0], []
     while a:

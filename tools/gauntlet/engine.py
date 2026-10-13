@@ -64,7 +64,9 @@ def ev(code, timeout=10.0, side="server"):
         if os.path.exists(out):
             time.sleep(0.05)
             with open(out, encoding="utf-8", errors="replace") as f:
-                return f.read()
+                text = f.read()
+            # the mod's eval hook writes a returned value as "=> value"; callers compare the value itself
+            return text[3:] if text.startswith("=> ") else text
         time.sleep(0.1)
     raise TimeoutError("no answer from the game (is it running with Dev on?)")
 

@@ -451,11 +451,13 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
         if plan.get("conc") and st.level >= plan["conc"][1]:
             opening = [chain(upcast_chain(stats, plan["conc"][0], slot_levels), "action", "@self",
                              "concentration spell", tail=act)]
-        # a concentration damage zone (Wall of Fire) cast at the boss in round 1, when the model keeps it
+        # a concentration damage zone (Wall of Fire) cast at the boss in round 1, when the model keeps it. A wall is
+        # cast at the boss itself: a script's cast of a wall at a single position is refused at once (checked in game)
         for sid, _lv, name in plan.get("conc_options") or []:
             if ch["conc"] == sid and knows(name):
                 opening = [chain(upcast_chain(stats, sid, slot_levels), "action", "@boss", "concentration damage",
-                                 tail=act, at_target_pos=True, value=ch.get("conc_value"))]
+                                 tail=act, at_target_pos=not sid.startswith("Wall_") or None,
+                                 value=ch.get("conc_value"))]
         if plan.get("spiritual"):
             bonus_open.append(A("Target_SpiritualWeapon", "bonus", "@boss", "Spiritual Weapon"))
         if plan.get("hex") and cl.get("Warlock", 0):
@@ -796,7 +798,8 @@ def _status_chain(stats, sid, seen):
 def item_checks(stats, items, attacks=None):
     """What the worn items must show on the character as the fight starts: every equip passive, every equip status,
     the boosts they give with no condition (the item's Boosts, its hand's BoostsOnEquip, its equip passives' Boosts),
-    and per weapon the dice its sheet row was built from. Statuses those statuses put on are allowed, not required.
+    and per weapon the dice its sheet row was built from. Statuses those statuses or the equip passives put on are
+    allowed, not required.
     -> {item_passives, item_statuses, item_statuses_allowed, item_boosts}; items[].weapon is set in place."""
     rows = {r.get("sid"): r for r in attacks or [] if r.get("sid")}
     passives, statuses, allowed, boosts = [], [], set(), []
@@ -809,6 +812,12 @@ def item_checks(stats, items, attacks=None):
             passives.append({"passive": p, "item": sid})
             boosts += [{"boost": b, "item": sid} for b in _split((stats.get(p) or {}).get("Boosts"))
                        if not b.startswith("IF(")]
+            # an equip passive can put a status on the wearer as it goes on or at a long rest (a legendary item's
+            # charge counter); statuses it puts on targets (on a hit, on damage) are not the wearer's
+            ps = stats.get(p) or {}
+            if re.search(r"OnCreate|OnLongRest", ps.get("StatsFunctorContext") or ""):
+                for s in _applied_statuses(ps.get("StatsFunctors"), stats):
+                    _status_chain(stats, s, allowed)
         for s in _split(st.get("StatusOnEquip")):
             statuses.append({"status": s, "item": sid})
             _status_chain(stats, s, allowed)
