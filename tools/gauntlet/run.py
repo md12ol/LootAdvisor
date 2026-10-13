@@ -1,11 +1,34 @@
 """Scripted gauntlet runs for set pairs, and the report.
 
-    python tools/gauntlet/run.py specs.json --results results.jsonl [--scenarios boss,pack,defence,longday]
-                                 [--haste] [--only 0,3] [--rounds 16] [--arena undercity_cistern] [--sides a]
+    python tools/gauntlet/run.py specs.json --results results.jsonl [--only 0,3] [--sides a] [--repeats 4]
+                                 [--rounds 16] [--arena NAME] [--char UUID]
     python tools/gauntlet/run.py --report results.jsonl --specs specs.json [--md report.md]
+    python tools/gauntlet/run.py --turns results.jsonl [--md turns.md]      # what the character did, turn by turn
+
+The method (one boss fight of 16 rounds, fixed repeats, one statistic, the model's boss scenario part by part):
+- every run goes through the F9 test popup's Start (engine.run): the script sets the popup to Automatic as its first
+  step after loading the harness, then each run is the popup's setup, setup check and fight, with the same record;
+- a side runs until it has --repeats valid runs (default 4; the valid ones already in --results count), at most
+  twice that many tries; a side whose first run failed for a reason every run would meet is not repeated;
+- after every run the turn list (round by round: the spell or attack, its target and its result) is written next to
+  the results, <results>_turns/<run id>.md, for a person to replay the run by hand;
+- --report compares each set with the model's BOSS scenario (expect.boss from plan.py, not the day numbers): first
+  part by part (attacks per round, hit rate, critical hits, damage per landed hit, the riders), then damage per round,
+  each flagged when the game is outside +-10% of the model. One statistic: the 95% t-interval of the mean of the run
+  means (on their logarithms), per side and for the ratio of a pair's two sides. Runs from the popup's Manual mode
+  (test_mode "manual") are listed apart and compared with the side's automatic runs.
+
+No buff comes from outside the set: the build, the set, the planned actions and the consumables give everything.
+
+Legacy (the first method, kept for its records): --v1 runs with sequential early stopping, the control gate and the
+day-score report; --lanes (two fights at once) implies it; --rescore re-judges its records.
+    python tools/gauntlet/run.py specs.json --v1 --results results.jsonl [--scenarios boss,pack,defence,longday]
+    python tools/gauntlet/run.py --report results.jsonl --specs specs.json --v1
     python tools/gauntlet/run.py --rescore results.jsonl[,more.jsonl] --specs specs.json
     python tools/gauntlet/run.py specs.json --lanes undercity_lanes --char A_UUID --char-b B_UUID --repeats 3
     python tools/gauntlet/run.py specs.json --sides a --lanes undercity_lanes --chars laezel=UUID,shadowheart=UUID
+
+The rest of this text describes the legacy method.
 
 Two lanes (--lanes, a "lanes" entry of arenas.json): both sets of a pair fight at once, each with its own character,
 enemies and arena spot, in two separate combats. Both characters have the same build (two party members respecced to
@@ -70,6 +93,8 @@ R_SAT = 12.0
 CONTROL_MODEL_EQ = 0.05   # a pair whose two sets the model rates within 5% (DPR) is a control
 CONTROL_TOL = 0.15        # the control's two sets may differ in the game by at most this share of the larger mean
 CONTROL_MIN_ROUNDS = 8    # fewer fair rounds on both sides: the control is not measured
+REPEATS = 4               # valid runs per side
+PART_TOL = 0.10           # a part outside model x (1 +- this) is flagged
 
 
 def sat(r):
@@ -183,14 +208,16 @@ def rolls_of(rec):
 
 def prior_runs(path, i, p, scen, real_rolls=True):
     """The usable runs already in the results file with the same rolls, per side of pair i: {side: [run]}
-    (run: [(round key, damage)])."""
+    (run: [(round key, damage)]). Runs a person played from the popup's Manual mode do not count."""
     out = {"a": [], "b": []}
     if not path or not os.path.exists(path):
         return out
     with open(path, encoding="utf-8") as f:
         recs = [json.loads(x) for x in f if x.strip()]
     for r in recs:
-        if r.get("pair") != i or r.get("side") not in out or r.get("scenario") not in scen or not same_set(r, p, r["side"]):
+        if r.get("pair") != i or r.get("side") not in out or r.get("side") not in p["specs"] or is_manual(r):
+            continue
+        if r.get("scenario") not in scen or not same_set(r, p, r["side"]):
             continue
         if rolls_of(r) != real_rolls:
             continue
@@ -244,6 +271,12 @@ def lane_batches(a, pairs, todo, arenas, k):
 
 
 def do_runs(a):
+    if getattr(a, "v1", False) or getattr(a, "lanes", None):
+        return do_runs_v1(a)
+    return do_runs_v2(a)
+
+
+def do_runs_v1(a):
     with open(a.specs, encoding="utf-8") as f:
         pairs = json.load(f)
     only = {int(x) for x in a.only.split(",")} if a.only else None
@@ -326,7 +359,7 @@ def run_cross(a, pairs, batch, scen, k, need):
     first = lanes[k % 2]
     out = {(i, s_): ([], []) for i, s_ in batch}
     for sc in scen:
-        for haste in ([False, True] if a.haste else [False]):
+        for haste in (False,):
             entries = []
             for lane, (i, side) in zip(lanes, batch):
                 req = dict(_req(a, i, pairs[i], side, sc, haste, char_for(a, pairs[i])), arena=None)
@@ -413,10 +446,10 @@ def _req(a, i, p, side, sc, haste, char):
     arena = a.arena
     if not arena and getattr(a, "lanes", None):
         arena = ((load_arenas().get(a.lanes) or {}).get("lanes") or {}).get("A", {}).get("arena")
-    return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": haste, "rounds": a.rounds, "arena": arena,
-            "char": char, "label": f"pair{i}:{side}", "respec": getattr(a, "respec", "real"),
+    return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": False, "rounds": a.rounds, "arena": arena,
+            "char": char, "label": f"pair{i}:{side}", "pair": i, "side": side, "respec": getattr(a, "respec", "real"),
             "retry_any_refusal": True if getattr(a, "retry_any_refusal", False) else None,
-            "real_rolls": not getattr(a, "no_real_rolls", False)}
+            "real_rolls": not getattr(a, "no_real_rolls", False), "boss": getattr(a, "boss", None)}
 
 
 def _record(a, rec, i, side, t0, extra=None):
@@ -444,7 +477,7 @@ def run_lanes(a, i, p, scen, k, gap):
     chars = {"A": a.char, "B": a.char_b}
     dealt = {"a": [], "b": []}
     for sc in scen:
-        for haste in ([False, True] if a.haste else [False]):
+        for haste in (False,):
             entries = [(lane, dict(_req(a, i, p, side, sc, haste, chars[lane]), arena=None), p["specs"][side])
                        for lane, side in sorted(plan["sides"].items())]
             print(f"pair {i} {p['char']} {p['build']} A{p['act']} {sc}{' haste' if haste else ''} in lanes: "
@@ -473,7 +506,7 @@ def run_side(a, i, p, side, scen, extra=None):
     spec = p["specs"][side]
     runs, recs = [], []
     for sc in scen:
-        for haste in ([False, True] if a.haste else [False]):
+        for haste in (False,):
             req = _req(a, i, p, side, sc, haste, char_for(a, p))
             t0 = time.time()
             print(f"pair {i} {p['char']} {p['build']} A{p['act']} set {side} ({spec['set']}) {sc}"
@@ -652,6 +685,12 @@ def rescore_report(files, pairs, tol=CONTROL_TOL, out=print):
 
 
 def report(a):
+    if getattr(a, "v1", False):
+        return report_v1(a)
+    return report_v2(a)
+
+
+def report_v1(a):
     with open(a.specs, encoding="utf-8") as f:
         pairs = json.load(f)
     recs = [json.loads(x) for x in open(a.report, encoding="utf-8") if x.strip()]
@@ -741,20 +780,340 @@ def report(a):
     return gate
 
 
+# ============================================================================================ method v2
+# 97.5% quantiles of Student's t by degrees of freedom; between two keys the smaller one's (the wider interval).
+T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+        12: 2.179, 15: 2.131, 20: 2.086, 30: 2.042}
+
+
+def t975(df):
+    if df >= 60:
+        return 1.96
+    keys = [k for k in sorted(T975) if k <= df]
+    return T975[keys[-1]] if keys else T975[1]
+
+
+def _logs(xs):
+    return [math.log(x) for x in xs if x and x > 0]
+
+
+def _var(ls):
+    m = mean(ls)
+    return sum((x - m) ** 2 for x in ls) / (len(ls) - 1)
+
+
+def mean_interval(xs):
+    """The one statistic: 95% t-interval of the mean of run means, computed on their logarithms (a ratio scale: a set
+    twice as strong spreads twice as wide). -> (geometric mean, (lo, hi)) or (mean, None) below two positive runs."""
+    ls = _logs(xs)
+    if len(ls) < 2:
+        return (mean(xs) if xs else None), None
+    m, h = mean(ls), t975(len(ls) - 1) * math.sqrt(_var(ls) / len(ls))
+    return math.exp(m), (math.exp(m - h), math.exp(m + h))
+
+
+def ratio_interval(xa, xb):
+    """The same statistic for a pair: ratio of the two sides' geometric means with its 95% interval (Welch on the
+    logarithms). -> (ratio, (lo, hi)) or (ratio, None) below two positive runs a side."""
+    la, lb = _logs(xa), _logs(xb)
+    if not la or not lb:
+        return None, None
+    d = mean(la) - mean(lb)
+    if len(la) < 2 or len(lb) < 2:
+        return math.exp(d), None
+    va, vb = _var(la) / len(la), _var(lb) / len(lb)
+    se = math.sqrt(va + vb)
+    if se == 0:
+        return math.exp(d), (math.exp(d), math.exp(d))
+    df = (va + vb) ** 2 / ((va ** 2 / (len(la) - 1)) + (vb ** 2 / (len(lb) - 1)))
+    h = t975(int(df)) * se
+    return math.exp(d), (math.exp(d - h), math.exp(d + h))
+
+
+def is_manual(rec):
+    """A run the player played from the popup's Manual mode (not one of the automatic runs the statistic counts)."""
+    return rec.get("test_mode") == "manual"
+
+
+def rec_pair_side(rec):
+    req = rec.get("req") or {}
+    return rec.get("pair", req.get("pair")), rec.get("side", req.get("side"))
+
+
+def game_parts(rec):
+    """One run's parts as the report compares them, per round where it is a rate: attacks (rolls the outcome is known
+    of), hit rate (critical hits count as hits), critical hits per attack, the character's own damage per landed hit
+    (summons left out), the riders that hang on hits, damage per round."""
+    res = rec.get("results") or {}
+    s = res.get("summary") or {}
+    a = s.get("attacks") or {}
+    n = (a.get("hit") or 0) + (a.get("crit") or 0) + (a.get("miss") or 0)
+    landed = (a.get("hit") or 0) + (a.get("crit") or 0)
+    rounds = len(s.get("dealt") or []) or s.get("rounds") or 0
+    own = sum(s.get("dealt") or []) - (s.get("summon_damage") or 0)
+    hr = res.get("hit_riders") or {}
+    hm, sa = hr.get("hunters_mark") or {}, hr.get("sneak_attack") or {}
+    return {"rounds": rounds, "attacks": n, "landed": landed, "crits": a.get("crit") or 0, "own": own,
+            "dpr": s.get("dpr") or 0.0, "hm_hits": hm.get("hits") or 0, "hm_rider": hm.get("rider") or 0,
+            "sa_turns": sa.get("turns") or 0, "sa_rider": sa.get("rider") or 0}
+
+
+def pooled(parts):
+    """Runs' parts pooled: totals over every run, then the rates."""
+    t = {}
+    for p in parts:
+        for k, v in p.items():
+            t[k] = t.get(k, 0) + v
+    r = t.get("rounds") or 0
+    att = t.get("attacks") or 0
+    return {"attacks": att / r if r else None, "hit_rate": t["landed"] / att if att else None,
+            "crit_rate": t["crits"] / att if att else None,
+            "dmg_per_hit": t["own"] / t["landed"] if t.get("landed") else None,
+            "hm_share": t["hm_rider"] / t["hm_hits"] if t.get("hm_hits") else None,
+            "sa_share": t["sa_rider"] / t["sa_turns"] if t.get("sa_turns") else None,
+            "dpr": t["own"] / r if r else None}
+
+
+PARTS = [("attacks", "attacks per round", "attacks", "{:.2f}"), ("hit_rate", "hit rate", "hit_rate", "{:.0%}"),
+         ("crit_rate", "critical hits per attack", "crit_rate", "{:.1%}"),
+         ("dmg_per_hit", "damage per landed hit", "dmg_per_hit", "{:.1f}"),
+         ("hm_share", "Hunter's Mark on landed hits", None, "{:.0%}"),
+         ("sa_share", "Sneak Attack in turns with Advantage", None, "{:.0%}"),
+         ("dpr", "damage per round (own)", "dpr", "{:.1f}")]
+
+
+def compare_parts(game, model, tol=PART_TOL):
+    """Rows [(name, game, model, ratio, flag)] in PARTS order; flag "OUTSIDE" when game / model leaves 1 +- tol."""
+    out = []
+    for key, label, mkey, _fmt in PARTS:
+        g, m = game.get(key), (model or {}).get(mkey) if mkey else None
+        ratio = g / m if g is not None and m else None
+        out.append((key, label, g, m, ratio, "OUTSIDE" if ratio is not None and abs(ratio - 1) > tol else ""))
+    return out
+
+
+def _f(fmt, v):
+    return fmt.format(v) if v is not None else "-"
+
+
+def report_v2(a):
+    with open(a.specs, encoding="utf-8") as f:
+        pairs = json.load(f)
+    recs = [json.loads(x) for x in open(a.report, encoding="utf-8") if x.strip()]
+    want_rolls = not getattr(a, "no_real_rolls", False)
+    auto, manual, invalid, other_rolls = {}, {}, [], 0
+    for r in recs:
+        if r.get("mode") != "scripted" and "error" not in r:
+            continue
+        if rolls_of(r) != want_rolls:
+            other_rolls += 1
+            continue
+        i, side = rec_pair_side(r)
+        ok, causes = run_validity(r)
+        tag = "manual" if is_manual(r) else "automatic"
+        if not ok:
+            invalid.append(f"- pair {i} {side} ({tag}) {r.get('run_id') or ''}: {'; '.join(causes)}")
+            continue
+        if r.get("scenario", "boss") != "boss":
+            continue
+        (manual if is_manual(r) else auto).setdefault((i, side), []).append(r)
+    L, out = [], {"sides": {}, "pairs": {}}
+    for i, p in enumerate(pairs):
+        means = {}
+        for side in ("a", "b"):
+            runs = auto.get((i, side)) or []
+            man = manual.get((i, side)) or []
+            if not runs and not man:
+                continue
+            spec = p["specs"][side]
+            boss = (spec.get("expect") or {}).get("boss")
+            xs = [game_parts(r)["dpr"] for r in runs]
+            means[side] = xs
+            gm, ci = mean_interval(xs)
+            L.append(f"### Pair {i} side {side}: {p.get('char')} {p.get('build')} A{p.get('act')}, set {spec.get('set')}")
+            if not boss:
+                L.append("Model boss numbers missing in the spec (plan.py before the boss scenario was exported): "
+                         "re-run plan.py. Day numbers are not compared.")
+            ratio_ci = ci and boss and boss.get("dpr") and (ci[0] / boss["dpr"], ci[1] / boss["dpr"])
+            L.append(f"{len(runs)} valid automatic run(s) (wanted {getattr(a, 'repeats', REPEATS)}): damage per round "
+                     f"{_f('{:.1f}', gm)}" + (f" (95% {ci[0]:.1f}-{ci[1]:.1f})" if ci else "") +
+                     (f", model boss {boss['dpr']:.1f}" if boss and boss.get("dpr") else "") +
+                     (f", game/model 95% {ratio_ci[0]:.2f}-{ratio_ci[1]:.2f}" if ratio_ci else ""))
+            L.append("run means: " + ", ".join(f"{x:.1f}" for x in xs))
+            rows = compare_parts(pooled([game_parts(r) for r in runs]), boss) if runs else []
+            if rows:
+                L += ["", "| Part | Game | Model (boss) | Game / model | |", "|---|---|---|---|---|"]
+                for key, label, g, m, ratio, flag in rows:
+                    fmt = dict((k, f_) for k, _l, _m, f_ in PARTS)[key]
+                    L.append(f"| {label} | {_f(fmt, g)} | {_f(fmt, m)} | {_f('{:.2f}', ratio)} | {flag} |")
+            out["sides"][(i, side)] = {"n": len(runs), "mean": gm, "ci": ci, "rows": rows,
+                                       "outside": [r_[0] for r_ in rows if r_[5]]}
+            if man:
+                L += ["", f"Manual runs (played by hand from the popup), against the {len(runs)} automatic run(s):"]
+                base = pooled([game_parts(r) for r in runs]) if runs else {}
+                for r in man:
+                    gp = pooled([game_parts(r)])
+                    cmp_ = compare_parts(gp, base)
+                    L.append(f"- {r.get('run_id')}: " + ", ".join(
+                        f"{label} {_f(dict((k, f_) for k, _l, _m, f_ in PARTS)[key], g)}"
+                        + (f" (x{ratio:.2f}{' OUTSIDE' if flag else ''})" if ratio else "")
+                        for key, label, g, _m, ratio, flag in cmp_))
+            L.append("")
+        if means.get("a") and means.get("b"):
+            rr, rci = ratio_interval(means["a"], means["b"])
+            ba = ((p["specs"]["a"].get("expect") or {}).get("boss") or {}).get("dpr")
+            bb = ((p["specs"]["b"].get("expect") or {}).get("boss") or {}).get("dpr")
+            model = ba / bb if ba and bb else None
+            out["pairs"][i] = {"ratio": rr, "ci": rci, "model": model}
+            L.append(f"Pair {i} a / b damage per round: {_f('{:.2f}', rr)}" +
+                     (f" (95% {rci[0]:.2f}-{rci[1]:.2f})" if rci else "") +
+                     (f", model boss {model:.2f}" if model else "") +
+                     (" - the model's ratio is inside the interval" if rci and model and rci[0] <= model <= rci[1]
+                      else " - the model's ratio is OUTSIDE the interval" if rci and model else ""))
+            L.append("")
+    text = "\n".join(L).rstrip() + "\n"
+    if invalid:
+        text += "\nInvalid runs (left out):\n" + "\n".join(invalid) + "\n"
+    if other_rolls:
+        text += (f"\n{other_rolls} run(s) {'without' if want_rolls else 'with'} real rolls left out (not comparable; "
+                 f"{'drop' if want_rolls else 'use'} --no-real-rolls to report them).\n")
+    print(text)
+    if a.md:
+        with open(a.md, "w", encoding="utf-8") as f:
+            f.write(text)
+    return out
+
+
+def _short(u):
+    m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", str(u or ""))
+    return m.group(1) if m else (u or None)
+
+
+def turn_list(rec):
+    """What the character did, turn by turn, for a person to replay the run by hand: per round the spell or attack, its
+    target and its result (a scripted turn's planned actions with their outcome; a player's turn its casts and the
+    hits they made), then the round's damage. -> lines (markdown)."""
+    res = rec.get("results") or {}
+    me = _short((rec.get("req") or {}).get("char"))
+    dealt = (res.get("summary") or {}).get("dealt") or []
+    sid = rec.get("spec_id") or {}
+    L = [f"## Run {rec.get('run_id') or rec.get('run')} - {sid.get('set_name') or ''} "
+         f"({rec.get('test_mode') or rec.get('mode')}, {'valid' if rec.get('valid') else 'INVALID'})"]
+    hits = rec.get("hits") or []
+    for R in rec.get("rounds") or []:
+        r = R.get("r")
+        L.append(f"Round {r}" + (f" - {dealt[r - 1]:.0f} damage" if r and r - 1 < len(dealt) else "") +
+                 (" (down)" if R.get("downed") else ""))
+        acts = R.get("actions") or []
+        k = 0
+        for x in acts:
+            if str(x.get("result", "")).startswith("skipped"):
+                continue
+            k += 1
+            res_ = x.get("result") or "?"
+            out_ = x.get("outcome")
+            L.append(f"  {k}. {x.get('spell')} -> {x.get('target') or '-'}: "
+                     f"{out_ if out_ and res_ == 'done' else res_}" + (f" ({x.get('why')})" if x.get("why") else ""))
+        if not acts:
+            for c in R.get("casts") or []:
+                if me and _short(c.get("who")) != me:
+                    continue
+                k += 1
+                L.append(f"  {k}. {c.get('spell')}")
+            mine = [h for h in hits if h.get("r") == r and (not me or _short(h.get("source")) == me)]
+            if mine:
+                L.append("     hits: " + ", ".join(
+                    ("crit" if h.get("crit") else "miss" if h.get("miss") else "hit") +
+                    (f" {h.get('total')}" if h.get("total") is not None else "") +
+                    (f" ({h.get('spell')})" if h.get("spell") else "") for h in mine))
+        if k == 0:
+            L.append("  (nothing)")
+    return L
+
+
+def turns_path(results, rec):
+    stem = os.path.splitext(results)[0]
+    rid = re.sub(r"[^\w.-]", "_", str(rec.get("run_id") or rec.get("run") or "run"))
+    return os.path.join(stem + "_turns", rid + ".md")
+
+
+def write_turns(results, rec):
+    if not rec.get("rounds"):
+        return None
+    path = turns_path(results, rec)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(turn_list(rec)) + "\n")
+    return path
+
+
+def turns_report(a):
+    recs = [json.loads(x) for x in open(a.turns, encoding="utf-8") if x.strip()]
+    L = []
+    for r in recs:
+        if a.run and str(r.get("run_id")) != a.run:
+            continue
+        if r.get("rounds"):
+            L += turn_list(r) + [""]
+    text = "\n".join(L)
+    print(text)
+    if a.md:
+        with open(a.md, "w", encoding="utf-8") as f:
+            f.write(text)
+    return L
+
+
+def do_runs_v2(a):
+    """Every asked side until it has --repeats valid runs (those already in --results count), at most twice as many
+    tries, one run after the other, each through the popup's Start in Automatic mode."""
+    with open(a.specs, encoding="utf-8") as f:
+        pairs = json.load(f)
+    only = {int(x) for x in a.only.split(",")} if a.only else None
+    scen = ["boss"]
+    sides = tuple(a.sides.split(","))
+    print(engine.load())
+    # the popup's mode, as the first step after loading (engine.run sets it with every Start as well)
+    print("popup mode:", engine.set_mode("automatic"))
+    want = max(1, a.repeats)
+    for i in [i for i in range(len(pairs)) if only is None or i in only]:
+        for side in [x for x in sides if x in pairs[i]["specs"]]:
+            have = len(prior_runs(a.results, i, pairs[i], scen, not a.no_real_rolls)[side])
+            if have:
+                print(f"pair {i} {side}: {have} valid run(s) in the results already")
+            tries = 0
+            while have < want and tries < 2 * want:
+                tries += 1
+                runs, recs = run_side(a, i, pairs[i], side, scen, {"repeat": have})
+                for r in recs:
+                    path = write_turns(a.results, r)
+                    if path:
+                        print(f"  turns: {path}")
+                have += len(runs)
+                why = next((deterministic(r) for r in recs if deterministic(r)), None)
+                if not runs and why:
+                    print(f"  pair {i} {side}: not repeated, the run failed for a reason every run would meet: {why}")
+                    not_repeated(a, i, side, scen, why)
+                    break
+            if have < want:
+                print(f"  pair {i} {side}: {have} of {want} valid runs after {tries} tries")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("specs", nargs="?")
     ap.add_argument("--specs", dest="specs2")
     ap.add_argument("--results", default="gauntlet_results.jsonl")
-    ap.add_argument("--scenarios", default="boss,pack,defence,longday")
-    ap.add_argument("--haste", action="store_true", help="also run every scenario with Haste")
+    ap.add_argument("--scenarios", default="boss", help="legacy (--v1): boss,pack,defence,longday")
     ap.add_argument("--only")
-    ap.add_argument("--repeats", type=int, default=1, help="up to this many usable runs per side (at most 3; the "
-                    "ones already in --results count), stopping early once the 95%% interval of the two sides' ratio "
-                    "is decisive")
+    ap.add_argument("--repeats", type=int, default=REPEATS, help="valid runs per side (default 4; the ones already "
+                    "in --results count; at most twice as many tries). --v1: up to this many, at most 3, stopping "
+                    "early once the 95%% interval of the two sides' ratio is decisive")
+    ap.add_argument("--v1", action="store_true", help="the legacy method: early stopping, control gate, day report")
     ap.add_argument("--rounds", type=int, default=16)
     ap.add_argument("--sides", default="a,b", help="a, b or a,b: one set of each pair only (e.g. a reload between)")
     ap.add_argument("--arena", help="a fixed spot from tools/gauntlet/arenas.json (default: where the character stands)")
+    ap.add_argument("--boss", help="uuid of the save's own boss in the arena (re-forced every run, never deleted); "
+                    "default: a new enemy every run")
     ap.add_argument("--char", help="uuid of the test character (default: the host); lane A's with --lanes")
     ap.add_argument("--chars", help="the character per pair, by the pair's char: laezel=UUID,gale=UUID (default --char); "
                     "with --lanes two pairs' sides with different characters run at once")
@@ -769,6 +1128,8 @@ def main(argv=None):
                     help="scripted casts never roll (always hit, saves skipped), as runs before rolls did; only for "
                     "comparison with those runs. Also picks which runs --report and --repeats count")
     ap.add_argument("--report")
+    ap.add_argument("--turns", help="a results file: the turn list of every run in it (or --run RUN_ID only)")
+    ap.add_argument("--run", help="with --turns: one run id")
     ap.add_argument("--rescore", help="older run records (comma-separated files): re-judge them and run the gate")
     ap.add_argument("--md")
     ap.add_argument("--control-tol", type=float, default=CONTROL_TOL,
@@ -778,6 +1139,8 @@ def main(argv=None):
     if a.rescore:
         with open(a.specs, encoding="utf-8") as f:
             return rescore_report(a.rescore.split(","), json.load(f), a.control_tol)
+    if a.turns:
+        return turns_report(a)
     if a.report:
         return report(a)
     else:

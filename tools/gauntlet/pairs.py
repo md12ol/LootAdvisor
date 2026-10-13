@@ -18,6 +18,12 @@ the current model.
 named by a fourth field (its number, "1" for <char>.<build>.a<act>.1). Each side names its test plan ("respec"): the
 optimizer tunes the ability scores, feats and fighting styles to each set, a test character is respecced to that
 plan, and the model's numbers and the gauntlet's setup check follow the same respec (TEST_PLANS, --test-plans).
+--plain takes the build's own Build Advisor plan on every side instead (no tuned respec): the test character then
+has the plain build, and the model's numbers and the setup check follow that.
+--single char:build:act:N writes a one-set entry (side "a" only: research set N on its build), for a test of one
+set such as the harness verification; run it with --sides a.
+
+    python tools/gauntlet/pairs.py --optimizer DIR --optimized optimized.json --single astarion:thx:3:1 --plain         --out pairs.json
 """
 import argparse
 import itertools
@@ -226,6 +232,8 @@ def main(argv=None):
     ap.add_argument("--test-plans", default=TEST_PLANS, help="the optimizer's test plans (each side's respec)")
     ap.add_argument("--control", action="store_true", help="put the control pair (CONTROL) first")
     ap.add_argument("--find-control", help="char:build:act,...: list control candidates of these builds")
+    ap.add_argument("--plain", action="store_true", help="the build's own Build Advisor plan, no tuned respec")
+    ap.add_argument("--single", default="", help="char:build:act:N,...: one research set per entry (side a only)")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
     sys.path.insert(0, os.path.abspath(a.optimizer))
@@ -255,7 +263,23 @@ def main(argv=None):
                       {k: W.items[v].get("name") for k, v in c["replaced"].items()}, f"dpr {c['a']['dpr']} vs "
                       f"{c['b']['dpr']}, taken {c['a']['taken']} vs {c['b']['taken']}, R {c['a']['R']} vs {c['b']['R']}")
         return
+    if a.plain:
+        plans = {}
     out = []
+    for key in [k for k in a.single.split(",") if k]:
+        cid, bid, act, num = key.split(":")
+        act = int(act)
+        ref = next((s for s in W.research_sets(cid, bid, act) if s.get("id") == f"{cid}.{bid}.a{act}.{num}"), None)
+        if ref is None:
+            print("no research set", key)
+            continue
+        pid = ref.get("id") if ref.get("id") in plans else None
+        sc = model.score(W, cid, bid, act, _loadout(W, ref.get("items")), None,
+                         respec=pid and tuned_respec(W, model, RS.tune, plans, pid))
+        n = numbers(sc)
+        out.append({"char": cid, "build": bid, "act": act, "single": True,
+                    "a": {"name": ref.get("name"), "id": ref.get("id"), "items": ref.get("items"), "respec": pid},
+                    "model": {"a_score": round(sc.score, 2), "a_dpr": n["dpr"], "a_taken": n["taken"], "a_R": n["R"]}})
     if a.control:
         rid = next((r.get("id") for r in W.research_sets(CONTROL["char"], CONTROL["build"], CONTROL["act"])
                     if r.get("name") == CONTROL["base"]), None)

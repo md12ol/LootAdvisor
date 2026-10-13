@@ -984,8 +984,25 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
                      forecast=forecast(core, slots, g["resources"] + item_res, stats)),
         "expect": {"ac": st.sheet["ac"], "hp": st.sheet["hp"], "attacks": st.sheet.get("attacks"),
                    "spell": st.sheet.get("spell"), "dpr": round(pred.dpr, 1), "offence": round(pred.offence, 1),
-                   "R": round(pred.R, 2), "score": round(pred.score, 2), "events": pred.events},
+                   "R": round(pred.R, 2), "score": round(pred.score, 2), "events": pred.events,
+                   "boss": boss_expect(boss)},
+        "enemy": enemy_for(model, act),
     }
+
+
+def boss_expect(boss):
+    """The model's numbers for the fight the gauntlet runs (its boss scenario), the ones run.py --report compares with:
+    damage per round, damage taken per round, rounds survived, and per round the attack rolls, hits, crits, their
+    rates, damage per landed hit and Sneak Attack (model.attack_parts)."""
+    out = {"dpr": round(boss.dpr, 2), "taken": round(boss.dur["incoming"], 3), "R": round(boss.R, 2)}
+    out.update(getattr(boss, "parts", None) or {})
+    return out
+
+
+def enemy_for(model, act):
+    """The run's enemy for the act (catalog.py's enemies entry), so a spec needs no catalogue in the game."""
+    import catalog as CAT
+    return dict(model.ENEMY[int(act)], template=CAT.TEMPLATE, hp=CAT.ENEMY_HP)
 
 
 def main(argv=None):
@@ -1011,7 +1028,7 @@ def main(argv=None):
     out = []
     for p in pairs:
         row = dict(p, specs={})
-        for side in ("a", "b"):
+        for side in [x for x in ("a", "b") if x in p]:
             pid = p[side].get("respec")
             r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
             mv = maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
@@ -1020,9 +1037,9 @@ def main(argv=None):
                                           respec=r, maneuvers=mv,
                                           plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None,
                                           known=known)
-        row.pop("a"), row.pop("b")
+        row.pop("a", None), row.pop("b", None)
         out.append(row)
-        print(p["char"], p["build"], p["act"], "->", row["specs"]["a"]["set"], "/", row["specs"]["b"]["set"])
+        print(p["char"], p["build"], p["act"], "->", " / ".join(sp["set"] for sp in row["specs"].values()))
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1, default=str)
 
