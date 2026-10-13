@@ -162,7 +162,7 @@ def lua_tests():
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
-              boss_reuse_tests, campaign_tests):
+              boss_reuse_tests, campaign_tests, roll_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -2774,7 +2774,7 @@ def py_tests():
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
-              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests):
+              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -3430,8 +3430,10 @@ def popup_tests(L):
       T_ph3, T_ph3lines = T.status, T.last.lines
       local good = { run_id = "r2", test_mode = "automatic", valid = true, invalid = {},
         expect = { boss = { dpr = 100, hit_rate = 0.8 } },
-        results = { ended = "rounds done", summary = { dpr = 90, rounds = 16, attacks = { hit = 40, crit = 5, miss = 15 } },
-          hit_riders = { hunters_mark = { hits = 30, rider = 28 }, sneak_attack = { turns = 8, rider = 8 } } } }
+        results = { ended = "rounds done", summary = { dpr = 90, rounds = 16, attacks = { hit = 40, crit = 5, miss = 15 },
+          rolls = { n = 80, landed = 60, crit = 7 } },
+          hit_riders = { hunters_mark = { hits = 30, rider = 28 },
+            sneak_attack = { turns = 16, adv_turns = 3, rider = 2 } } } }
       G.onPhase({ popup = true, tFight = 1 }, "done", good)
       T_ph4, T_ph4last = T.status, T.last
       T_sent = #sent
@@ -3461,6 +3463,9 @@ def popup_tests(L):
     check("popup: a finished run shows Result with damage against the model's boss scenario, hit rate and riders",
           g.T_ph4 == "Result" and abs(last.hit_rate - 0.75) < 1e-9 and any("model boss 100.0" in x for x in ll) and
           any("Hunter's Mark on 28 of 30" in x for x in ll) and g.T_sent > 0, str(ll))
+    check("popup: counted per attack roll, Sneak Attack per turn with the turns of net Advantage",
+          last.attacks == 80 and last.crits == 7 and any("Attacks 80" in x for x in ll) and
+          any("Sneak Attack in 2 of 16 turns (3 with net Advantage)" in x for x in ll), str(ll))
 
 
 def release_tests(L):
@@ -3715,6 +3720,246 @@ def no_leak_tests():
     check("no leak: the Loot Advisor pak holds no test mod file and no harness code", files and not bad, str(bad[:3]))
     check("no leak: the build's mod and release lists do not name the test mod",
           TM.MOD not in build_pak.MODS and TM.MOD not in build_pak.RELEASE)
+
+
+def roll_tests(L):
+    """Counted per attack roll (rows of the real-roll runs): a main-hand shot with two hand crossbows is two rolls
+    (Attack, then Offhand; a miss is a 0 damage row); a rider row stays with its roll (Sneak Attack taken out apart);
+    a spell that rolls no attack (Hunter's Mark: 0 damage Attack and StatusEnter rows) is no miss and gets no
+    outcome; a slow projectile landing after the next cast keeps its own spell; each roll takes its d20, Advantage and
+    Disadvantage from the hit log; the hit row reads Disadvantage and both d20s; Sneak Attack is counted per turn with
+    the turn's net Advantage."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local oldGet = Ext.Stats.Get
+      Ext.Stats.Get = function(s)
+        if s == "Projectile_MainHandAttack" then
+          return { SpellRoll = "Attack(AttackType.RangedWeaponAttack);CastOffhand[Attack(AttackType.RangedOffHandWeaponAttack)]" }
+        elseif s == "Projectile_DreadAmbusher" then return { SpellRoll = { Default = "Attack(AttackType.RangedWeaponAttack)" } }
+        elseif s == "Target_HuntersMark" or s == "Shout_ActionSurge" then return { SpellRoll = "" }
+        elseif s == "Target_Save" then return { SpellRoll = "not SavingThrow(Ability.Wisdom, SourceSpellDC())" } end
+        return nil
+      end
+      T_kinds = { G.spellRollKind("Projectile_MainHandAttack"), G.spellRollKind("Projectile_DreadAmbusher"),
+        G.spellRollKind("Target_HuntersMark"), G.spellRollKind("Target_Save"), G.spellRollKind("Unknown_X") or "nil" }
+      local me, b = "c1", "b1"
+      local R = { r = 1, actions = {
+        { spell = "Projectile_DreadAmbusher", result = "done", cast_t = 100, target_u = b },
+        { spell = "Shout_ActionSurge", result = "done", cast_t = 200, target_u = me },
+        { spell = "Projectile_MainHandAttack", result = "done", cast_t = 1000, target_u = b },
+        { spell = "Target_HuntersMark", result = "done", cast_t = 5000, target_u = b },
+        { spell = "Target_Unknown", result = "done", cast_t = 7000, target_u = b } },
+        reactions_seen = { { who = me, interrupt = "Interrupt_SneakAttack", t = 330 } } }
+      -- the hit log: DealDamage comes about 170 ms before the damage row
+      local hits = {
+        { r = 1, t = 230, source = me, target = b, spell = "Projectile_DreadAmbusher", hit = true, roll = 16,
+          roll_total = 27, roll_against = 19, advantage = "true", flags = "AttackAdvantage,Hit,Projectile" },
+        { r = 1, t = 300, source = me, target = b, spell = "", hit = true, flags = "AttackAdvantage,Hit,Projectile" },
+        { r = 1, t = 1030, source = me, target = b, spell = "Projectile_MainHandAttack", hit = true, crit = true,
+          roll = 20, roll2 = 7, advantage = "true", disadvantage = "true", flags = "Hit,Projectile,Critical" },
+        { r = 1, t = 1400, source = me, target = b, spell = "", hit = true, flags = "Hit" } }
+      local dmg = {
+        { r = 1, t = 400, source = me, owner = me, target = b, cause = "Attack", type = "Piercing", amount = 33 },
+        { r = 1, t = 454, source = me, owner = me, target = b, cause = "Attack", type = "Piercing", amount = 6 },
+        { r = 1, t = 1200, source = me, owner = me, target = b, cause = "Attack", type = "Piercing", amount = 30 },
+        { r = 1, t = 1200, source = me, owner = me, target = b, cause = "Attack", type = "Fire", amount = 4 },
+        { r = 1, t = 1567, source = me, owner = me, target = b, cause = "Offhand", type = "", amount = 0 },
+        { r = 1, t = 5100, source = me, owner = me, target = b, cause = "StatusEnter", type = "", amount = 0 },
+        { r = 1, t = 5130, source = me, owner = me, target = b, cause = "Attack", type = "", amount = 0 },
+        { r = 1, t = 6000, source = b, owner = b, target = me, cause = "Attack", type = "", amount = 0 },
+        { r = 1, t = 7100, source = me, owner = me, target = b, cause = "StatusEnter", type = "", amount = 0 } }
+      T_tally = G.castOutcomes(R, hits, dmg, me)
+      T_R = R
+      T_out = {}
+      for i, a in ipairs(R.actions) do T_out[i] = a.outcome or "-" end
+      -- a landed roll with no hit row takes its critical hit from CriticalHitBy
+      local R2 = { r = 2, actions = {}, crits = { { source = me, owner = me, target = b, t = 2050 } } }
+      G.rollTally(R2, {}, { { r = 2, t = 2000, source = me, target = b, cause = "Offhand", type = "Piercing", amount = 40 } },
+        me, {})
+      T_R2 = R2
+      Ext.Stats.Get = oldGet
+      -- the hit row: Advantage and Disadvantage, both d20s; a single roll has no second d20
+      G.reset()
+      G.F = { char = me, enemies = { b } }
+      G.fighting, G.round = true, 4
+      Ext.Types = { Serialize = function() return {} end }
+      local function ev(res)
+        return { Caster = { Uuid = { EntityUuid = me } }, Target = { Uuid = { EntityUuid = b } },
+          SpellId = { Prototype = "Projectile_MainHandAttack" },
+          Hit = { EffectFlags = { "Hit" }, ConditionRolls = { { Difficulty = 19,
+            Roll = { Result = res, Roll = { Advantage = true, Disadvantage = true, RollType = "RangedWeaponAttack" } } } } } }
+      end
+      G._onHit(ev({ NaturalRoll = 9, Total = 18, DiscardedDiceTotal = 17 }))
+      G._onHit(ev({ NaturalRoll = 11, Total = 20, DiscardedDiceTotal = 0 }))
+      T_h1, T_h2 = G.hits[1], G.hits[2]
+      G.fighting, G.F = false, nil
+      Ext.Types = nil
+      -- Sneak Attack per turn: net Advantage from the rolls (Disadvantage cancels the AttackAdvantage-flagged hit of
+      -- round 2), from the flag where a round has no rolls (round 3)
+      local rounds = {
+        { r = 1, rolls = { known = 2, net_adv_any = true, dis_any = false }, status_log = {}, casts = {},
+          reactions_seen = { { who = me, interrupt = "Interrupt_SneakAttack" } } },
+        { r = 2, rolls = { known = 1, net_adv_any = false, dis_any = true }, status_log = {}, casts = {},
+          reactions_seen = {} },
+        { r = 3, status_log = {}, casts = {}, reactions_seen = {} },
+        { r = 4, rolls = { known = 1, net_adv_any = false, dis_any = false }, status_log = {}, reactions_seen = {},
+          casts = { { who = me, spell = "Target_SneakAttack" } } } }
+      local hh = { { r = 2, source = me, hit = true, flags = "AttackAdvantage,Hit" },
+        { r = 3, source = me, hit = true, flags = "AttackAdvantage,Hit" } }
+      T_sa = G.hitRiders(rounds, hh, me).sneak_attack
+      -- the summary adds the rolls up
+      G.rounds = { { r = 1, actions = {}, rolls = { n = 3, landed = 2, crit = 1, miss = 1, dmg = 73, rider = 6,
+        sneak_dmg = 6, known = 2, adv = 2, dis = 1, net_adv = 1 } },
+        { r = 2, actions = {}, rolls = { n = 2, landed = 1, crit = 0, miss = 1, dmg = 25, rider = 0, sneak_dmg = 0,
+          known = 1, adv = 1, dis = 0, net_adv = 1 } } }
+      T_sum = G._summarize({ char = me, enemies = {} })
+    """)
+    g = L.globals()
+    kinds = [g.T_kinds[i + 1] for i in range(5)]
+    check("rolls: what a spell rolls from its SpellRoll (text or table): attack, save, none, unknown",
+          kinds == ["attack", "attack", "none", "save", "nil"], str(kinds))
+    ro = g.T_R.rolls
+    pr = [None] + ([ro.per_roll[i + 1] for i in range(ro.n)] if ro else [None] * 3)
+    check("rolls: a main-hand shot with two hand crossbows is two rolls (Attack, then Offhand), the miss a 0 damage row",
+          ro is not None and ro.n == 3 and ro.landed == 2 and ro.miss == 1 and [p.cause for p in pr[1:]] ==
+          ["Attack", "Attack", "Offhand"] and pr[2].hit is True and pr[2].dmg == 34 and pr[3].hit is False,
+          str([(p.cause, p.hit, p.dmg) for p in pr[1:]]))
+    check("rolls: one action is one outcome (the plan check), its two rolls counted apart",
+          g.T_out[3] == "crit" and g.T_tally.crit == 1 and g.T_tally.miss == 0, str([g.T_out[i + 1] for i in range(4)]))
+    check("rolls: Hunter's Mark's 0 damage Attack and StatusEnter rows are no miss and give no outcome",
+          g.T_out[4] == "-" and ro.miss == 1, f"{g.T_out[4]} miss {ro.miss}")
+    check("outcome: a lone 0 damage StatusEnter row (a spell of unknown stats) is no miss", g.T_out[5] == "-",
+          str(g.T_out[5]))
+    check("rolls: a slow projectile landing after the next cast keeps its own spell and d20",
+          pr[1].spell == "Projectile_DreadAmbusher" and pr[1].nat == 16 and pr[1].against == 19 and pr[1].total == 27,
+          str((pr[1].spell, pr[1].nat)))
+    check("rolls: a rider row (Sneak Attack, 54 ms later) stays with its roll and is marked as Sneak Attack",
+          pr[1].dmg == 39 and pr[1].rider == 6 and pr[1].sneak == 6 and ro.sneak_dmg == 6 and ro.sneak is True,
+          str((pr[1].dmg, pr[1].rider, pr[1].sneak)))
+    check("rolls: a second damage type of the same hit is no rider", pr[2].rider == 0)
+    check("rolls: each roll's Advantage, Disadvantage and both d20s from the hit log; Disadvantage cancels Advantage",
+          pr[1].adv is True and pr[1].net_adv is True and pr[2].adv is True and pr[2].dis is True and
+          pr[2].net_adv is False and pr[2].nat == 20 and pr[2].nat2 == 7 and pr[2].crit is True and
+          pr[3].nat is None and pr[3].adv is None, str([(p.adv, p.dis, p.net_adv, p.nat, p.nat2) for p in pr[1:]]))
+    check("rolls: the tallies of Advantage are over the rolls the hit log shows",
+          ro.known == 2 and ro.adv == 2 and ro.dis == 1 and ro.net_adv == 1 and ro.crit == 1 and ro.dmg == 73,
+          f"{ro.known} {ro.adv} {ro.dis} {ro.net_adv} {ro.crit} {ro.dmg}")
+    r2 = g.T_R2.rolls
+    check("rolls: a landed roll with no hit row takes its critical hit from CriticalHitBy",
+          r2.n == 1 and r2.crit == 1 and r2.per_roll[1].adv is None, f"{r2.n} {r2.crit}")
+    h1, h2 = g.T_h1, g.T_h2
+    check("hits: Disadvantage and the other d20 of a roll with two",
+          h1.disadvantage == "true" and h1.advantage == "true" and h1.roll == 9 and h1.roll2 == 17,
+          str((h1.disadvantage, h1.roll, h1.roll2)))
+    check("hits: a roll with one d20 has no second one", h2.roll == 11 and h2.roll2 is None, str(h2.roll2))
+    sa = g.T_sa
+    pt = [(t.r, t.adv, t.dis, t.sneak) for t in (sa.per_turn[i + 1] for i in range(len(sa.per_turn)))]
+    check("sneak: every turn counted, with its net Advantage (from the rolls, the flag without them) and its trigger",
+          sa.turns == 4 and sa.adv_turns == 2 and sa.dis_turns == 1 and sa.rider == 2 and sa.rider_adv == 1 and
+          pt == [(1, True, False, True), (2, False, True, False), (3, True, False, False), (4, False, False, True)],
+          f"{sa.turns} {sa.adv_turns} {sa.rider} {sa.rider_adv} {pt}")
+    s = g.T_sum.rolls
+    check("summary: the run's rolls added up", s.n == 5 and s.landed == 3 and s.crit == 1 and s.dmg == 98 and
+          s.net_adv == 2 and s.sneak_dmg == 6, f"{s.n} {s.landed} {s.dmg}")
+
+
+def _roll_rec(rounds, i=0, side="a", run_id="r", dealt=None, sneak=None):
+    """A run record with per-roll counts: rounds = [(rolls, landed, crits, landed damage list)]."""
+    out = []
+    for r, (n, landed, crits, dl) in enumerate(rounds):
+        per = [{"hit": True, "dmg": d, "sneak": (sneak if (sneak and r == 0 and j == 0) else None)}
+               for j, d in enumerate(dl)]
+        per += [{"hit": False, "dmg": 0}] * (n - landed)
+        out.append({"r": r + 1, "done": {"action": True}, "actions": [],
+                    "rolls": {"n": n, "landed": landed, "crit": crits, "miss": n - landed, "dmg": sum(dl),
+                              "sneak_dmg": sneak if (sneak and r == 0) else 0, "known": landed, "net_adv": 0,
+                              "dis": 0, "per_roll": per}})
+    dealt = dealt or [sum(x[3]) for x in rounds]
+    return {"mode": "scripted", "pair": i, "side": side, "scenario": "boss", "real_rolls": True, "valid": True,
+            "invalid": [], "test_mode": "automatic", "run_id": run_id, "spec_id": {}, "req": {"pair": i, "side": side},
+            "rounds": out,
+            "results": {"ended": "rounds done", "summary": {"dealt": dealt, "dpr": sum(dealt) / len(dealt),
+                                                            "rounds": len(dealt)},
+                        "hit_riders": {"sneak_attack": {"turns": len(dealt), "adv_turns": 1, "rider": 1,
+                                                        "rider_adv": 1}}}}
+
+
+def roll_report_tests(R):
+    """--report per roll with 95% intervals: exact binomial for the rates, Student t for the means; a part is flagged
+    when the model's value is outside the game's interval, not when the game leaves +-10% (shown beside it)."""
+    lo, hi = R.binom_interval(11, 99)
+    check("stats: exact binomial interval, 11 of 99 -> 5.7%-19.0%", abs(lo - 0.0568) < 5e-4 and abs(hi - 0.1901) < 5e-4,
+          f"{lo} {hi}")
+    lo, hi = R.binom_interval(10, 65)
+    check("stats: exact binomial interval, 10 of 65 -> 7.6%-26.5%", abs(lo - 0.0763) < 5e-4 and abs(hi - 0.2648) < 5e-4,
+          f"{lo} {hi}")
+    check("stats: 0 of 10 and 10 of 10 reach the edge (upper 30.8%, lower 69.2%)",
+          R.binom_interval(0, 10)[0] == 0.0 and abs(R.binom_interval(0, 10)[1] - 0.3085) < 5e-4 and
+          R.binom_interval(10, 10)[1] == 1.0 and abs(R.binom_interval(10, 10)[0] - 0.6915) < 5e-4 and
+          R.binom_interval(0, 0) is None)
+    tq = {d: R.t_quantile975(d) for d in (1, 3, 30, 40, 60, 120, 100000)}
+    check("stats: t quantiles (table to 30 df, the expansion beyond)",
+          tq[1] == 12.706 and tq[3] == 3.182 and tq[30] == 2.042 and abs(tq[40] - 2.0211) < 1e-3 and
+          abs(tq[60] - 2.0003) < 1e-3 and abs(tq[120] - 1.9799) < 1e-3 and abs(tq[100000] - 1.96) < 1e-3, str(tq))
+    lo, hi = R.t_interval([1.0, 2.0, 3.0, 4.0])
+    check("stats: t interval of a mean (3 df)", abs(lo - 0.446) < 1e-3 and abs(hi - 4.554) < 1e-3, f"{lo} {hi}")
+    check("stats: a t interval of damage never goes below 0; one value has none",
+          R.t_interval([0.0, 0.0, 0.0, 6.0])[0] == 0.0 and R.t_interval([5.0]) is None)
+    # a two-shot action rolls twice: 4 rounds of 6 rolls
+    rec = _roll_rec([(6, 4, 1, [25, 25, 30, 20])] * 4, sneak=6)
+    gp = R.game_parts(rec)
+    check("report: parts counted per roll (24 rolls, 16 landed, 4 crits) with the samples kept",
+          gp["per_roll"] and gp["attacks"] == 24 and gp["landed"] == 16 and gp["crits"] == 4 and
+          len(gp["landed_dmg"]) == 16 and gp["n_round"] == [6, 6, 6, 6], str({k: gp[k] for k in ("attacks", "landed")}))
+    p = R.pooled([gp])
+    check("report: per round and per roll values, Sneak Attack taken out of the damage per landed roll",
+          p["attacks"] == 6 and p["hit_rate"] == 16 / 24 and p["dmg_per_hit"] == 100 * 4 / 16 and
+          abs(p["dmg_per_hit_no_sneak"] - (400 - 6) / 16) < 1e-9 and p["sneak"] == 6 / 4, str(p))
+    # +-10% would flag, the interval does not: 7 of 10 against 85% (ratio 0.82)
+    small = R.pooled([R.game_parts(_roll_rec([(5, 4, 0, [20, 20, 20, 20]), (5, 3, 0, [20, 21, 19])]))])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(small, {"hit_rate": 0.85, "dmg_per_hit": 20.0})}
+    check("report: a hit rate 18% below the model but inside its 95% interval (7 of 10) is not flagged; the band "
+          "says out", rows["hit_rate"][5] == "" and rows["hit_rate"][7] == "out" and rows["hit_rate"][6][0] < 0.85
+          < rows["hit_rate"][6][1], str(rows["hit_rate"]))
+    # the reverse: 900 of 1000 against 85% (ratio 1.06, inside +-10%) lies outside the interval
+    big = R.pooled([R.game_parts(_roll_rec([(100, 90, 5, [20] * 90)] * 10))])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(big, {"hit_rate": 0.85, "crit_rate": 0.05})}
+    check("report: a hit rate 6% above the model but outside its 95% interval (900 of 1000) is flagged; the band says in",
+          rows["hit_rate"][5] == "OUTSIDE" and rows["hit_rate"][7] == "in", str(rows["hit_rate"]))
+    check("report: a part the model gives inside the interval unflagged; a part it lacks (Advantage) shown, not compared",
+          rows["crit_rate"][5] == "" and rows["adv_rate"][3] is None and rows["adv_rate"][5] == "" and
+          rows["adv_rate"][2] is not None)
+    check("report: damage per landed roll with an interval from the rolls' damage (all 20: zero width, 21 outside)",
+          R.compare_parts(big, {"dmg_per_hit": 21.0})[7][5] == "OUTSIDE" and
+          R.compare_parts(big, {"dmg_per_hit": 20.0})[7][5] == "")
+    old = R.pooled([R.game_parts(_v2_rec(0, "a", 100.0, hit=40, crit=5, miss=15))])
+    check("report: a record from before rolls were counted falls back to its per-action outcomes",
+          old["attacks"] == 60 / 16 and old["hit_rate"] == 0.75 and old["_ci"].get("attacks") is None)
+    d = tempfile.mkdtemp(prefix="gauntlet_rolls_")
+    try:
+        boss = {"dpr": 100.0, "attacks": 6.0, "hits": 4.0, "crits": 1.0, "hit_rate": 0.66, "crit_rate": 0.17,
+                "dmg_per_hit": 25.0, "sneak": 7.2, "adv_rate": 0.9}
+        pairs = [{"char": "astarion", "build": "b", "act": 3, "single": True,
+                  "specs": {"a": {"set": "S", "act": 3, "expect": {"boss": boss}}}}]
+        sp, res = os.path.join(d, "specs.json"), os.path.join(d, "res.jsonl")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        with open(res, "w", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = R.main(["--report", res, "--specs", sp])
+        text = buf.getvalue()
+        rows = {r_[0]: r_ for r_ in out["sides"][(0, "a")]["rows"]}
+        check("report: the table shows the game's 95% interval and the model's +-10% band beside the flag",
+              "Game 95%" in text and "Model +-10%" in text and "| attack rolls per round | 6.00 |" in text, text[:900])
+        check("report: Sneak Attack as triggers / turns with net Advantage / turns",
+              "Sneak Attack: 1 trigger(s) / 1 turn(s) with net Advantage / 4 turn(s)" in text, text[-400:])
+        check("report: Sneak Attack damage per round compared (1.5 against 7.2: outside)",
+              rows["sneak"][5] == "OUTSIDE", str(rows["sneak"]))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def v2_stat_tests(R):
@@ -4348,7 +4593,43 @@ MUTATIONS = [
      'boss = spec.get("expect")'),
     ("v2: Automatic not set before the runs", RN, '    print("popup mode:", engine.set_mode("automatic"))\n', ""),
     ("v2: invalid runs counted", RN, "                have += len(runs)\n", "                have += 1\n"),
-    ("v2: no part flagged", RN, '"OUTSIDE" if ratio is not None and abs(ratio - 1) > tol else ""', '""'),
+    ("v2: no part flagged", RN, "out.append((key, label, g, m, ratio, flag, ci, band))",
+     'out.append((key, label, g, m, ratio, "", ci, band))'),
+    ("rolls: the off-hand shot not a roll", GL, "G.ROLL_CAUSES = { Attack = true, Offhand = true }",
+     "G.ROLL_CAUSES = { Attack = true }"),
+    ("rolls: a rider row counted as its own roll", GL,
+     "if amt > 0 and last and last.hit and last.target == d.target and t - last.t <= G.ROLL_MERGE_MS then",
+     "if false then"),
+    ("rolls: a 0 damage row of a spell with no attack roll counted as a miss", GL,
+     'if landed or (kind ~= "none" and kind ~= "save") then', "if true then"),
+    ("rolls: a slow projectile given the next cast's spell", GL,
+     'local spell = (h and h.spell ~= "" and h.spell) or (w and w.spell) or nil', "local spell = w and w.spell"),
+    ("rolls: d20 taken from the nearest hit row of any outcome", GL,
+     "local same = landed and ((h.hit or h.crit) and not h.miss) or (not landed and h.miss)", "local same = true"),
+    ("rolls: Sneak Attack not marked on its roll", GL, "    if best then best.sneak = best.rider end\n", ""),
+    ("outcome: Hunter's Mark's cast gets a miss", GL, '    if G.spellRollKind(a.spell) == "none" then return nil end\n',
+     ""),
+    ("outcome: StatusEnter 0 damage rows read as a miss", GL,
+     '          and not (d.cause == "StatusEnter" and (d.amount or 0) <= 0) then', "          then"),
+    ("hits: Disadvantage not read", GL, '"ConditionRolls.1.Roll.Roll.Disadvantage", ', ""),
+    ("hits: the other d20 not read", GL, '"ConditionRolls.1.Roll.Result.DiscardedDiceTotal", ', ""),
+    ("rolls: net Advantage ignores Disadvantage", GL, "net = adv and not dis and advFlag ~= false", "net = adv"),
+    ("sneak: turns with Advantage from the damage flag only", GL,
+     "if R.rolls and (R.rolls.known or 0) > 0 then adv, dis = R.rolls.net_adv_any == true, R.rolls.dis_any == true end",
+     ""),
+    ("sneak: only turns with Advantage counted", GL, "    sa.turns = sa.turns + 1\n",
+     "    if adv then sa.turns = sa.turns + 1 end\n"),
+    ("report: flagged by the 10% band", RN,
+     'flag = "OUTSIDE" if not (ci[0] - 1e-12 <= m <= ci[1] + 1e-12) else ""', 'flag = "OUTSIDE" if band == "out" else ""'),
+    ("report: counted per action", RN, "    rr = _round_rolls(rec)\n", "    rr = None\n"),
+    ("report: Sneak Attack left in the damage per roll", RN,
+     '"dmg_per_hit_no_sneak": (own - sneak) / landed if', '"dmg_per_hit_no_sneak": own / landed if'),
+    ("stats: the normal quantile for small samples", RN, "    if df <= 30:\n        return T975_ALL[int(df)]\n", ""),
+    ("stats: binomial upper bound at 5% one-sided", RN,
+     "upper = 1.0 if k >= n else solve(lambda p: _binom_cdf(k, n, p) <= alpha / 2)",
+     "upper = 1.0 if k >= n else solve(lambda p: _binom_cdf(k, n, p) <= alpha)"),
+    ("stats: damage per hit with no interval", RN, '        ci["dmg_per_hit"] = _shifted(', '        ci["x"] = _shifted('),
+    ("popup: per action, not per roll", TL, "  if ro and (ro.n or 0) > 0 then", "  if false then"),
     ("no outside buffs: Bless back", "catalog.py", 'BUFFS = {"1": [], "2": [], "3": []}',
      'BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}'),
 ]

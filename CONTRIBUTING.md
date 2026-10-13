@@ -107,9 +107,10 @@ python tools/gauntlet/engine.py start                      # the popup's Start
 `run.py` goes through the same Start: it sets Automatic right after loading, writes each run's request and spec to
 the test file and presses Start. A side runs until it has `--repeats` valid runs (default 4), and every run's turn
 list (round by round: the attack or spell, its target, its result) is written to `<results>_turns/` for a person to
-replay the run by hand. `--report` compares each set with the model's boss scenario part by part (attacks per round,
-hit rate, critical hits, damage per landed hit, the riders, then damage per round), flags a part outside +-10%, and
-gives one 95% interval of the mean of the run means per side and per pair; runs played by hand are listed apart. The
+replay the run by hand. `--report` compares each set with the model's boss scenario part by part, per attack roll (a
+two-weapon shot rolls twice): rolls, hit and critical rates, Advantage and Disadvantage, damage per landed roll, the
+riders, then damage per round. It flags a part when the model's value is outside the game's 95% interval (exact
+binomial for rates, Student t for means), shows the +-10% band beside it, and gives one 95% interval of the mean of the run means per side and per pair; runs played by hand are listed apart. The
 earlier method (early stopping, the control gate, two lanes, the day-score report) stays behind `--v1`.
 
 The **test mod** loads the harness with the save, with no eval hook: a developer-only pak of its own

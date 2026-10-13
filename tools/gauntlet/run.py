@@ -13,9 +13,12 @@ The method (one boss fight of 16 rounds, fixed repeats, one statistic, the model
 - after every run the turn list (round by round: the spell or attack, its target and its result) is written next to
   the results, <results>_turns/<run id>.md, for a person to replay the run by hand;
 - --report compares each set with the model's BOSS scenario (expect.boss from plan.py, not the day numbers): first
-  part by part (attacks per round, hit rate, critical hits, damage per landed hit, the riders), then damage per round,
-  each flagged when the game is outside +-10% of the model. One statistic: the 95% t-interval of the mean of the run
-  means (on their logarithms), per side and for the ratio of a pair's two sides. Runs from the popup's Manual mode
+  part by part, counted per attack roll (attack rolls, landed rolls and critical hits per round, hit and critical
+  rates, rolls with net Advantage and with Disadvantage, damage per landed roll with and without Sneak Attack, the
+  riders), then damage per round. A part is flagged when the model's value lies outside the game's 95% interval
+  (exact binomial for rates, Student t for means); the +-10% band around the model is shown beside it. One statistic
+  for the sets: the 95% t-interval of the mean of the run means (on their logarithms), per side and for the ratio of a
+  pair's two sides. Runs from the popup's Manual mode
   (test_mode "manual") are listed apart and compared with the side's automatic runs.
 
 No buff comes from outside the set: the build, the set, the planned actions and the consumables give everything.
@@ -840,56 +843,228 @@ def rec_pair_side(rec):
     return rec.get("pair", req.get("pair")), rec.get("side", req.get("side"))
 
 
+T975_ALL = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365, 8: 2.306, 9: 2.262, 10: 2.228,
+            11: 2.201, 12: 2.179, 13: 2.160, 14: 2.145, 15: 2.131, 16: 2.120, 17: 2.110, 18: 2.101, 19: 2.093,
+            20: 2.086, 21: 2.080, 22: 2.074, 23: 2.069, 24: 2.064, 25: 2.060, 26: 2.056, 27: 2.052, 28: 2.048,
+            29: 2.045, 30: 2.042}
+
+
+def t_quantile975(df):
+    """97.5% quantile of Student's t: the table to 30 degrees of freedom, beyond it the Cornish-Fisher expansion
+    around the normal quantile (within 0.001 of the exact value from 30 on)."""
+    if df < 1:
+        return None
+    if df <= 30:
+        return T975_ALL[int(df)]
+    z, v = 1.959964, float(df)
+    g1 = (z ** 3 + z) / 4
+    g2 = (5 * z ** 5 + 16 * z ** 3 + 3 * z) / 96
+    g3 = (3 * z ** 7 + 19 * z ** 5 + 17 * z ** 3 - 15 * z) / 384
+    g4 = (79 * z ** 9 + 776 * z ** 7 + 1482 * z ** 5 - 1920 * z ** 3 - 945 * z) / 92160
+    return z + g1 / v + g2 / v ** 2 + g3 / v ** 3 + g4 / v ** 4
+
+
+def t_interval(xs):
+    """95% Student t interval of the mean of xs -> (lo, hi), None below two values; never below 0 for samples that
+    cannot be negative (damage, counts)."""
+    if len(xs) < 2:
+        return None
+    m = mean(xs)
+    h = t_quantile975(len(xs) - 1) * math.sqrt(_var(xs) / len(xs))
+    return (max(0.0, m - h) if min(xs) >= 0 else m - h), m + h
+
+
+def _binom_cdf(k, n, p):
+    """P(X <= k) for X ~ Binomial(n, p)."""
+    if k < 0:
+        return 0.0
+    if k >= n or p <= 0.0:
+        return 1.0
+    if p >= 1.0:
+        return 0.0
+    lp, lq, c = math.log(p), math.log1p(-p), math.lgamma(n + 1)
+    return min(1.0, sum(math.exp(c - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * lp + (n - i) * lq)
+                        for i in range(k + 1)))
+
+
+def binom_interval(k, n, alpha=0.05):
+    """Exact (Clopper-Pearson) 95% interval of a rate k / n -> (lo, hi), None for n = 0. Found by bisection on the
+    binomial distribution, so no beta quantile is needed."""
+    if not n:
+        return None
+
+    def solve(f):
+        lo, hi = 0.0, 1.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if f(mid):
+                hi = mid
+            else:
+                lo = mid
+        return (lo + hi) / 2
+    lower = 0.0 if k <= 0 else solve(lambda p: 1.0 - _binom_cdf(k - 1, n, p) >= alpha / 2)
+    upper = 1.0 if k >= n else solve(lambda p: _binom_cdf(k, n, p) <= alpha / 2)
+    return lower, upper
+
+
+def _round_rolls(rec):
+    """The run's per-round roll records (G.rollTally), or None for a record from before they were counted."""
+    rs = [(r.get("r"), r.get("rolls")) for r in rec.get("rounds") or [] if isinstance(r, dict)]
+    if not any(isinstance(x, dict) and "n" in x for _r, x in rs):
+        return None
+    return rs
+
+
 def game_parts(rec):
-    """One run's parts as the report compares them, per round where it is a rate: attacks (rolls the outcome is known
-    of), hit rate (critical hits count as hits), critical hits per attack, the character's own damage per landed hit
-    (summons left out), the riders that hang on hits, damage per round."""
+    """One run's parts as the report compares them, counted per attack roll (a two-weapon shot rolls twice): rolls,
+    landed rolls (critical hits included), critical hits, rolls with Advantage net of Disadvantage and with
+    Disadvantage (of the rolls whose state the hit log gave: landed ones only so far, which leans towards
+    Advantage), the character's own damage (summons left out), Sneak
+    Attack's damage, the riders, and the samples the intervals are taken over: damage per landed roll and per round.
+    A record from before rolls were counted falls back to its per-action outcomes, with no samples but the rounds'."""
     res = rec.get("results") or {}
     s = res.get("summary") or {}
-    a = s.get("attacks") or {}
-    n = (a.get("hit") or 0) + (a.get("crit") or 0) + (a.get("miss") or 0)
-    landed = (a.get("hit") or 0) + (a.get("crit") or 0)
     rounds = len(s.get("dealt") or []) or s.get("rounds") or 0
-    own = sum(s.get("dealt") or []) - (s.get("summon_damage") or 0)
+    dealt = list(s.get("dealt") or [])
+    summon = list(s.get("summon_dealt") or [])
+    own_r = [d - (summon[i] if i < len(summon) else 0) for i, d in enumerate(dealt)]
+    own = sum(dealt) - (s.get("summon_damage") or 0)
     hr = res.get("hit_riders") or {}
     hm, sa = hr.get("hunters_mark") or {}, hr.get("sneak_attack") or {}
-    return {"rounds": rounds, "attacks": n, "landed": landed, "crits": a.get("crit") or 0, "own": own,
-            "dpr": s.get("dpr") or 0.0, "hm_hits": hm.get("hits") or 0, "hm_rider": hm.get("rider") or 0,
-            "sa_turns": sa.get("turns") or 0, "sa_rider": sa.get("rider") or 0}
+    out = {"rounds": rounds, "own": own, "dpr": s.get("dpr") or 0.0, "hm_hits": hm.get("hits") or 0,
+           "hm_rider": hm.get("rider") or 0, "sa_rider": sa.get("rider") or 0, "sa_all_turns": sa.get("turns") or 0,
+           # a record from before the per-turn count has turns with Advantage only, under "turns"
+           "sa_turns": sa.get("adv_turns", sa.get("turns")) or 0,
+           "sa_rider_adv": sa.get("rider_adv", sa.get("rider")) or 0,
+           "runs": 1, "run_dpr": [own / rounds if rounds else 0.0], "own_round": own_r}
+    rr = _round_rolls(rec)
+    if rr is None:
+        a = s.get("attacks") or {}
+        n = (a.get("hit") or 0) + (a.get("crit") or 0) + (a.get("miss") or 0)
+        out.update({"per_roll": False, "attacks": n, "landed": (a.get("hit") or 0) + (a.get("crit") or 0),
+                    "crits": a.get("crit") or 0, "known": 0, "net_adv": 0, "dis": 0, "sneak_dmg": 0,
+                    "roll_dmg": 0})
+        return out
+    by_r = {r: x or {} for r, x in rr}
+    order = [r for r, _x in rr]
+    per = [by_r[r] for r in order]
+    landed_dmg, landed_dmg_ns = [], []
+    for x in per:
+        for p in x.get("per_roll") or []:
+            if p.get("hit"):
+                landed_dmg.append(p.get("dmg") or 0)
+                landed_dmg_ns.append((p.get("dmg") or 0) - (p.get("sneak") or 0))
+    out.update({"per_roll": True, "attacks": sum(x.get("n") or 0 for x in per),
+                "landed": sum(x.get("landed") or 0 for x in per), "crits": sum(x.get("crit") or 0 for x in per),
+                "known": sum(x.get("known") or 0 for x in per), "net_adv": sum(x.get("net_adv") or 0 for x in per),
+                "dis": sum(x.get("dis") or 0 for x in per), "sneak_dmg": sum(x.get("sneak_dmg") or 0 for x in per),
+                "roll_dmg": sum(x.get("dmg") or 0 for x in per),
+                "n_round": [x.get("n") or 0 for x in per], "landed_round": [x.get("landed") or 0 for x in per],
+                "crit_round": [x.get("crit") or 0 for x in per],
+                "sneak_round": [x.get("sneak_dmg") or 0 for x in per],
+                "landed_dmg": landed_dmg, "landed_dmg_ns": landed_dmg_ns})
+    return out
+
+
+def _shifted(ci, d):
+    return (ci[0] + d, ci[1] + d) if ci else None
 
 
 def pooled(parts):
-    """Runs' parts pooled: totals over every run, then the rates."""
-    t = {}
+    """Runs' parts pooled: totals and samples over every run, then the values and their 95% intervals ("_ci"): exact
+    binomial for the rates; Student t for the means, over the landed rolls' damage for damage per hit (the damage of
+    no roll, a status ticking, taken as fixed) and over the rounds for the per-round numbers, or over the run means
+    for damage per round once there are three runs or more."""
+    t, xs = {}, {}
     for p in parts:
         for k, v in p.items():
-            t[k] = t.get(k, 0) + v
+            if isinstance(v, list):
+                xs.setdefault(k, []).extend(v)
+            elif isinstance(v, bool):
+                t[k] = t.get(k, True) and v
+            else:
+                t[k] = t.get(k, 0) + v
     r = t.get("rounds") or 0
-    att = t.get("attacks") or 0
-    return {"attacks": att / r if r else None, "hit_rate": t["landed"] / att if att else None,
-            "crit_rate": t["crits"] / att if att else None,
-            "dmg_per_hit": t["own"] / t["landed"] if t.get("landed") else None,
-            "hm_share": t["hm_rider"] / t["hm_hits"] if t.get("hm_hits") else None,
-            "sa_share": t["sa_rider"] / t["sa_turns"] if t.get("sa_turns") else None,
-            "dpr": t["own"] / r if r else None}
+    att, landed, known = t.get("attacks") or 0, t.get("landed") or 0, t.get("known") or 0
+    own, sneak = t.get("own") or 0, t.get("sneak_dmg") or 0
+    v = {"attacks": att / r if r else None, "hits": landed / r if r else None,
+         "crits": (t.get("crits") or 0) / r if r else None,
+         "hit_rate": landed / att if att else None, "crit_rate": (t.get("crits") or 0) / att if att else None,
+         "adv_rate": (t.get("net_adv") or 0) / known if known else None,
+         "dis_rate": (t.get("dis") or 0) / known if known else None,
+         "dmg_per_hit": own / landed if landed else None,
+         "dmg_per_hit_no_sneak": (own - sneak) / landed if landed and t.get("per_roll") else None,
+         "sneak": sneak / r if r and t.get("per_roll") else None,
+         "hm_share": t["hm_rider"] / t["hm_hits"] if t.get("hm_hits") else None,
+         "sa_share": t["sa_rider_adv"] / t["sa_turns"] if t.get("sa_turns") else None,
+         "dpr": own / r if r else None,
+         "sa_counts": (t.get("sa_rider") or 0, t.get("sa_turns") or 0, t.get("sa_all_turns") or 0)}
+    ci = {}
+    if att:
+        ci["hit_rate"] = binom_interval(landed, att)
+        ci["crit_rate"] = binom_interval(t.get("crits") or 0, att)
+    if known:
+        ci["adv_rate"] = binom_interval(t.get("net_adv") or 0, known)
+        ci["dis_rate"] = binom_interval(t.get("dis") or 0, known)
+    ci["hm_share"] = binom_interval(t.get("hm_rider") or 0, t.get("hm_hits") or 0)
+    ci["sa_share"] = binom_interval(t.get("sa_rider_adv") or 0, t.get("sa_turns") or 0)
+    for key, sample in (("attacks", "n_round"), ("hits", "landed_round"), ("crits", "crit_round"),
+                        ("sneak", "sneak_round")):
+        ci[key] = t_interval(xs.get(sample) or [])
+    if landed and xs.get("landed_dmg"):
+        # the damage of no roll (a status ticking, a surface) per landed roll, added to the rolls' own interval
+        extra = (own - (t.get("roll_dmg") or 0)) / landed
+        ci["dmg_per_hit"] = _shifted(t_interval(xs["landed_dmg"]), extra)
+        ci["dmg_per_hit_no_sneak"] = _shifted(t_interval(xs.get("landed_dmg_ns") or []), extra)
+    runs = xs.get("run_dpr") or []
+    ci["dpr"] = t_interval(runs) if len(runs) >= 3 else t_interval(xs.get("own_round") or [])
+    v["_ci"] = ci
+    return v
 
 
-PARTS = [("attacks", "attacks per round", "attacks", "{:.2f}"), ("hit_rate", "hit rate", "hit_rate", "{:.0%}"),
-         ("crit_rate", "critical hits per attack", "crit_rate", "{:.1%}"),
-         ("dmg_per_hit", "damage per landed hit", "dmg_per_hit", "{:.1f}"),
+PARTS = [("attacks", "attack rolls per round", "attacks", "{:.2f}"),
+         ("hits", "landed rolls per round", "hits", "{:.2f}"),
+         ("crits", "critical hits per round", "crits", "{:.2f}"),
+         ("hit_rate", "hit rate (per roll)", "hit_rate", "{:.0%}"),
+         ("crit_rate", "critical hits per roll", "crit_rate", "{:.1%}"),
+         ("adv_rate", "rolls with net Advantage (logged rolls)", "adv_rate", "{:.0%}"),
+         ("dis_rate", "rolls with Disadvantage (logged rolls)", "dis_rate", "{:.0%}"),
+         ("dmg_per_hit", "damage per landed roll", "dmg_per_hit", "{:.1f}"),
+         ("dmg_per_hit_no_sneak", "damage per landed roll, no Sneak Attack", "dmg_per_hit_no_sneak", "{:.1f}"),
+         ("sneak", "Sneak Attack damage per round", "sneak", "{:.2f}"),
          ("hm_share", "Hunter's Mark on landed hits", None, "{:.0%}"),
-         ("sa_share", "Sneak Attack in turns with Advantage", None, "{:.0%}"),
+         ("sa_share", "Sneak Attack in turns with net Advantage", None, "{:.0%}"),
          ("dpr", "damage per round (own)", "dpr", "{:.1f}")]
 
 
 def compare_parts(game, model, tol=PART_TOL):
-    """Rows [(name, game, model, ratio, flag)] in PARTS order; flag "OUTSIDE" when game / model leaves 1 +- tol."""
+    """Rows [(key, label, game, model, ratio, flag, interval, band)] in PARTS order. flag "OUTSIDE" when the model's
+    value lies outside the game's 95% interval (a single run's noise is no gap); a part with no interval (a record
+    from before rolls were counted) falls back to the +-tol band. band: "in" / "out", whether the game lies within the
+    model x (1 +- tol), shown beside it. A part the model does not give is shown, not compared."""
     out = []
+    ci_all = game.get("_ci") or {}
     for key, label, mkey, _fmt in PARTS:
         g, m = game.get(key), (model or {}).get(mkey) if mkey else None
         ratio = g / m if g is not None and m else None
-        out.append((key, label, g, m, ratio, "OUTSIDE" if ratio is not None and abs(ratio - 1) > tol else ""))
+        ci = ci_all.get(key)
+        band = ("in" if abs(ratio - 1) <= tol else "out") if ratio is not None else ""
+        if m is None or g is None:
+            flag = ""
+        elif ci:
+            flag = "OUTSIDE" if not (ci[0] - 1e-12 <= m <= ci[1] + 1e-12) else ""
+        else:
+            flag = "OUTSIDE" if band == "out" else ""
+        out.append((key, label, g, m, ratio, flag, ci, band))
     return out
+
+
+def _band(fmt, m, tol=PART_TOL):
+    return f"{_f(fmt, m * (1 - tol))}-{_f(fmt, m * (1 + tol))}" if m else "-"
+
+
+def _ci(fmt, ci):
+    return f"{_f(fmt, ci[0])}-{_f(fmt, ci[1])}" if ci else "-"
 
 
 def _f(fmt, v):
@@ -940,12 +1115,19 @@ def report_v2(a):
                      (f", model boss {boss['dpr']:.1f}" if boss and boss.get("dpr") else "") +
                      (f", game/model 95% {ratio_ci[0]:.2f}-{ratio_ci[1]:.2f}" if ratio_ci else ""))
             L.append("run means: " + ", ".join(f"{x:.1f}" for x in xs))
-            rows = compare_parts(pooled([game_parts(r) for r in runs]), boss) if runs else []
+            gp = pooled([game_parts(r) for r in runs]) if runs else {}
+            rows = compare_parts(gp, boss) if runs else []
             if rows:
-                L += ["", "| Part | Game | Model (boss) | Game / model | |", "|---|---|---|---|---|"]
-                for key, label, g, m, ratio, flag in rows:
+                L += ["", f"| Part | Game | Game 95% | Model (boss) | Game / model | Model +-{PART_TOL:.0%} | |",
+                      "|---|---|---|---|---|---|---|"]
+                for key, label, g, m, ratio, flag, pci, band in rows:
                     fmt = dict((k, f_) for k, _l, _m, f_ in PARTS)[key]
-                    L.append(f"| {label} | {_f(fmt, g)} | {_f(fmt, m)} | {_f('{:.2f}', ratio)} | {flag} |")
+                    L.append(f"| {label} | {_f(fmt, g)} | {_ci(fmt, pci)} | {_f(fmt, m)} | {_f('{:.2f}', ratio)} | "
+                             f"{_band(fmt, m)}{' (game ' + band + ')' if band else ''} | {flag} |")
+                sa_n, sa_adv, sa_all = gp.get("sa_counts") or (0, 0, 0)
+                L.append(f"\nSneak Attack: {sa_n} trigger(s) / {sa_adv} turn(s) with net Advantage / {sa_all} turn(s). "
+                         "OUTSIDE: the model's value is outside the game's 95% interval (exact binomial for rates, "
+                         "Student t for means).")
             out["sides"][(i, side)] = {"n": len(runs), "mean": gm, "ci": ci, "rows": rows,
                                        "outside": [r_[0] for r_ in rows if r_[5]]}
             if man:
@@ -957,7 +1139,7 @@ def report_v2(a):
                     L.append(f"- {r.get('run_id')}: " + ", ".join(
                         f"{label} {_f(dict((k, f_) for k, _l, _m, f_ in PARTS)[key], g)}"
                         + (f" (x{ratio:.2f}{' OUTSIDE' if flag else ''})" if ratio else "")
-                        for key, label, g, _m, ratio, flag in cmp_))
+                        for key, label, g, _m, ratio, flag, _ci_, _b in cmp_))
             L.append("")
         if means.get("a") and means.get("b"):
             rr, rci = ratio_interval(means["a"], means["b"])
