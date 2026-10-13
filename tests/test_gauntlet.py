@@ -2774,7 +2774,7 @@ def py_tests():
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
-              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests):
+              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -3864,6 +3864,104 @@ def roll_tests(L):
           s.net_adv == 2 and s.sneak_dmg == 6, f"{s.n} {s.landed} {s.dmg}")
 
 
+def _roll_rec(rounds, i=0, side="a", run_id="r", dealt=None, sneak=None):
+    """A run record with per-roll counts: rounds = [(rolls, landed, crits, landed damage list)]."""
+    out = []
+    for r, (n, landed, crits, dl) in enumerate(rounds):
+        per = [{"hit": True, "dmg": d, "sneak": (sneak if (sneak and r == 0 and j == 0) else None)}
+               for j, d in enumerate(dl)]
+        per += [{"hit": False, "dmg": 0}] * (n - landed)
+        out.append({"r": r + 1, "done": {"action": True}, "actions": [],
+                    "rolls": {"n": n, "landed": landed, "crit": crits, "miss": n - landed, "dmg": sum(dl),
+                              "sneak_dmg": sneak if (sneak and r == 0) else 0, "known": landed, "net_adv": 0,
+                              "dis": 0, "per_roll": per}})
+    dealt = dealt or [sum(x[3]) for x in rounds]
+    return {"mode": "scripted", "pair": i, "side": side, "scenario": "boss", "real_rolls": True, "valid": True,
+            "invalid": [], "test_mode": "automatic", "run_id": run_id, "spec_id": {}, "req": {"pair": i, "side": side},
+            "rounds": out,
+            "results": {"ended": "rounds done", "summary": {"dealt": dealt, "dpr": sum(dealt) / len(dealt),
+                                                            "rounds": len(dealt)},
+                        "hit_riders": {"sneak_attack": {"turns": len(dealt), "adv_turns": 1, "rider": 1,
+                                                        "rider_adv": 1}}}}
+
+
+def roll_report_tests(R):
+    """--report per roll with 95% intervals: exact binomial for the rates, Student t for the means; a part is flagged
+    when the model's value is outside the game's interval, not when the game leaves +-10% (shown beside it)."""
+    lo, hi = R.binom_interval(11, 99)
+    check("stats: exact binomial interval, 11 of 99 -> 5.7%-19.0%", abs(lo - 0.0568) < 5e-4 and abs(hi - 0.1901) < 5e-4,
+          f"{lo} {hi}")
+    lo, hi = R.binom_interval(10, 65)
+    check("stats: exact binomial interval, 10 of 65 -> 7.6%-26.5%", abs(lo - 0.0763) < 5e-4 and abs(hi - 0.2648) < 5e-4,
+          f"{lo} {hi}")
+    check("stats: 0 of 10 and 10 of 10 reach the edge (upper 30.8%, lower 69.2%)",
+          R.binom_interval(0, 10)[0] == 0.0 and abs(R.binom_interval(0, 10)[1] - 0.3085) < 5e-4 and
+          R.binom_interval(10, 10)[1] == 1.0 and abs(R.binom_interval(10, 10)[0] - 0.6915) < 5e-4 and
+          R.binom_interval(0, 0) is None)
+    tq = {d: R.t_quantile975(d) for d in (1, 3, 30, 40, 60, 120, 100000)}
+    check("stats: t quantiles (table to 30 df, the expansion beyond)",
+          tq[1] == 12.706 and tq[3] == 3.182 and tq[30] == 2.042 and abs(tq[40] - 2.0211) < 1e-3 and
+          abs(tq[60] - 2.0003) < 1e-3 and abs(tq[120] - 1.9799) < 1e-3 and abs(tq[100000] - 1.96) < 1e-3, str(tq))
+    lo, hi = R.t_interval([1.0, 2.0, 3.0, 4.0])
+    check("stats: t interval of a mean (3 df)", abs(lo - 0.446) < 1e-3 and abs(hi - 4.554) < 1e-3, f"{lo} {hi}")
+    check("stats: a t interval of damage never goes below 0; one value has none",
+          R.t_interval([0.0, 0.0, 0.0, 6.0])[0] == 0.0 and R.t_interval([5.0]) is None)
+    # a two-shot action rolls twice: 4 rounds of 6 rolls
+    rec = _roll_rec([(6, 4, 1, [25, 25, 30, 20])] * 4, sneak=6)
+    gp = R.game_parts(rec)
+    check("report: parts counted per roll (24 rolls, 16 landed, 4 crits) with the samples kept",
+          gp["per_roll"] and gp["attacks"] == 24 and gp["landed"] == 16 and gp["crits"] == 4 and
+          len(gp["landed_dmg"]) == 16 and gp["n_round"] == [6, 6, 6, 6], str({k: gp[k] for k in ("attacks", "landed")}))
+    p = R.pooled([gp])
+    check("report: per round and per roll values, Sneak Attack taken out of the damage per landed roll",
+          p["attacks"] == 6 and p["hit_rate"] == 16 / 24 and p["dmg_per_hit"] == 100 * 4 / 16 and
+          abs(p["dmg_per_hit_no_sneak"] - (400 - 6) / 16) < 1e-9 and p["sneak"] == 6 / 4, str(p))
+    # +-10% would flag, the interval does not: 7 of 10 against 85% (ratio 0.82)
+    small = R.pooled([R.game_parts(_roll_rec([(5, 4, 0, [20, 20, 20, 20]), (5, 3, 0, [20, 21, 19])]))])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(small, {"hit_rate": 0.85, "dmg_per_hit": 20.0})}
+    check("report: a hit rate 18% below the model but inside its 95% interval (7 of 10) is not flagged; the band "
+          "says out", rows["hit_rate"][5] == "" and rows["hit_rate"][7] == "out" and rows["hit_rate"][6][0] < 0.85
+          < rows["hit_rate"][6][1], str(rows["hit_rate"]))
+    # the reverse: 900 of 1000 against 85% (ratio 1.06, inside +-10%) lies outside the interval
+    big = R.pooled([R.game_parts(_roll_rec([(100, 90, 5, [20] * 90)] * 10))])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(big, {"hit_rate": 0.85, "crit_rate": 0.05})}
+    check("report: a hit rate 6% above the model but outside its 95% interval (900 of 1000) is flagged; the band says in",
+          rows["hit_rate"][5] == "OUTSIDE" and rows["hit_rate"][7] == "in", str(rows["hit_rate"]))
+    check("report: a part the model gives inside the interval unflagged; a part it lacks (Advantage) shown, not compared",
+          rows["crit_rate"][5] == "" and rows["adv_rate"][3] is None and rows["adv_rate"][5] == "" and
+          rows["adv_rate"][2] is not None)
+    check("report: damage per landed roll with an interval from the rolls' damage (all 20: zero width, 21 outside)",
+          R.compare_parts(big, {"dmg_per_hit": 21.0})[7][5] == "OUTSIDE" and
+          R.compare_parts(big, {"dmg_per_hit": 20.0})[7][5] == "")
+    old = R.pooled([R.game_parts(_v2_rec(0, "a", 100.0, hit=40, crit=5, miss=15))])
+    check("report: a record from before rolls were counted falls back to its per-action outcomes",
+          old["attacks"] == 60 / 16 and old["hit_rate"] == 0.75 and old["_ci"].get("attacks") is None)
+    d = tempfile.mkdtemp(prefix="gauntlet_rolls_")
+    try:
+        boss = {"dpr": 100.0, "attacks": 6.0, "hits": 4.0, "crits": 1.0, "hit_rate": 0.66, "crit_rate": 0.17,
+                "dmg_per_hit": 25.0, "sneak": 7.2, "adv_rate": 0.9}
+        pairs = [{"char": "astarion", "build": "b", "act": 3, "single": True,
+                  "specs": {"a": {"set": "S", "act": 3, "expect": {"boss": boss}}}}]
+        sp, res = os.path.join(d, "specs.json"), os.path.join(d, "res.jsonl")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        with open(res, "w", encoding="utf-8") as f:
+            f.write(json.dumps(rec) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = R.main(["--report", res, "--specs", sp])
+        text = buf.getvalue()
+        rows = {r_[0]: r_ for r_ in out["sides"][(0, "a")]["rows"]}
+        check("report: the table shows the game's 95% interval and the model's +-10% band beside the flag",
+              "Game 95%" in text and "Model +-10%" in text and "| attack rolls per round | 6.00 |" in text, text[:900])
+        check("report: Sneak Attack as triggers / turns with net Advantage / turns",
+              "Sneak Attack: 1 trigger(s) / 1 turn(s) with net Advantage / 4 turn(s)" in text, text[-400:])
+        check("report: Sneak Attack damage per round compared (1.5 against 7.2: outside)",
+              rows["sneak"][5] == "OUTSIDE", str(rows["sneak"]))
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def v2_stat_tests(R):
     """Method v2's one statistic: the t-interval of the mean of run means on their logarithms, per side and for a
     pair's ratio."""
@@ -4495,7 +4593,8 @@ MUTATIONS = [
      'boss = spec.get("expect")'),
     ("v2: Automatic not set before the runs", RN, '    print("popup mode:", engine.set_mode("automatic"))\n', ""),
     ("v2: invalid runs counted", RN, "                have += len(runs)\n", "                have += 1\n"),
-    ("v2: no part flagged", RN, '"OUTSIDE" if ratio is not None and abs(ratio - 1) > tol else ""', '""'),
+    ("v2: no part flagged", RN, "out.append((key, label, g, m, ratio, flag, ci, band))",
+     'out.append((key, label, g, m, ratio, "", ci, band))'),
     ("rolls: the off-hand shot not a roll", GL, "G.ROLL_CAUSES = { Attack = true, Offhand = true }",
      "G.ROLL_CAUSES = { Attack = true }"),
     ("rolls: a rider row counted as its own roll", GL,
@@ -4520,6 +4619,16 @@ MUTATIONS = [
      ""),
     ("sneak: only turns with Advantage counted", GL, "    sa.turns = sa.turns + 1\n",
      "    if adv then sa.turns = sa.turns + 1 end\n"),
+    ("report: flagged by the 10% band", RN,
+     'flag = "OUTSIDE" if not (ci[0] - 1e-12 <= m <= ci[1] + 1e-12) else ""', 'flag = "OUTSIDE" if band == "out" else ""'),
+    ("report: counted per action", RN, "    rr = _round_rolls(rec)\n", "    rr = None\n"),
+    ("report: Sneak Attack left in the damage per roll", RN,
+     '"dmg_per_hit_no_sneak": (own - sneak) / landed if', '"dmg_per_hit_no_sneak": own / landed if'),
+    ("stats: the normal quantile for small samples", RN, "    if df <= 30:\n        return T975_ALL[int(df)]\n", ""),
+    ("stats: binomial upper bound at 5% one-sided", RN,
+     "upper = 1.0 if k >= n else solve(lambda p: _binom_cdf(k, n, p) <= alpha / 2)",
+     "upper = 1.0 if k >= n else solve(lambda p: _binom_cdf(k, n, p) <= alpha)"),
+    ("stats: damage per hit with no interval", RN, '        ci["dmg_per_hit"] = _shifted(', '        ci["x"] = _shifted('),
     ("popup: per action, not per roll", TL, "  if ro and (ro.n or 0) > 0 then", "  if false then"),
     ("no outside buffs: Bless back", "catalog.py", 'BUFFS = {"1": [], "2": [], "3": []}',
      'BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}'),
