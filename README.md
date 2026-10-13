@@ -34,8 +34,10 @@ Install with BG3 Mod Manager: install Script Extender (*Tools > Download and Ext
 `LootAdvisor.pak` into the mod manager, move Loot Advisor to the active mods, then *Save Load Order* and *Export Load
 Order to Game*. [`INSTALL.md`](package/INSTALL.md) has the steps, installing by hand and uninstalling.
 
-**Linux and Steam Deck (Proton):** not covered yet. The install notes assume Windows; instructions for Linux are
-planned in [#80](https://github.com/md12ol/LootAdvisor/issues/80).
+**Linux and Steam Deck (Proton):** not tested yet. [`INSTALL.md`](package/INSTALL.md#linux-and-steam-deck-untested)
+has a *Linux and Steam Deck (untested)* section: the Script Extender launch option, where the game's folders are
+inside the Proton prefix and how to open the Sets page. Reports are welcome in
+[#80](https://github.com/md12ol/LootAdvisor/issues/80).
 
 ## How to use it
 - Items the advisor recommends get a rainbow frame and an extra tooltip line; their spots are marked on the map.
