@@ -1,7 +1,8 @@
--- Gauntlet window (client side, Script Extender IMGUI) for MANUAL runs. Dev/test only: it is not part of the mod
--- pak; tools/gauntlet/engine.py load loads it into a running game through the dev eval hook. Hotkey F9 toggles it.
--- Pick build, set, act, scenario and variant; Start sets up the arena on the host character and hands its turns to
--- you. The server side (gauntlet.lua) records the same numbers as a scripted run and sends the result back here.
+-- Gauntlet window (client side, Script Extender IMGUI). Dev/test only: it is not part of the Loot Advisor pak; the
+-- test mod (tools/gauntlet/testmod) or tools/gauntlet/engine.py load loads it into a running game. Hotkey F9 toggles
+-- it. On top, the test popup (gauntlet_test.lua on the server): mode Manual / Automatic, Start, Stop, the status and
+-- the last result. Below, folded, the free runs: pick build, set, act and scenario from the catalogue and Start sets
+-- up the arena on the host character and hands its turns to you.
 
 GAUNTLET_UI = GAUNTLET_UI or {}
 local U = GAUNTLET_UI
@@ -16,6 +17,29 @@ end
 local SCENARIOS = { "boss", "pack", "defence", "longday" }
 local SCN_TEXT = { boss = "Boss (1 target)", pack = "Pack (4 targets)", defence = "Defence (attackers)",
   longday = "Long day (4 fights, short rests)" }
+local MODE_IDS = { "manual", "automatic" }
+local MODE_TEXT = { manual = "Manual (you play the turns)", automatic = "Automatic (the plan plays the turns)" }
+
+-- The game's own panel look: dark brown panels, gold text and frames.
+U.COLORS = {
+  WindowBg = { 0.075, 0.06, 0.05, 0.96 }, ChildBg = { 0.10, 0.08, 0.06, 0.9 }, Border = { 0.55, 0.43, 0.24, 0.9 },
+  TitleBg = { 0.16, 0.12, 0.08, 1 }, TitleBgActive = { 0.24, 0.18, 0.10, 1 }, Text = { 0.92, 0.86, 0.72, 1 },
+  FrameBg = { 0.17, 0.13, 0.09, 1 }, FrameBgHovered = { 0.26, 0.20, 0.12, 1 }, Button = { 0.30, 0.21, 0.11, 1 },
+  ButtonHovered = { 0.45, 0.32, 0.15, 1 }, ButtonActive = { 0.58, 0.42, 0.18, 1 }, Header = { 0.24, 0.18, 0.10, 1 },
+  HeaderHovered = { 0.36, 0.27, 0.14, 1 }, Separator = { 0.55, 0.43, 0.24, 0.6 },
+}
+U.GOLD, U.RED, U.GREEN, U.GREY = { 0.86, 0.69, 0.36, 1 }, { 0.90, 0.40, 0.32, 1 }, { 0.55, 0.80, 0.45, 1 },
+  { 0.65, 0.60, 0.52, 1 }
+U.STATUS_COLOR = { Ready = U.GREY, ["Setting up"] = U.GOLD, Fighting = U.GREEN, Result = U.GOLD,
+  ["Setup failed"] = U.RED }
+
+local function style(w)
+  for k, c in pairs(U.COLORS) do pcall(function() w:SetColor(k, c) end) end
+  pcall(function() w:SetStyle("WindowRounding", 4) end)
+  pcall(function() w:SetStyle("FrameRounding", 3) end)
+  pcall(function() w:SetStyle("WindowBorderSize", 1) end)
+end
+local function colored(t, c) if t and c then pcall(function() t:SetColor("Text", c) end) end return t end
 
 local function catalog()
   local raw = try(Ext.IO.LoadFile, "LootAdvisor_gauntlet_catalog.json")
@@ -46,17 +70,65 @@ end
 
 local function reset(name)
   if U[name] then try(function() U[name]:Destroy() end) end
-  U[name] = U.window:AddGroup(name)
+  U[name] = (U.free or U.window):AddGroup(name)
   return U[name]
 end
 
 local function send(msg)
   pcall(Ext.ClientNet.PostMessageToServer, "Gauntlet", Ext.Json.Stringify(msg))
 end
+local function sendTest(msg)
+  pcall(Ext.ClientNet.PostMessageToServer, "GauntletTest", Ext.Json.Stringify(msg))
+end
 
+-- ------------------------------------------------------------------------------------------------ test popup
+function U.BuildTest()
+  local g = U.window:AddGroup("test")
+  U.test = g
+  colored(g:AddText("Gauntlet test"), U.GOLD)
+  local mode = g:AddCombo("Mode")
+  local opts = {}
+  for _, id in ipairs(MODE_IDS) do opts[#opts + 1] = MODE_TEXT[id] end
+  mode.Options = opts
+  mode.SelectedIndex = 0
+  mode.OnChange = function() sendTest({ cmd = "mode", mode = MODE_IDS[(mode.SelectedIndex or 0) + 1] }) end
+  U.modeCombo = mode
+  local start = g:AddButton("Start")
+  start.OnClick = function() sendTest({ cmd = "start" }) end
+  local stop = g:AddButton("Stop")
+  stop.SameLine = true
+  stop.OnClick = function() sendTest({ cmd = "stop" }) end
+  U.statusLine = g:AddText("Status: waiting for the server")
+  U.detailLine = colored(g:AddText(""), U.GREY)
+  g:AddSeparator()
+  colored(g:AddText("Last result"), U.GOLD)
+  U.lastGroup = g:AddGroup("last")
+  U.lastGroup:AddText("no run yet")
+  sendTest({ cmd = "state" })
+end
+
+-- The server's test state (gauntlet_test.lua T.state): mode, status, detail, last result.
+function U.TestState(m)
+  if not U.test then return end
+  for i, id in ipairs(MODE_IDS) do
+    if id == m.mode and U.modeCombo then pcall(function() U.modeCombo.SelectedIndex = i - 1 end) end
+  end
+  U.statusLine.Label = "Status: " .. tostring(m.status) .. (m.run_id and ("   run " .. tostring(m.run_id)) or "")
+  colored(U.statusLine, U.STATUS_COLOR[m.status] or U.GOLD)
+  U.detailLine.Label = tostring(m.detail or "")
+  if m.last and m.last.lines then
+    try(function() U.lastGroup:Destroy() end)
+    U.lastGroup = U.test:AddGroup("last")
+    for i, l in ipairs(m.last.lines) do
+      local c = (i == 1 and (m.last.valid and U.GREEN or U.RED)) or (tostring(l):sub(1, 1) == "-" and U.RED) or nil
+      colored(U.lastGroup:AddText(tostring(l)), c)
+    end
+  end
+end
+
+-- ------------------------------------------------------------------------------------------------ free runs
 function U.Build()
   U.C = catalog()
-  local w = U.window
   local top = reset("top")
   if not U.C then
     top:AddText("No catalogue: run tools/gauntlet/catalog.py first, then Reload.")
@@ -91,7 +163,6 @@ function U.Build()
   for _, s in ipairs(SCENARIOS) do so[#so + 1] = SCN_TEXT[s] end
   scn.Options = so
   scn.SelectedIndex = 0
-  local haste = top:AddCheckbox("Haste", false)
   local tuned = top:AddCheckbox("Respec tuned to the set (else as planned)", false)
   top:AddSeparator()
   local start = top:AddButton("Start fight")
@@ -100,8 +171,7 @@ function U.Build()
     local s = U.sets and U.sets[(sc.SelectedIndex or 0) + 1]
     if not (b and s) then U.Status("pick a build and a set") return end
     send({ cmd = "run", build = b.id, set = s.id, act = (ac.SelectedIndex or 0) + 1,
-      scenario = SCENARIOS[(scn.SelectedIndex or 0) + 1], haste = haste.Checked, tuned = tuned.Checked,
-      label = "manual" })
+      scenario = SCENARIOS[(scn.SelectedIndex or 0) + 1], tuned = tuned.Checked, label = "manual" })
     U.Status("setting up ...")
   end
   local rs = top:AddButton("Reset fight")
@@ -152,7 +222,8 @@ local function onNet(e)
   if e.Channel ~= "GauntletUI" then return end
   local m = try(Ext.Json.Parse, e.Payload)
   if type(m) ~= "table" or not U.window then return end
-  if m.kind == "status" then U.Status(m.text)
+  if m.kind == "test" then U.TestState(m)
+  elseif m.kind == "status" then U.Status(m.text)
   elseif m.kind == "checklist" then showChecklist(m)
   elseif m.kind == "result" then U.Status("done"); showResult(m)
   end
@@ -163,9 +234,14 @@ function U.Toggle()
     U.window = Ext.IMGUI.NewWindow("Gauntlet (test)")
     U.window.Closeable = true
     U.window.Open = false
+    style(U.window)
+    U.BuildTest()
+    U.window:AddSeparator()
+    U.free = U.window:AddCollapsingHeader("Free runs (catalogue)")
     U.Build()
   end
   U.window.Open = not U.window.Open
+  if U.window.Open then sendTest({ cmd = "state" }) end
 end
 
 if U._net then pcall(function() Ext.Events.NetMessage:Unsubscribe(U._net) end) end
