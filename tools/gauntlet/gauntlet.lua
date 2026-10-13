@@ -1693,9 +1693,12 @@ local function onCrit(def, ownerAtt, att)
   end
 end
 -- One row per hit the run's creatures deal or take (Script Extender DealDamage): spell, the hit's flags (hit / miss /
--- critical), the roll where the hit description carries it (its first condition roll: the natural d20, the total, the
--- AC or DC it was rolled against, advantage, a saving throw), damage per type, the target's statuses and the
--- character's concentration at the hit. The field names are read defensively; the first hit's whole description is
+-- critical), the roll where the hit description carries it (its first condition roll: the natural d20, the other d20
+-- when the roll had Advantage or Disadvantage, the total, the AC or DC it was rolled against, Advantage, Disadvantage,
+-- a saving throw), damage per type, the target's statuses and the character's concentration at the hit. The game
+-- sends DealDamage for landed attack rolls only (no miss row in the real-roll runs so far), so a miss's natural roll
+-- is not known: misses come from the damage log's 0 damage rows (G.rollTally); a miss row the game does send is
+-- matched to its roll like a hit. The field names are read defensively; the first hit's whole description is
 -- kept in results.hit_probe so the names can be checked against the game. At most HIT_LOG_MAX rows per run.
 G.HIT_LOG_MAX = 3000
 local function first(obj, paths)
@@ -1738,7 +1741,12 @@ function G.hitRow(e)
     roll_against = first(hit, { "ConditionRolls.1.Difficulty" }),
     roll_type = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.RollType", "ConditionRolls.1.RollType" })),
     saving_throw = first(hit, { "ConditionRolls.1.SavingThrowRoll" }),
-    advantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Advantage", "AttackRoll.Advantage" })) }
+    advantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Advantage", "AttackRoll.Advantage" })),
+    disadvantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Disadvantage", "AttackRoll.Disadvantage" })),
+    roll2 = first(hit, { "ConditionRolls.1.Roll.Result.DiscardedDiceTotal", "AttackRoll.Result.DiscardedDiceTotal",
+      "AttackRoll.DiscardedDiceTotal" }) }
+  -- the other d20 of a roll with Advantage or Disadvantage; a single roll leaves it 0 (a d20 never shows 0)
+  if type(row.roll2) ~= "number" or row.roll2 <= 0 then row.roll2 = nil end
   local f = tostring(flags or "") .. "," .. tostring(attack or "")
   row.crit = f:find("Critical", 1, true) ~= nil
   row.miss = f:find("Miss", 1, true) ~= nil or f:find("Dodge", 1, true) ~= nil
@@ -2794,10 +2802,158 @@ function G.planRound(F, R)
   return itemRule(F, out, R)
 end
 
+-- What a spell rolls, from its SpellRoll: "attack", "save", "none" (Hunter's Mark, a buff), or nil when its stats
+-- cannot be read (then nothing is judged from it).
+local function statText(v, depth)
+  if type(v) ~= "table" and type(v) ~= "userdata" then return v ~= nil and tostring(v) or "" end
+  if depth > 3 then return "" end
+  local parts = {}
+  local ok = pcall(function()
+    for k, x in pairs(v) do parts[#parts + 1] = tostring(k) .. "=" .. statText(x, depth + 1) end
+  end)
+  return ok and table.concat(parts, ";") or tostring(v)
+end
+function G.spellRollKind(spell)
+  if not spell or spell == "" then return nil end
+  local st = try(Ext.Stats.Get, spell) or try(Ext.Stats.Get, baseSpell(spell))
+  if not st then return nil end
+  local roll = statText(try(function() return st.SpellRoll end), 0)
+  if roll:find("Attack(", 1, true) then return "attack" end
+  if roll:find("SavingThrow", 1, true) then return "save" end
+  return "none"
+end
+
+-- Every attack roll of the character's turn, from the damage log: one row per roll of cause Attack (main hand, spell)
+-- or Offhand, a miss being a 0 damage row with no type. A main-hand action with a weapon in each hand rolls twice
+-- (Attack, then Offhand about 0.4 s later), so rolls and actions differ. Rows within ROLL_MERGE_MS of a landed
+-- roll's first row are that roll's (damage types of one hit, riders such as Sneak Attack that land as their own row);
+-- damage of other causes (a status ticking, a surface) stays in the run's damage but in no roll.
+-- Each roll takes its d20 from the hit log: the earliest unused hit row of the same outcome that DealDamage sent up to
+-- ROLL_HIT_BEFORE ms before (about 170 ms in the game) or ROLL_HIT_AFTER ms after the damage row.
+-- A 0 damage row of a spell that rolls no attack (Hunter's Mark's Attack row, a save made) is no miss.
+-- Sets R.rolls = { n, landed, crit, miss, dmg, rider, sneak_dmg, known, adv, dis, net_adv, net_adv_any, dis_any,
+-- sneak, per_roll = { { t, cause, spell, target, hit, crit, dmg, rider, sneak, nat, nat2, total, against, adv, dis,
+-- net_adv } } }: landed counts critical hits too; known counts the rolls whose Advantage state the hit log gave.
+G.ROLL_CAUSES = { Attack = true, Offhand = true }
+G.ROLL_MERGE_MS = 150
+G.ROLL_HIT_BEFORE, G.ROLL_HIT_AFTER = 300, 100
+local function sneakTime(R, me)
+  for _, x in ipairs(R.reactions_seen or {}) do
+    if x.who == me and tostring(x.interrupt):find("SneakAttack", 1, true) then return x.t or false end
+  end
+  for _, c in ipairs(R.casts or {}) do
+    if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) then return c.t or false end
+  end
+  return nil
+end
+function G.rollTally(R, hits, dmg, me, asked)
+  local rows = {}
+  for _, d in ipairs(dmg or {}) do
+    if d.r == R.r and d.source == me and d.target ~= me and G.ROLL_CAUSES[tostring(d.cause)] then rows[#rows + 1] = d end
+  end
+  table.sort(rows, function(x, y) return (x.t or 0) < (y.t or 0) end)
+  local used, critUsed = {}, {}
+  local function hitRowFor(t, landed)
+    local pick
+    for i, h in ipairs(hits or {}) do
+      local dt = t - (h.t or 0)
+      local same = landed and ((h.hit or h.crit) and not h.miss) or (not landed and h.miss)
+      if not used[i] and same and h.r == R.r and h.source == me and h.target ~= me and dt <= G.ROLL_HIT_BEFORE
+        and dt >= -G.ROLL_HIT_AFTER then
+        if h.roll ~= nil then return i end
+        pick = pick or i
+      end
+    end
+    return pick
+  end
+  local function critEvent(t, target)
+    for i, c in ipairs(R.crits or {}) do
+      if not critUsed[i] and (c.source == me or c.owner == me) and c.target == target
+        and math.abs(t - (c.t or 0)) <= G.ROLL_HIT_BEFORE then
+        critUsed[i] = true
+        return true
+      end
+    end
+    return false
+  end
+  local function castAt(t)
+    local w
+    for _, a in ipairs(asked or {}) do if a.cast_t <= t then w = a end end
+    return w
+  end
+  local list, last = {}, nil
+  for _, d in ipairs(rows) do
+    local amt, t = d.amount or 0, d.t or 0
+    if amt > 0 and last and last.hit and last.target == d.target and t - last.t <= G.ROLL_MERGE_MS then
+      last.dmg = last.dmg + amt
+      if t > last.t then last.rider = last.rider + amt end
+    else
+      local landed = amt > 0
+      local hi = hitRowFor(t, landed)
+      local h = hi and hits[hi]
+      local w = castAt(t)
+      local spell = (h and h.spell ~= "" and h.spell) or (w and w.spell) or nil
+      local kind = G.spellRollKind(spell)
+      if landed or (kind ~= "none" and kind ~= "save") then
+        if hi then used[hi] = true end
+        local flags = h and tostring(h.flags or "") or ""
+        local advFlag = nil
+        if h and flags ~= "" then advFlag = flags:find("AttackAdvantage", 1, true) ~= nil end
+        local adv, dis, net = nil, nil, nil
+        if h then
+          adv = h.advantage == "true" or advFlag == true
+          dis = h.disadvantage == "true" or flags:find("Disadvantage", 1, true) ~= nil
+          -- the damage flag shows Advantage net of Disadvantage: when the flags are known, they must show it too
+          net = adv and not dis and advFlag ~= false
+        end
+        local crit = false
+        if landed then
+          if h then crit = h.crit == true else crit = critEvent(t, d.target) end
+        end
+        last = { t = t, cause = d.cause, spell = spell, target = d.target, hit = landed, crit = crit, dmg = amt,
+          rider = 0, nat = h and h.roll or nil, nat2 = h and h.roll2 or nil, total = h and h.roll_total or nil,
+          against = h and h.roll_against or nil, adv = adv, dis = dis, net_adv = net }
+        list[#list + 1] = last
+      else
+        last = nil
+      end
+    end
+  end
+  local T = { n = #list, landed = 0, crit = 0, miss = 0, dmg = 0, rider = 0, sneak_dmg = 0, known = 0, adv = 0, dis = 0,
+    net_adv = 0, net_adv_any = false, dis_any = false, per_roll = list }
+  -- Sneak Attack (at most once a turn) lands as a rider row: it goes to the landed roll with a rider nearest the
+  -- trigger, so the report can take it out of the damage per hit
+  local st = sneakTime(R, me)
+  T.sneak = st ~= nil
+  if st ~= nil then
+    local best
+    for _, x in ipairs(list) do
+      if x.hit and x.rider > 0 and (not best or (st and math.abs(x.t - st) < math.abs(best.t - st))) then best = x end
+    end
+    if best then best.sneak = best.rider end
+  end
+  for _, x in ipairs(list) do
+    if x.hit then T.landed = T.landed + 1 else T.miss = T.miss + 1 end
+    if x.crit then T.crit = T.crit + 1 end
+    T.dmg, T.rider, T.sneak_dmg = T.dmg + x.dmg, T.rider + x.rider, T.sneak_dmg + (x.sneak or 0)
+    if x.adv ~= nil then
+      T.known = T.known + 1
+      if x.adv then T.adv = T.adv + 1 end
+      if x.dis then T.dis = T.dis + 1; T.dis_any = true end
+      if x.net_adv then T.net_adv = T.net_adv + 1; T.net_adv_any = true end
+    end
+  end
+  R.rolls = T
+  return T
+end
+
 -- Hit or miss per confirmed cast of the round, with real rolls: a cast the game confirmed that missed (a miss, or 0
 -- damage) is done all the same, never refused and the round not idle; only its outcome differs. Read from the hit log
 -- (the cast's own spell from the character, between its cast and the next one asked for), else from the damage rows
--- to its target (a miss shows as a 0 damage row). Casts with neither (a buff, Hunter's Mark) get no outcome.
+-- to its target (a miss shows as a 0 damage row). Casts with neither, and casts of a spell that rolls nothing (a buff,
+-- Hunter's Mark: its 0 damage Attack and StatusEnter rows are no miss), get no outcome. A save spell keeps its
+-- outcome (0 damage: the save was made), which riderCheck needs. Per action this is the plan check; the attack
+-- numbers are counted per roll (G.rollTally, R.rolls).
 -- Sets rec.outcome ("hit" / "crit" / "miss") and returns R.attacks = { hit, crit, miss }.
 function G.castOutcomes(R, hits, dmg, me)
   local asked = {}
@@ -2805,6 +2961,7 @@ function G.castOutcomes(R, hits, dmg, me)
   table.sort(asked, function(x, y) return x.cast_t < y.cast_t end)
   local tally = { hit = 0, crit = 0, miss = 0 }
   local function outcome(a, t1)
+    if G.spellRollKind(a.spell) == "none" then return nil end
     local function inWindow(row) return row.r == R.r and (row.t or 0) >= a.cast_t and (row.t or 0) < t1 end
     local landed, missed, crit = false, false, false
     for _, h in ipairs(hits or {}) do
@@ -2815,7 +2972,8 @@ function G.castOutcomes(R, hits, dmg, me)
     if not landed and not missed then
       local rows, dealt = 0, 0
       for _, d in ipairs(dmg or {}) do
-        if inWindow(d) and (d.source == me or d.owner == me) and d.target == a.target_u then
+        if inWindow(d) and (d.source == me or d.owner == me) and d.target == a.target_u
+          and not (d.cause == "StatusEnter" and (d.amount or 0) <= 0) then
           rows, dealt = rows + 1, dealt + (d.amount or 0)
         end
       end
@@ -2832,6 +2990,7 @@ function G.castOutcomes(R, hits, dmg, me)
     end
   end
   R.attacks = tally
+  G.rollTally(R, hits, dmg, me, asked)
   return tally
 end
 
@@ -2891,34 +3050,38 @@ end
 
 -- The riders that hang on a hit, counted over the character's landed hits only (a miss carries none): Hunter's Mark
 -- (the game puts PASSIVE_HUNTERS_MARK on the marked target with each hit it adds its die to) and Sneak Attack (at most
--- once a turn, on a hit with Advantage: the character's Sneak Attack cast or reaction in that turn). Reported in
--- results.hit_riders, not judged: whether a hit qualifies takes more than the hit log shows (finesse or ranged
--- weapon, an ally next to the target, the charge left).
--- -> { hunters_mark = { hits, rider }, sneak_attack = { turns, rider } }
+-- once a turn: the character's Sneak Attack cast or reaction in that turn). Sneak Attack is counted over every turn,
+-- each with whether any roll had Advantage net of Disadvantage (R.rolls; without them, an AttackAdvantage hit), so
+-- turns that lost their Advantage show too. Reported in results.hit_riders, not judged: whether a hit qualifies takes
+-- more than the hit log shows (finesse or ranged weapon, an ally next to the target, the charge left).
+-- -> { hunters_mark = { hits, rider }, sneak_attack = { turns, adv_turns, dis_turns, rider, rider_adv,
+--      per_turn = { { r, adv, dis, sneak } } } }
 function G.hitRiders(rounds, hits, me)
-  local out = { hunters_mark = { hits = 0, rider = 0 }, sneak_attack = { turns = 0, rider = 0 } }
+  local sa = { turns = 0, adv_turns = 0, dis_turns = 0, rider = 0, rider_adv = 0, per_turn = {} }
+  local out = { hunters_mark = { hits = 0, rider = 0 }, sneak_attack = sa }
   for _, R in ipairs(rounds or {}) do
-    local marked, adv = 0, false
+    local marked, flagAdv = 0, false
     for _, h in ipairs(hits or {}) do
       if h.r == R.r and h.source == me and (h.hit or h.crit) and not h.miss then
         for _, st in ipairs(h.target_statuses or {}) do if st == "HUNTERS_MARK" then marked = marked + 1 end end
-        if tostring(h.flags or ""):find("AttackAdvantage", 1, true) then adv = true end
+        if tostring(h.flags or ""):find("AttackAdvantage", 1, true) then flagAdv = true end
       end
     end
-    local hm, sneak = 0, false
+    local hm = 0
     for _, x in ipairs(R.status_log or {}) do if x.on and x.status == "PASSIVE_HUNTERS_MARK" then hm = hm + 1 end end
-    for _, c in ipairs(R.casts or {}) do
-      if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) then sneak = true end
-    end
-    for _, x in ipairs(R.reactions_seen or {}) do
-      if x.who == me and tostring(x.interrupt):find("SneakAttack", 1, true) then sneak = true end
-    end
+    local sneak = sneakTime(R, me) ~= nil
     out.hunters_mark.hits = out.hunters_mark.hits + marked
     out.hunters_mark.rider = out.hunters_mark.rider + math.min(hm, marked)
-    if adv then
-      out.sneak_attack.turns = out.sneak_attack.turns + 1
-      if sneak then out.sneak_attack.rider = out.sneak_attack.rider + 1 end
+    local adv, dis = flagAdv, false
+    if R.rolls and (R.rolls.known or 0) > 0 then adv, dis = R.rolls.net_adv_any == true, R.rolls.dis_any == true end
+    sa.turns = sa.turns + 1
+    if adv then sa.adv_turns = sa.adv_turns + 1 end
+    if dis then sa.dis_turns = sa.dis_turns + 1 end
+    if sneak then
+      sa.rider = sa.rider + 1
+      if adv then sa.rider_adv = sa.rider_adv + 1 end
     end
+    sa.per_turn[#sa.per_turn + 1] = { r = R.r, adv = adv, dis = dis, sneak = sneak }
   end
   return out
 end
@@ -2973,8 +3136,11 @@ local function summarize(F)
   local tk = turns > 0 and sum / turns or 0
   local failed, misses, downed, smisses, riders, total = 0, 0, 0, 0, 0, 0
   local attacks = { hit = 0, crit = 0, miss = 0 }
+  local rolls = { n = 0, landed = 0, crit = 0, miss = 0, dmg = 0, rider = 0, sneak_dmg = 0, known = 0, adv = 0, dis = 0,
+    net_adv = 0 }
   for _, R in ipairs(G.rounds) do
     for k, n in pairs(R.attacks or {}) do attacks[k] = (attacks[k] or 0) + n end
+    for k in pairs(rolls) do rolls[k] = rolls[k] + ((R.rolls or {})[k] or 0) end
     for _, a in ipairs(R.actions) do if a.result ~= "done" and not a.optional then failed = failed + 1 end end
     misses = misses + (R.cast_misses or 0)
     smisses = smisses + (R.summon_misses or 0)
@@ -2986,7 +3152,7 @@ local function summarize(F)
     turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
     rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil,
     summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders,
-    enemy_turns = turns, taken_before_round1 = pre, attacks = attacks }
+    enemy_turns = turns, taken_before_round1 = pre, attacks = attacks, rolls = rolls }
 end
 
 function G.difficulty()
@@ -3654,6 +3820,7 @@ function G.step(F, t)
         -- a player's turn: its outcomes come from the hit log (no planned actions to match), and the last round
         -- ends the run as the turn is released, as a scripted one does
         R.attacks = G.hitTally(R, G.hits, uuid(F.char))
+        G.rollTally(R, G.hits, G.dmg, uuid(F.char), {})
         R.tm.released = t - G.t0
         if G.round >= F.rounds then
           F.lastCut = true

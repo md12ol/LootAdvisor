@@ -98,11 +98,15 @@ function T.summary(rec)
   local s = res.summary or {}
   local a = s.attacks or {}
   local n = (a.hit or 0) + (a.crit or 0) + (a.miss or 0)
+  local landed = (a.hit or 0) + (a.crit or 0)
+  -- counted per attack roll where the run has them (a two-weapon shot rolls twice), else per action
+  local ro = s.rolls
+  if ro and (ro.n or 0) > 0 then n, landed, a = ro.n, ro.landed or 0, { crit = ro.crit } end
   local boss = rec.expect and rec.expect.boss or {}
   local hr = res.hit_riders or {}
   local out = {
     run_id = rec.run_id, test_mode = rec.test_mode, valid = rec.valid, invalid = rec.invalid, ended = res.ended,
-    dpr = s.dpr, rounds = s.rounds, attacks = n, hit_rate = n > 0 and ((a.hit or 0) + (a.crit or 0)) / n or nil,
+    dpr = s.dpr, rounds = s.rounds, attacks = n, hit_rate = n > 0 and landed / n or nil,
     crits = a.crit, model_dpr = boss.dpr, model_hit_rate = boss.hit_rate,
     hunters_mark = hr.hunters_mark, sneak_attack = hr.sneak_attack,
   }
@@ -117,9 +121,12 @@ function T.summary(rec)
   if hr.hunters_mark and (hr.hunters_mark.hits or 0) > 0 then
     lines[#lines + 1] = string.format("Hunter's Mark on %d of %d hits", hr.hunters_mark.rider, hr.hunters_mark.hits)
   end
-  if hr.sneak_attack and (hr.sneak_attack.turns or 0) > 0 then
-    lines[#lines + 1] = string.format("Sneak Attack in %d of %d turns with Advantage", hr.sneak_attack.rider,
-      hr.sneak_attack.turns)
+  local sa = hr.sneak_attack
+  if sa and sa.adv_turns then
+    lines[#lines + 1] = string.format("Sneak Attack in %d of %d turns (%d with net Advantage)", sa.rider or 0,
+      sa.turns or 0, sa.adv_turns)
+  elseif sa and (sa.turns or 0) > 0 then
+    lines[#lines + 1] = string.format("Sneak Attack in %d of %d turns with Advantage", sa.rider, sa.turns)
   end
   for i, c in ipairs(rec.invalid or {}) do
     if i > 6 then lines[#lines + 1] = "..."; break end
