@@ -509,9 +509,52 @@ def test_riposte():
     assert not fails, fails
 
 
+def test_wrath_storm():
+    """Wrath of the Storm: casts per round min(1, enemy attacks x the share in reach x their hit chance), the share
+    15/16 in the boss fight, REACH_SHARE["day"] in a day's fights and 1 for a melee build; the save DC on Wisdom with
+    the gear's DC bonus kept; the better of the two interrupts' spells; none without the passive (hand formulas,
+    stats written here)."""
+    import model
+    S = {"WrathOfTheStorm": {"Boosts": "UnlockInterrupt(I_L);UnlockInterrupt(I_T)"},
+         "I_L": {"Properties": "UseSpell(OBSERVER_SOURCE,T_L,true,true,true)"},
+         "I_T": {"Properties": "UseSpell(OBSERVER_SOURCE,T_T,true,true,true)"},
+         "T_L": {"SpellType": "Target", "SpellRoll": "not SavingThrow(Ability.Dexterity, SourceSpellDC())",
+                 "SpellSuccess": "DealDamage(2d8,Lightning,Magical)", "SpellFail": "DealDamage((2d8)/2,Lightning,Magical)"},
+         "T_T": {"SpellType": "Target", "SpellRoll": "not SavingThrow(Ability.Dexterity, SourceSpellDC())",
+                 "SpellSuccess": "DealDamage(3d8,Thunder,Magical)", "SpellFail": "DealDamage((3d8)/2,Thunder,Magical)"}}
+    st = type("St", (), {})()
+    st.W = type("W", (), {})()
+    st.W.stats = S
+    st.class_passives = ["WrathOfTheStorm"]
+    st.plan = {"mode": "caster"}
+    st.prof, st.level, st.unknown = 4, 12, set()
+    st.mods = {"INT": 5, "WIS": 3}
+    st.sheet = {"spell": {"abil": "INT", "dc": 18}}           # 8 + 4 + INT 5 + an item's +1
+    E, tgt, dur = {"save": 4}, {"save_pen": 0.0}, {"enemy_attacks": 1.0, "enemy_ph": 0.5}
+    fails = []
+    pf = (8 + 4 + 3 + 1 - 4 - 1) / 20                         # DC 16 on Wisdom against save +4
+    per = pf * 13.5 + (1 - pf) * 6.75                         # Thunder 3d8 beats Lightning 2d8
+    with model.scenario("boss"):
+        ev, r = model.wrath_event(st, E, [], {}, tgt, dur)
+    want = 15 / 16 * 0.5 * per
+    if abs(r["dmg"] - want) > 1e-9 or ev["spell_id"] != "T_T" or ev["kind"] != "reaction":
+        fails.append(f"boss {ev['spell_id']} {r['dmg']} want T_T {want}")
+    ev, r = model.wrath_event(st, E, [], {}, tgt, dur)
+    if abs(ev["n"] - model.REACH_SHARE["day"] * 0.5) > 1e-9:
+        fails.append(f"day casts {ev['n']}")
+    st.plan = {"mode": "melee"}
+    ev, r = model.wrath_event(st, E, [], {}, tgt, dict(dur, enemy_attacks=3.0))
+    if abs(ev["n"] - 1.0) > 1e-9:
+        fails.append(f"one reaction a round: {ev['n']}")
+    st.class_passives = []
+    if model.wrath_event(st, E, [], {}, tgt, dur) is not None:
+        fails.append("wrath without the passive")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
-            test_buff_spells, test_riposte]
+            test_buff_spells, test_riposte, test_wrath_storm]
 
 
 # ============================================================================================ local-only tests
@@ -1356,7 +1399,8 @@ def check_plan_gaps(out=None):
     """The plan gaps in the boss fight (expectations from the game data and the gauntlet's rules): a Gloom Stalker
     with a melee off-hand weapon attacks with it in a free bonus action once the boss stands in reach (not in the
     day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight spends the
-    level 1-2 slots too and holds Wall of Fire when its ticks beat one nuke; a Battle Master whose every attack has
+    level 1-2 slots too, holds Wall of Fire when its ticks beat one nuke and answers the boss's hits with Wrath of the
+    Storm; a Battle Master whose every attack has
     Advantage (Risky Ring) plans no Trip and ripostes instead. The day's numbers are the same before and after."""
     import model
     W = _world()
@@ -1393,6 +1437,9 @@ def check_plan_gaps(out=None):
         fails.append("boss: no concentration damage zone for Gale")
     if not (g_boss.get("filler spell") or {}).get("n"):
         fails.append("boss: Gale's level 1-2 slots unspent")
+    n += 1
+    if not (g_boss.get("Wrath of the Storm") or {}).get("dmg"):
+        fails.append("boss: no Wrath of the Storm for a Tempest Cleric")
     l_boss, _ = ev("laezel", "bmgiant", risky, True)
     n += 2
     if (l_boss.get("attack") or {}).get("adv", 0) < model.ADV_SURE:
@@ -1417,7 +1464,7 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("weapon ability-modifier rider counted once", check_weapon_riders),
                 ("test plans list the toggles the model assumes", check_plan_toggles),
                 ("boss scenario: one target, one fight, half-damage attacks", check_scenario),
-                ("plan gaps in the boss fight (off-hand, buffs, slots, Wall of Fire, Riposte)", check_plan_gaps),
+                ("plan gaps in the boss fight (off-hand, buffs, slots, Wall of Fire, Riposte, Wrath of the Storm)", check_plan_gaps),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
                 ("test plans", check_test_plans), ("party assignment of unique items", check_party),
                 ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
@@ -1841,6 +1888,29 @@ def mutations():
         finally:
             model.riposte_event = old
     out.append(("riposte: not capped by the enemy's misses", m_riposte_cap))
+
+    def m_wrath_dc():
+        old = model.wrath_event
+
+        def bad(st, E, boosts, names, tgt, dur):
+            sp = st.sheet["spell"]
+            st2 = type("St", (), dict(vars(st), mods=dict(st.mods, WIS=st.mods[sp["abil"]])))()
+            return old(st2, E, boosts, names, tgt, dur)       # the sheet's casting ability for the DC
+        model.wrath_event = bad
+        try:
+            return _ci(test_wrath_storm)
+        finally:
+            model.wrath_event = old
+    out.append(("Wrath of the Storm: DC on the sheet's casting ability", m_wrath_dc))
+
+    def m_wrath_reach():
+        old = dict(model.REACH_SHARE)
+        model.REACH_SHARE["boss"] = model.REACH_SHARE["day"]   # the boss fight's reach share not swapped in
+        try:
+            return _ci(test_wrath_storm)
+        finally:
+            model.REACH_SHARE.update(old)
+    out.append(("Wrath of the Storm: the boss fight's reach share ignored", m_wrath_reach))
 
     def m_adv_sure():
         old = model.ADV_SURE

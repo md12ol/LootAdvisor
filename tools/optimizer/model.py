@@ -73,6 +73,10 @@ SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, en
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
                           attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
                           slot_share=(1.0, 1.0), nuke_rounds=1.0)}
+# Share of the enemy attacks on a build that does not fight in melee made from within 2 m (Wrath of the Storm's
+# reach): a day's fights, model assumption; the boss walks up in round 1 and stays in reach (melee_contact).
+REACH_SHARE = {"day": 0.5, "boss": SCENARIOS["boss"]["melee_contact"]}
+REACH = {"share": REACH_SHARE["day"]}           # the share in force (model.scenario swaps it)
 
 # ----------------------------------------------------------------------------------- encounter assumptions
 # Everything situational is an uptime taken from these tables (model assumptions, not game data; the game data
@@ -204,7 +208,7 @@ CLASS_PASSIVES = [("Barbarian", None, 9, "BrutalCritical"), ("Fighter", "Champio
                   ("Rogue", "Thief", 3, "FastHands"), ("Wizard", "Evocation", 10, "EmpoweredEvocation"),
                   ("Cleric", "Light", 8, "PotentSpellcasting"), ("Warlock", None, 2, "AgonizingBlast"),
                   ("Warlock", "Hexblade", 1, "HexbladesCurse"), ("Ranger", "Gloom Stalker", 3, "DreadAmbusher"),
-                  ("Rogue", "Assassin", 3, "Assassinate_Initiative")]
+                  ("Rogue", "Assassin", 3, "Assassinate_Initiative"), ("Cleric", "Tempest", 1, "WrathOfTheStorm")]
 # origin characters' own passives (game data: Karlach's Infernal Fury, 1d4 Fire on weapon hits while raging)
 ORIGIN_PASSIVES = {"karlach": ["Karlach_Infernal_Fury"]}
 SAVE_PROF = {"Barbarian": ("STR", "CON"), "Fighter": ("STR", "CON"), "Ranger": ("STR", "DEX"), "Rogue": ("DEX", "INT"),
@@ -999,6 +1003,8 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
     if ev["kind"] == "spell":
         sp = ev["sp"]
         spell = st.sheet.get("spell") or {"dc": 8 + st.prof, "atk": st.prof}
+        if ev.get("dc_base") is not None:
+            spell = dict(spell, dc=ev["dc_base"])
         tg = ev.get("targets", sp["targets"]) + sp.get("chain", 0)
         instances = 0.0
         if sp["roll"] == "attack":
@@ -1326,7 +1332,7 @@ def scenario(name):
     names = ("ROUNDS", "FIGHTS", "SR_WINDOWS", "SR_COVER", "ENEMIES", "STEALTH_OPENERS", "INCOMING_ATTACKS_ONLY",
              "ENEMY_DMG_SCALE", "SLOT_SHARE", "NUKE_ROUNDS")
     keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
-    keep_mc = mech.MELEE_CONTACT
+    keep_mc, keep_reach = mech.MELEE_CONTACT, REACH["share"]
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
@@ -1338,6 +1344,7 @@ def scenario(name):
     mech.MAX_TARGETS = s["enemies"] if name != "day" else None
     mech.TARGET_HP_PCT = s.get("target_hp_pct")
     mech.MELEE_CONTACT = s.get("melee_contact") or 0.0
+    REACH["share"] = REACH_SHARE[name]
     for c in _caches():
         c.clear()
     try:
@@ -1348,6 +1355,7 @@ def scenario(name):
         mech.MAX_TARGETS = keep_tg
         mech.TARGET_HP_PCT = keep_pct
         mech.MELEE_CONTACT = keep_mc
+        REACH["share"] = keep_reach
         for c, k in zip(_caches(), kept):
             c.clear()
             c.update(k)
@@ -1492,12 +1500,12 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
     offence = dmg + ctrl
     # ---------------------------------------------------------------- durability
     dur = durability(st, E, all_extra_boosts(st, dyn), names, tgt, heal)
-    rip = riposte_event(st, evs, results, special, dur)
-    if rip:
-        dmg += rip[1]["dmg"]
-        offence += rip[1]["dmg"]
-        evs.append(rip[0])
-        results.append(rip[1])
+    for rx in (riposte_event(st, evs, results, special, dur), wrath_event(st, E, boosts, names, tgt, dur)):
+        if rx:
+            dmg += rx[1]["dmg"]
+            offence += rx[1]["dmg"]
+            evs.append(rx[0])
+            results.append(rx[1])
     return Result(st, offence, dmg, ctrl, dur, evs, results, extra, sa, tgt, detail)
 
 
@@ -1560,6 +1568,42 @@ def riposte_event(st, evs, results, special, dur):
     per = r0["dmg"] / ev0["n"] + r0["ph"] * special.get("die", 0.0)
     return (dict(name="Riposte", spell_id="Target_Riposte", n=n, kind="reaction", cost="reaction"),
             dict(dmg=n * per, hits=n * r0["ph"], crits=0.0, ph=r0["ph"], pc=r0["pc"], casts=n))
+
+
+def wrath_event(st, E, boosts, names, tgt, dur):
+    """Wrath of the Storm (Tempest Cleric, passive WrathOfTheStorm): a reaction when an enemy within 2 m hits the
+    character, 2d8 Lightning or Thunder to it with a Dexterity save for half (its interrupts' spells), at most one a
+    round. Casts per round = min(1, enemy attacks x the share made from within reach (REACH, every one for a melee
+    build) x their hit chance). The save DC is the Cleric's: Wisdom in place of the sheet's casting ability, the
+    gear's DC bonuses kept. Not a cantrip and not a spell for the gear's conditions. Damage: the better of the two
+    interrupts with the gear's boosts. -> (event, result) or None"""
+    if "WrathOfTheStorm" not in st.class_passives:
+        return None
+    reach = 1.0 if st.plan["mode"] == "melee" else REACH["share"]
+    n = min(1.0, dur.get("enemy_attacks", 0.0) * reach * dur.get("enemy_ph", 0.0))
+    if n <= 0:
+        return None
+    S = st.W.stats
+    spell = st.sheet.get("spell")
+    dc = 8 + st.prof + st.mods.get("WIS", 0)
+    if spell:
+        dc += spell["dc"] - (8 + st.prof + st.mods.get(spell["abil"], 0))
+    best = None
+    for _c, name, args in mech.parse_boosts((S.get("WrathOfTheStorm") or {}).get("Boosts") or ""):
+        if name != "UnlockInterrupt" or not args:
+            continue
+        m = re.search(r"UseSpell\(\w+,\s*(\w+)", (S.get(args[0]) or {}).get("Properties") or "")
+        sp = mech.read_spell(st.W, m.group(1), st.level) if m else None
+        if not sp:
+            continue
+        ev = spell_event(st, dict(sp, cantrip=False, is_spell=False), n, "Wrath of the Storm",
+                         dict(kind="spell", cost="reaction", reaction=True, dc_base=dc))
+        r = eval_event(st, ev, boosts, names, E, tgt["save_pen"])
+        if best is None or r["dmg"] > best[1]["dmg"]:
+            best = (ev, r)
+    if best:
+        best[0]["kind"] = "reaction"
+    return best
 
 
 def durability(st, E, boosts, names, tgt, heal):
