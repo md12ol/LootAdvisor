@@ -12,7 +12,11 @@
   "leave_spots_about": "Spots for the evade tactic's move (Disengage, move more than 3 m from the boss and out of its reach, shoot): [x, y, z] each, surveyed in game; the plan's move step (@leave_spot) takes the one nearest the character at least 4.5 m from the boss. Empty: the harness finds one by path around the boss.",
   "leave_spots": [],
   "hide_spots_about": "Spots out of the boss's sight for a Hide (@hide_spot), surveyed in game; empty: a planned Hide's move fails and the run shows it. The room is lit, so the model plans no Hide here.",
-  "hide_spots": []
+  "hide_spots": [],
+  "boss_sight_m": 16.0,
+  "boss_sight_about": "Surveyed in game on a 1.5 m grid of every floor and platform height: line of sight everywhere (no pillar or platform blocks it); the boss template sees 16 m (FOV 90), so only spots beyond about 16 m are out of its sight, none of them within 9 m of the start or one move away.",
+  "out_of_sight_far": [[-6491.2, 4.70, 2892.2], [-6491.8, 4.70, 2892.8], [-6467.2, 4.69, 2888.8], [-6495.2, 4.26, 2887.2]],
+  "leave_spots_note": "No pillar or furniture blocks the boss's sight: leave its reach (more than 3 m) instead of hiding. Tested 5.4 m south of the start after Disengage: no Attack of Opportunity, the next attack had Advantage and Sneak Attack."
  },
  "undercity_cistern": {
   "about": "Act 3, Lower City level, Undercity Ruins / Abandoned Cistern. Surveyed by engine: ground 10-18 m (a 5 m ledge east of the start), caustic brine and water puddles that are part of the level, no living NPC within 30 m in a save where the Undercity Ruins fights are over. Chasm edge at z < 857: every spot stays north of it.",

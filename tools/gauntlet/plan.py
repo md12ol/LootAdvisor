@@ -276,6 +276,9 @@ def forecast(plan, slots, resources, stats, n_rounds=16):
                             turn[k] -= n
                         else:
                             pool[(k, lv)] -= n
+                    # what the step gives this turn (Action Surge: one more action)
+                    for k, n, _ in parse_costs(a.get("grants")):
+                        turn[k] = turn.get(k, 0) + n
                     picks.append(a["spell"])
                     break
                 a = a.get("alt")
@@ -394,8 +397,11 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
         opening = list(main)
         steady = list(main)
         if fighter >= 2:
-            opening = [A("Shout_ActionSurge", "free", "@self", "Action Surge", per="short")] + opening + \
-                      [A(spell, "free", "@boss", "Action Surge attack", requires="surge") for _ in range(n_att)]
+            # Action Surge costs nothing and gives one more action; the surge's first attack spends that action (the
+            # engine charges it) and the others are its Extra Attacks, free as the first action's are
+            opening = [A("Shout_ActionSurge", "free", "@self", "Action Surge", per="short", grants="ActionPoint:1")] + \
+                opening + [A(spell, "action", "@boss", "Action Surge attack", requires="surge")] + \
+                [A(spell, "free", "@boss", "Action Surge attack", requires="surge") for _ in range(n_att - 1)]
         if plan.get("rage") and cl.get("Barbarian", 0):
             bonus_open.append(A({"giant": "Shout_Rage_Giant", "frenzy": "Shout_Rage_Frenzy"}.get(plan["rage"],
                                                                                                 "Shout_Rage"),

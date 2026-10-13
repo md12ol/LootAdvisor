@@ -186,16 +186,24 @@ local function pay(u, costs, before)
   end
   pcall(function() e:Replicate("ActionResources") end)
 end
--- the engine's own cooldown on a spell (per-rest item spells, per-turn class actions); true while it cannot be cast
+-- Is a spell cooldown entry still running: a turn cooldown counts its turns down to 0, a rest or per-combat one reads
+-- -1 until the rest (after a fight: Shout_ActionSurge -1, UntilShortRest). Only 0 is ready.
+function G.cooldownRunning(c)
+  local v = try(function() return c.Cooldown end)
+  return type(v) == "number" and v ~= 0
+end
+-- the engine's own cooldown on a spell (per-rest item spells, Action Surge, per-turn class actions); true while it
+-- cannot be cast
 local function onCooldown(u, spell)
   local e = ent(u)
   local cds = e and try(function() return e.SpellBookCooldowns.Cooldowns end)
   for i = 1, (cds and #cds or 0) do
     local id = try(function() return cds[i].SpellId.Prototype end)
-    if id == spell and (try(function() return cds[i].Cooldown end) or 0) > 0 then return true end
+    if id == spell and G.cooldownRunning(cds[i]) then return true end
   end
   return false
 end
+G._onCooldown = onCooldown
 -- Can the character pay for this action right now: action / bonus action / spell slot / class resource from the
 -- action's costs, the harness's own per-rest record, and the engine's cooldown. Returns ok, reason.
 function G.afford(F, a)
@@ -220,8 +228,14 @@ function G.pickAffordable(F, a, skips)
   return nil
 end
 
--- Refill: "long" = everything; "short" = what the game replenishes on a short rest (+ short-rest cooldowns)
+-- The game's own restoration status: its ResetCooldowns(UntilRest) clears every rest cooldown the way a long rest does
+-- (with the resources it restores too).
+G.REST_STATUS = "TUT_RESTORATION"
+-- Refill: "long" = everything, as a long rest (between runs: Action Surge, per-rest item spells and class resources
+-- ready again); "short" = what the game replenishes on a short rest (+ short-rest cooldowns). A cooldown reset is
+-- written to 0, and the entries go when none is kept: with only the 0 written, the next run's Action Surge was refused.
 function G.refill(u, kind)
+  if kind == "long" then pcall(Osi.ApplyStatus, u, G.REST_STATUS, 0, 1, u) end
   local e = ent(u)
   local rs = e and try(function() return e.ActionResources.Resources end)
   for k, list in pairs(rs or {}) do
@@ -234,12 +248,16 @@ function G.refill(u, kind)
   pcall(function() e:Replicate("ActionResources") end)
   local cds = e and try(function() return e.SpellBookCooldowns.Cooldowns end)
   if cds then
+    local kept = 0
     for i = 1, #cds do
       local t = tostring(try(function() return cds[i].CooldownType end))
       if kind == "long" or t:match("ShortRest") or t:match("Turn") or t:match("Combat") then
         pcall(function() cds[i].Cooldown = 0 end)
+      elseif G.cooldownRunning(cds[i]) then
+        kept = kept + 1
       end
     end
+    if kept == 0 and #cds > 0 then pcall(function() e.SpellBookCooldowns.Cooldowns = {} end) end
     pcall(function() e:Replicate("SpellBookCooldowns") end)
   end
 end
@@ -1405,6 +1423,20 @@ local function featCounts(list)
   end
   return out
 end
+-- The plan's once-per-rest steps (per = "short" / "long", e.g. Action Surge), fallbacks included, each spell once; the
+-- item actions are checked on their own.
+function G.restSpells(plan)
+  local out, seen = {}, {}
+  local function add(a)
+    while a do
+      if a.per and a.per ~= "none" and a.spell and not seen[a.spell] then seen[a.spell] = true; out[#out + 1] = a.spell end
+      a = a.alt
+    end
+  end
+  for _, r in ipairs((plan or {}).rounds or {}) do for _, a in ipairs(r) do add(a) end end
+  for _, a in ipairs((plan or {}).steady or {}) do add(a) end
+  return out
+end
 function G.setupCheck(F, spec, phase, extra)
   local u = F.char
   local out = { checked = 0, mismatches = {} }
@@ -1609,6 +1641,8 @@ function G.effectChecks(F, spec, cmp, book, extra, out)
     cmp("item spell " .. a.spell .. " in the book", true, (book or {})[a.spell] == true)
     cmp("item spell " .. a.spell .. " ready", false, onCooldown(u, a.spell))
   end
+  -- the plan's once-per-rest steps (Action Surge) ready again after the reset between runs
+  for _, sp in ipairs(G.restSpells(F.plan or spec.plan)) do cmp("spell " .. sp .. " ready", false, onCooldown(u, sp)) end
   cmp("no concentration", "none", G.concentration(u) or "none")
   local base = (G.baseStatuses or {})[uuid(u)]
   if base then
@@ -2573,8 +2607,8 @@ local function doAction(F, a, R, rec0)
     dual = dual, dualBefore = dualBefore, toggled = toggled, togglePrev = togglePrev, toggleField = toggleField,
     player = F.playerCast == true, range = range, using0 = #(R.usings or {}),
     snap0 = F.playerCast and G.costSnapshot(F.char, addCosts(costs, dual)) or nil,
-    target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now(), fails0 = #(R.cast_fails or {}),
-    reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
+    target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, hits0 = #(G.hits or {}), t0 = now(),
+    fails0 = #(R.cast_fails or {}), reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
   local okc, err = G.castRequest(F, F.char, a.spell, tgt, a.at_target_pos)
   if not okc then
     G.restoreToggle(F, P)
@@ -2603,10 +2637,11 @@ function G.reservedBonus(F)
 end
 -- Dual Wielding Attacks, set before each main-hand attack (checked in game with two hand crossbows): toggled on, the
 -- attack fires the off-hand shot with it and takes a bonus action; toggled off, one shot and the bonus action kept.
--- With no bonus action left a toggled click fires the main hand only, while the player path's request is refused
--- outright, so the toggle is off for an attack with no bonus action (and put back after it, G.restoreToggle). On only
--- when a bonus action is free beyond the ones the turn's later planned bonus actions need (Hunter's Mark) and the plan
--- does not say dual = false. -> the toggle set, the toggle before, the toggle's field
+-- With the bonus action spent by the game earlier in the turn, a toggled attack fires the main hand only and is not
+-- refused; only a bonus action zeroed by an edit of the resource got the toggled attack refused. Either way the toggle
+-- is off for an attack with no bonus action (and put back after it, G.restoreToggle), so the attack is what the plan
+-- books. On only when a bonus action is free beyond the ones the turn's later planned bonus actions need (Hunter's
+-- Mark) and the plan does not say dual = false. -> the toggle set, the toggle before, the toggle's field
 function G.dualToggle(F, a)
   local on = a.dual ~= false and resAmount(F.char, "BonusActionPoint") - G.reservedBonus(F) >= 1
   local field = tostring(a.spell):find("^Projectile_") ~= nil and "RangedToggledOn" or "MeleeToggledOn"
@@ -2653,7 +2688,7 @@ end
 -- have been spent. An attack that landed nothing owes no off-hand half: a melee attack sent as a projectile took the
 -- action and the bonus action in game and hit nothing. A mismatch is a cast fault.
 function G.checkSpent(F, R, P)
-  local fired = P.dual and G.offhandFired(P, G.dmg)
+  local fired = P.dual and G.offhandFired(P, G.dmg, G.hits)
   P.rec.offhand_half = P.dual and (fired and "fired" or "none") or nil
   local owed, maybe = P.costs, nil
   if fired then owed = addCosts(P.costs, P.dual) elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end
@@ -2668,11 +2703,28 @@ function G.checkSpent(F, R, P)
 end
 -- The off-hand half's damage row comes about 0.4 s after the main hand's.
 G.OFFHAND_MS = 900
--- Did the pending cast's off-hand half fire: a damage row of cause Offhand from the character since the cast.
-function G.offhandFired(P, dmg)
+-- Did the pending cast's off-hand half fire. Told by its place in the cast, not by the damage cause alone: a ranged
+-- off-hand half's rows come with cause Offhand, a melee one's with cause Attack like the main hand's. So: a row of
+-- cause Offhand; or the cast's second strike on its target (attack rows more than ROLL_MERGE_MS after the first
+-- strike's first row; one strike's damage types and riders land together, the off-hand half about 0.4-0.6 s later);
+-- or a hit-log row that is the cast's last attack and not its first (AttackFlags LastAttack without FirstAttack; a
+-- single attack carries both).
+function G.offhandFired(P, dmg, hits)
+  local first
   for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
     local d = dmg[i]
-    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or ""):find("Offhand", 1, true) then return true end
+    if d.source == P.who or d.owner == P.who then
+      local cause = tostring(d.cause or "")
+      if cause:find("Offhand", 1, true) then return true end
+      if G.ROLL_CAUSES[cause] and d.t and (not P.target or d.target == P.target) then
+        if not first then first = d.t elseif d.t - first > G.ROLL_MERGE_MS then return true end
+      end
+    end
+  end
+  for i = (P.hits0 or 0) + 1, #(hits or {}) do
+    local h = hits[i]
+    local f = tostring(h.attack_flags or "")
+    if h.source == P.who and f:find("LastAttack", 1, true) and not f:find("FirstAttack", 1, true) then return true end
   end
   return false
 end
@@ -2691,7 +2743,7 @@ function G.settle(F, R, t)
   if ev and P.dual and not P.dualDone and not P.player then
     -- a main-hand attack that can fire the off-hand half: wait up to OFFHAND_MS after the confirmation for its row
     P.tConf = P.tConf or t
-    if G.offhandFired(P, G.dmg) then
+    if G.offhandFired(P, G.dmg, G.hits) then
       pay(F.char, P.dual, P.dualBefore)
       P.dualDone, P.rec.offhand_half = true, "paid"
     elseif t - P.tConf < G.OFFHAND_MS then
