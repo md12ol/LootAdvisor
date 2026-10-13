@@ -89,9 +89,9 @@ python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/opt
 F9 opens the test popup on top of the window: mode **Manual** (you play the character's turns) or **Automatic** (the
 plan plays them), **Start**, Stop, the status (Ready, Setting up, Fighting, Result, Setup failed) and the last
 result. Start runs the same setup as a scripted run: hit points, resources, cooldowns, concentration and carried
-statuses reset, story and mood statuses with a roll or damage effect and the tadpole powers taken off (no bonus the
-build, the set, the planned actions or the consumables do not give; the run record lists what was removed), the set
-and the build checked field by field, the consumables prepared, the enemy at its arena spot with its forced stats.
+statuses reset, the set and the build checked field by field (also: no story or mood status with a roll or damage
+effect and no tadpole power may be on, since the build, the set, the planned actions and the consumables give no such
+bonus; remove them from the test save once, the check lists any it finds and the run record keeps the list), the consumables prepared, the enemy at its arena spot with its forced stats.
 The enemy turns hostile only once that check has passed: a mismatch is shown in the popup and the fight does not
 start. Both modes write the same run record (with `test_mode` manual or automatic) and per-hit log. The mode starts
 as Manual after every load. A test save may keep its own boss standing in the arena (`--boss UUID`): its forced stats

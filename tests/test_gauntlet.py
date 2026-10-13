@@ -3329,8 +3329,8 @@ def _load_lua(L, path):
 
 def campaign_tests(L):
     """No bonus from outside the build and set: a story / mood status with a roll or damage effect and every tadpole
-    passive are taken off at setup and recorded (the set's own statuses stay); one still on fails the setup check;
-    nothing is put back at the end."""
+    passive still on the character are listed at setup (the set's own statuses are not) and fail the setup check by
+    name; the harness itself removes nothing and puts nothing back."""
     L.execute(r"""
       local G = GAUNTLET
       local removedS, removedP, added = {}, {}, {}
@@ -3351,7 +3351,7 @@ def campaign_tests(L):
       Osi.RemovePassive = function(_, id) removedP[#removedP + 1] = id end
       Osi.AddPassive = function(_, id) added[#added + 1] = id end
       Osi.HasPassive = function() return 0 end
-      T_camp = G.removeCampaignEffects("c1", { item_statuses = { { status = "SET_STATUS", item = "x" } } })
+      T_camp = G.campaignEffects("c1", { item_statuses = { { status = "SET_STATUS", item = "x" } } })
       T_rs, T_rp = removedS, removedP
       T_back = G.restoreCampaign == nil and #added == 0
       G.results = { prep = { campaign = T_camp, bare = {} } }
@@ -3363,11 +3363,11 @@ def campaign_tests(L):
     """)
     g = L.globals()
     c = g.T_camp
-    check("campaign: a story status with an attack bonus and a tadpole passive are removed and recorded; the set's "
-          "status and a status without roll effects stay",
-          lst(c.statuses) == ["ASTARION_HAPPY"] and lst(c.passives) == ["TAD_PeaceBreaker"] and
-          lst(g.T_rs) == ["ASTARION_HAPPY"] and lst(g.T_rp) == ["TAD_PeaceBreaker"], f"{lst(c.statuses)} {lst(c.passives)}")
-    check("campaign: nothing is put back (the test save loses them for good)", g.T_back is True)
+    check("campaign: a story status with an attack bonus and a tadpole passive are listed; the set's status and a "
+          "status without roll effects are not",
+          lst(c.statuses) == ["ASTARION_HAPPY"] and lst(c.passives) == ["TAD_PeaceBreaker"], f"{lst(c.statuses)} {lst(c.passives)}")
+    check("campaign: the harness removes nothing and puts nothing back",
+          not lst(g.T_rs) and not lst(g.T_rp) and g.T_back is True, f"{lst(g.T_rs)} {lst(g.T_rp)}")
     f = lst(g.T_fields)
     check("campaign: one still on fails the setup check, named",
           any("campaign passive TAD_PeaceBreaker" in x for x in f) and
@@ -4303,11 +4303,11 @@ MUTATIONS = [
     ("boss: not forced again", GL, "  wait(G.SETTLE_MS, function() forceEnemy(d, E) end)\n", ""),
     ("boss: deleted at the end", GL, "    if d == F.boss then G.restoreBoss(d) else gone[#gone + 1] = d end",
      "    gone[#gone + 1] = d"),
-    ("campaign: story statuses kept", GL,
-     "    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then\n      pcall",
-     "    if false then\n      pcall"),
-    ("campaign: tadpole passives kept", GL, "    if id:find(G.CAMPAIGN_PASSIVE) then\n      pcall(Osi.RemovePassive",
-     "    if false then\n      pcall(Osi.RemovePassive"),
+    ("campaign: story statuses not listed", GL,
+     "    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then out.statuses",
+     "    if false then out.statuses"),
+    ("campaign: tadpole passives not checked", GL,
+     'if id:find(G.CAMPAIGN_PASSIVE) then cmp("campaign passive "', 'if false then cmp("campaign passive "'),
     ("v2: manual runs in the statistic", RN, "(manual if is_manual(r) else auto)", "auto"),
     ("v2: compared with the day numbers", RN, 'boss = (spec.get("expect") or {}).get("boss")',
      'boss = spec.get("expect")'),

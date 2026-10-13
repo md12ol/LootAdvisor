@@ -550,7 +550,7 @@ function G.prep(spec)
     G.unencumber(u, true)
     G.results.used_statuses_removed = G.removeUsedStatuses(u)
     G.results.carry_over = G.removeCarryOver(u)
-    if not G.manualPrep then G.results.campaign = G.removeCampaignEffects(u, spec) end
+    if not G.manualPrep then G.results.campaign = G.campaignEffects(u, spec) end
     for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -635,7 +635,6 @@ end
 function G.waitGone(u, cb)
   local names = {}
   for _, st in ipairs(G.results.used_statuses_removed or {}) do names[st] = true end
-  for _, st in ipairs(((G.results.campaign or {}).statuses) or {}) do names[st] = true end
   for _, r in ipairs(((G.results.carry_over or {}).removed) or {}) do
     local st, who = r:match("^(%S+) on (.+)$")
     if st and who == "the character" then names[st] = true end
@@ -724,9 +723,10 @@ end
 -- ------------------------------------------------------------------------------------------------ campaign effects
 -- No bonus the build, the set, the planned actions or the consumables do not give: the save's story and mood statuses
 -- with a roll or damage effect (ASTARION_HAPPY: +1 to every attack roll) and the tadpole powers (TAD_* passives:
--- Favourable Beginnings adds the proficiency bonus to the first attack on each target) are taken off at every setup.
--- The baseline removeCarryOver keeps would otherwise hold them for every run. Nothing is put back: the test save
--- loses them for good. -> { statuses = {}, passives = {} } (what was removed, in the run record under prep.campaign)
+-- Favourable Beginnings adds the proficiency bonus to the first attack on each target) are removed from the test save
+-- once, by hand. The harness never removes them: every setup lists what is still there (the run record's
+-- prep.campaign) and the setup check fails on each one, so the fight does not start with them.
+-- -> { statuses = {}, passives = {} } (what was found)
 G.CAMPAIGN_BOOST = { "RollBonus", "DamageBonus", "WeaponDamage", "CharacterWeaponDamage", "Advantage",
   "Disadvantage", "CriticalHit", "ReduceCriticalAttackThreshold", "WeaponEnchantment", "AC%(", "Ability%(" }
 G.CAMPAIGN_PASSIVE = "^TAD_"
@@ -753,20 +753,13 @@ local function setStatuses(spec)
   for _, x in ipairs(spec.item_statuses or {}) do ok[x.status or x] = true end
   return ok
 end
-function G.removeCampaignEffects(u, spec)
-  local out, keep, me = { statuses = {}, passives = {} }, setStatuses(spec or {}), uuid(u)
+function G.campaignEffects(u, spec)
+  local out, keep = { statuses = {}, passives = {} }, setStatuses(spec or {})
   for st in pairs(G.statusSet(u)) do
-    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then
-      pcall(Osi.RemoveStatus, u, st, "")
-      out.statuses[#out.statuses + 1] = st
-      if G.baseStatuses and G.baseStatuses[me] then G.baseStatuses[me][st] = nil end
-    end
+    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then out.statuses[#out.statuses + 1] = st end
   end
   for _, id in ipairs(G.passiveIds(u)) do
-    if id:find(G.CAMPAIGN_PASSIVE) then
-      pcall(Osi.RemovePassive, u, id)
-      out.passives[#out.passives + 1] = id
-    end
+    if id:find(G.CAMPAIGN_PASSIVE) then out.passives[#out.passives + 1] = id end
   end
   table.sort(out.statuses)
   table.sort(out.passives)
