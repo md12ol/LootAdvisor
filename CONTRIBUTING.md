@@ -72,7 +72,7 @@ never save afterwards. It talks to the game through Loot Advisor's dev eval hook
 (`"Dev": true` in `LootAdvisor_settings.json`; setup in BG3Tools `tools/testing/README.md`, whose `cheat.py` gives the
 same engine shortcuts for other tests).
 ```bash
-python tools/gauntlet/engine.py load        # load gauntlet.lua (server) and the F9 window gauntlet_ui.lua (client)
+python tools/gauntlet/engine.py load        # gauntlet.lua + gauntlet_test.lua (server), the F9 window gauntlet_ui.lua
 python tools/gauntlet/engine.py probe       # API check, party, position, difficulty
 # manual runs: build the catalogue, then press F9 in the game and pick build, set, act and scenario
 python tools/gauntlet/catalog.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json
@@ -81,6 +81,51 @@ python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/opt
 python tools/gauntlet/plan.py --optimizer tools/optimizer --pairs pairs.json --out specs.json
 python tools/gauntlet/run.py specs.json --results results.jsonl --char UUID
 python tools/gauntlet/run.py --report results.jsonl --specs specs.json --md report.md
+# one set on the build's own Build Advisor plan (no tuned respec), side a only
+python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --single astarion:thx:3:1 --plain --out one.json
+```
+
+### The test popup and the test mod
+F9 opens the test popup on top of the window: mode **Manual** (you play the character's turns) or **Automatic** (the
+plan plays them), **Start**, Stop, the status (Ready, Setting up, Fighting, Result, Setup failed) and the last
+result. Start runs the same setup as a scripted run: hit points, resources, cooldowns, concentration and carried
+statuses reset, story and mood statuses with a roll or damage effect and the tadpole powers taken off (no bonus the
+build, the set, the planned actions or the consumables do not give; the run record lists what was removed), the set
+and the build checked field by field, the consumables prepared, the enemy at its arena spot with its forced stats.
+The enemy turns hostile only once that check has passed: a mismatch is shown in the popup and the fight does not
+start. Both modes write the same run record (with `test_mode` manual or automatic) and per-hit log. The mode starts
+as Manual after every load. A test save may keep its own boss standing in the arena (`--boss UUID`): its forced stats
+do not survive a reload, so every Start forces them again and the setup check reads them back.
+
+What Start runs is the test file `LootAdvisor_gauntlet_test.json` in the Script Extender folder (one side of a spec):
+```bash
+python tools/gauntlet/engine.py arm specs.json --pair 0 --side a --arena house_of_hope --char UUID [--boss UUID]
+python tools/gauntlet/engine.py disarm                     # remove it
+python tools/gauntlet/engine.py mode automatic             # what a script does first after loading
+python tools/gauntlet/engine.py start                      # the popup's Start
+```
+`run.py` goes through the same Start: it sets Automatic right after loading, writes each run's request and spec to
+the test file and presses Start. A side runs until it has `--repeats` valid runs (default 4), and every run's turn
+list (round by round: the attack or spell, its target, its result) is written to `<results>_turns/` for a person to
+replay the run by hand. `--report` compares each set with the model's boss scenario part by part (attacks per round,
+hit rate, critical hits, damage per landed hit, the riders, then damage per round), flags a part outside +-10%, and
+gives one 95% interval of the mean of the run means per side and per pair; runs played by hand are listed apart. The
+earlier method (early stopping, the control gate, two lanes, the day-score report) stays behind `--v1`.
+
+The **test mod** loads the harness with the save, with no eval hook: a developer-only pak of its own
+(`LootAdvisorGauntletTest`, source in `tools/gauntlet/testmod/`), never part of the Loot Advisor pak or download (the
+tests check both). It does nothing in a save the test file does not name (its character in the party, the party in
+its arena's level); in the test save it loads the harness and offers F9.
+```bash
+python tools/gauntlet/testmod.py build      # dist/LootAdvisorGauntletTest.pak (the harness files packed in)
+python tools/gauntlet/testmod.py install    # game closed: copies the pak and enables this mod only
+python tools/gauntlet/testmod.py remove     # disables it again
+```
+
+### The earlier method (`--v1`)
+Two lanes, `--repeats` with early stopping and the control gate below belong to the earlier method, kept for its
+records (`--v1`; `--lanes` implies it). What follows on rolls, validity and the setup check applies to both.
+```bash
 # both sides of a pair at once: two party members levelled to the same build, two lanes (arenas.json)
 python tools/gauntlet/engine.py survey undercity_lanes
 python tools/gauntlet/run.py specs.json --results results.jsonl --lanes undercity_lanes --char UUID_A --char-b UUID_B
