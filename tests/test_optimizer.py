@@ -1491,10 +1491,11 @@ def check_boss_tactics(out=None):
     (Risky Ring's Advantage on every attack, a Thief with two bonus actions, Hunter's Mark, dual hand crossbows):
     standing, every ranged roll has Disadvantage in the 15 of 16 turns the boss is in reach, which cancels the ring's
     Advantage there (net Advantage 1/16 of the rolls), and Sneak Attack, with no ally, needs that net Advantage, so it
-    stays under the dice on each turn with an advantaged roll; evading (Disengage + Hide in those turns) takes both
-    bonus actions there, leaving 2 - 1/16 (Hunter's Mark) - 2 x 15/16 off-hand shots a round, and no roll has
-    Disadvantage; the evaluation keeps the better of the two, and with the off-hand-shot switch on (each main-hand shot
-    fires the off-hand crossbow too) that is evading. The elixir's 1d4 (Elixir of the Colossus) doubles on a critical
+    stays under the dice on each turn with an advantaged roll; leaving (Disengage and a move out of reach in those
+    turns; no Hide, which the lit arena in the boss's sight does not allow) takes one bonus action there, leaving
+    2 - 1/16 (Hunter's Mark) - 15/16 off-hand shots a round, and no roll has Disadvantage; the evaluation keeps the
+    better of the two, which here is leaving (three shots with Advantage and Sneak Attack beat four straight ones),
+    also with the off-hand-shot switch on (each main-hand shot fires the off-hand crossbow for free). The elixir's 1d4 (Elixir of the Colossus) doubles on a critical
     hit; Hunter's Mark's 1d6 from round 2 on every hit, twice on a critical one. In a day's fights no Disadvantage, and
     the day is the same before and after the boss block."""
     import model
@@ -1525,11 +1526,11 @@ def check_boss_tactics(out=None):
     if pe["dis_any_rate"] > 1e-9 or pe["adv_rate"] < 1 - 1e-9:
         fails.append(f"evade: Disadvantage {pe['dis_any_rate']}, Advantage {pe['adv_rate']}")
     off = {e["name"]: e for e in evade.plan_events}
-    if abs((off.get("off-hand shot") or {}).get("n", -1) - (2 - 1 / 16 - 2 * 15 / 16)) > 1e-3 or \
-            not (off.get("evade") or {}).get("hide"):
+    if abs((off.get("off-hand shot") or {}).get("n", -1) - (2 - 1 / 16 - 15 / 16)) > 1e-3 or \
+            "evade" not in off or off["evade"].get("hide"):
         fails.append(f"evade: off-hand shots {(off.get('off-hand shot') or {}).get('n')}, evade {off.get('evade')}")
     n += 2
-    if abs(best.dpr - max(stand.dpr, evade.dpr)) > 1e-9:
+    if abs(best.dpr - max(stand.dpr, evade.dpr)) > 1e-9 or best.tactic != "evade":
         fails.append(f"tactic: {best.dpr:.2f} kept of stand {stand.dpr:.2f} / evade {evade.dpr:.2f}")
     on_ev = {e["name"]: e for e in on.plan_events}
     att = (on_ev.get("attack") or {}).get("n")
@@ -2061,6 +2062,12 @@ def mutations():
         model.State.can_evade = lambda self: False
         return lambda: setattr(model.State, "can_evade", old)
     out.append(("boss reach: evading never weighed", m_boss(p_no_evade)))
+
+    def p_hide():
+        old = model.HIDE_LEGAL
+        model.HIDE_LEGAL = True
+        return lambda: setattr(model, "HIDE_LEGAL", old)
+    out.append(("boss reach: Hide planned in the boss's sight in a lit room", m_boss(p_hide)))
 
     def p_allies():
         old = model.SCENARIOS["boss"]["allies"]

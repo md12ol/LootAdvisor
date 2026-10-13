@@ -9,7 +9,9 @@
   "park": [-175.0, 18.0, 934.0],
   "door": "06e45a4e-409a-4cb0-84ab-487bbdaedbee",
   "surveyed": true,
-  "hide_spots_about": "Spots out of the boss's sight for the evade tactic (Disengage, move, Hide, shoot from hiding): [x, y, z] each, surveyed in game; the plan's move step (@hide_spot) takes the one nearest the character outside the boss's reach. Empty until surveyed: the move step then fails and the run shows it.",
+  "leave_spots_about": "Spots for the evade tactic's move (Disengage, move more than 3 m from the boss and out of its reach, shoot): [x, y, z] each, surveyed in game; the plan's move step (@leave_spot) takes the one nearest the character at least 4.5 m from the boss. Empty: the harness finds one by path around the boss.",
+  "leave_spots": [],
+  "hide_spots_about": "Spots out of the boss's sight for a Hide (@hide_spot), surveyed in game; empty: a planned Hide's move fails and the run shows it. The room is lit, so the model plans no Hide here.",
   "hide_spots": []
  },
  "undercity_cistern": {

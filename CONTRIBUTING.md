@@ -207,10 +207,16 @@ Battle Master whose every attack has Advantage keeps the superiority dice for Ri
 weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
 lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
 replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
-adds most to. A ranged attack with the boss in melee reach has Disadvantage, so a ranged Rogue whose model finds it
-worth more steps away in such a turn: Disengage (Cunning Action), a move to the arena's hide spot (`hide_spots` in
-`arenas.json`, surveyed in the game; while there is none the move is an action not done), Hide with a second bonus
-action, then the attacks from hiding. A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark.
+adds most to. A ranged attack with the boss in melee reach (Threatened) or within 3 m has Disadvantage, so a ranged
+Rogue whose model finds it worth more steps away in such a turn: Disengage (Cunning Action), then a move more than 3 m
+from the boss and out of its reach (`leave_spots` in `arenas.json`, else a spot found by path), then the attacks with
+the character's own Advantage. Hide is planned only where the game allows it (not while Threatened, not in the boss's
+sight in a lit room). A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark; the
+off-hand shots are optional, since a main-hand attack with the Dual Wielding Attacks toggle on fires the off-hand shot
+itself for the bonus action. The harness pays that bonus action when the off-hand half's damage row comes (a scripted
+cast skips the engine's cost checks). A run request with `player_cast: true` (or `G.PLAYER_CAST` in `gauntlet.lua`,
+off by default until checked in the game) casts like a player instead: the request keeps the engine's cast and target
+checks and carries `FromClient`, so the engine pays the costs and checks range and line of sight.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

@@ -76,14 +76,18 @@ SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, en
                           attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
                           slot_share=(1.0, 1.0), nuke_rounds=1.0, other_status=0.0, allies=False)}
 ALLIES = {"on": True}                           # the scenario in force has allies (model.scenario swaps it)
-# Ranged attacks made with an enemy within melee reach roll with Disadvantage (seen in game: from round 2 of a boss fight
-# no hit carried the Advantage flag and Sneak Attack stopped). Thrown weapons are left out (not checked in game).
+# Ranged attacks made with an enemy within melee reach roll with Disadvantage, from two rules: the attacker is Threatened
+# (FLANKED) and the target is within 3 m (seen in game: from round 2 of a boss fight no hit carried the Advantage flag
+# and Sneak Attack stopped). Only leaving cancels both. Thrown weapons are left out (not checked in game).
 RANGED_DIS_TYPES = {"RangedWeaponAttack", "RangedOffHandWeaponAttack", "RangedSpellAttack"}
 # The plan's answer to an enemy in reach (boss scenario), chosen per evaluation by the better damage: "stand" shoots
-# from where the character stands (Disadvantage); "evade" (Cunning Action, Rogue 2) spends bonus actions in each turn
-# the enemy is in reach on Disengage, a move out of its sight and, with a second bonus action (Thief's Fast Hands),
-# Hide, then shoots from there: no Disadvantage, and the first attack of the turn from hiding (Advantage).
+# from where the character stands (Disadvantage); "evade" (Cunning Action, Rogue 2) spends a bonus action in each turn
+# the enemy is in reach on Disengage and a move more than 3 m away and out of its reach, then shoots from there: no
+# Disadvantage, the character's own Advantage and Sneak Attack back. Hide (a second bonus action) is planned only where
+# the game allows it and it adds something: not while Threatened, and it fails at once in the boss's sight in a lit
+# room, which the boss arena is (HIDE_LEGAL); when legal, the first attack of the turn comes from hiding (Advantage).
 TACTICS = ("stand", "evade")
+HIDE_LEGAL = False
 # Share of the enemy attacks on a build that does not fight in melee made from within 2 m (Wrath of the Storm's
 # reach): a day's fights, model assumption; the boss walks up in round 1 and stays in reach (melee_contact).
 REACH_SHARE = {"day": 0.5, "boss": SCENARIOS["boss"]["melee_contact"]}
@@ -167,8 +171,11 @@ SWITCHES = {
     "hexcurse_eb": dict(default=True, text="Hexblade's Curse (+proficiency, crit 19) applies to Eldritch Blast"),
     "rotd_char_level": dict(default=True, text="Radiance of the Dawn adds the character level (not the Cleric level)"),
     "twf_offhand_xbow": dict(default=True, text="Two-Weapon Fighting adds DEX to off-hand hand crossbow shots"),
+    # The game fires the off-hand half of a main-hand attack (Dual Wielding Attacks toggle) for a bonus action
+    # (DualWieldingUseCosts), so the default count (one off-hand shot per bonus action) is the player's; on = the
+    # half for free with every main-hand attack, as a script's cast that skips cost checks got it.
     "offhand_shot_with_main": dict(default=False, text="each main-hand shot also fires the off-hand hand crossbow "
-                                                      "(CastOffhand: two attack rolls per main-hand attack)"),
+                                                      "for free (CastOffhand without its bonus action)"),
 }
 
 # ----------------------------------------------------------------------------------------------- build plans
@@ -687,8 +694,8 @@ def make_weapon_events(st):
         st.target_uptime["HEXBLADES_CURSE"] = SR_COVER * (ROUNDS - 1) / ROUNDS
     free_ba = max(0.0, bonus_actions - ba_used_per_round)
     if st.tactic == "evade":
-        # in each turn the enemy stands in reach: Disengage, and Hide with a second bonus action (TACTICS)
-        need = 2.0 if bonus_actions >= 2 else 1.0
+        # in each turn the enemy stands in reach: Disengage, and Hide with a second bonus action where legal (TACTICS)
+        need = 2.0 if bonus_actions >= 2 and HIDE_LEGAL else 1.0
         used = min(free_ba, st.contact * need)
         free_ba -= used
         special["evade"] = dict(turns=st.contact, hide=need >= 2, bonus=used)

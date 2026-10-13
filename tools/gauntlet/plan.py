@@ -411,9 +411,12 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
         if plan.get("hex") and cl.get("Warlock", 0):
             bonus_open.append(A("Target_Hex", "bonus", "@boss", "Hex"))
         if plan.get("offhand") == "ranged":
-            bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot"))
+            # optional: with the game's Dual Wielding Attacks toggle on, a main-hand attack fires the off-hand shot
+            # itself and takes the bonus action (DualWieldingUseCosts), leaving this one nothing to pay with
+            bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot", optional=True))
             if cl.get("Rogue", 0) >= 3 and "Thief" in (st.subs.get("Rogue") or ""):
-                bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot (Fast Hands)"))
+                bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot (Fast Hands)",
+                                      optional=True))
         if plan.get("dread") and cl.get("Ranger", 0) >= 3:
             # DREAD_AMBUSHER (put on as the first turn starts) grants a free attack spell and goes away on the first
             # attack of any kind: the extra attack comes first, ahead of the action it would otherwise wait for
@@ -443,8 +446,8 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
         steady = steady + hasted
         opening = opening + hasted
         if ch.get("evade") and mode == "ranged":
-            # the model's evade tactic: in a turn the boss stands in reach, Disengage, move to the arena's hide spot
-            # and Hide (a second bonus action), then shoot; the off-hand shots get no bonus action in such a turn
+            # the model's evade tactic: in a turn the boss stands in reach, Disengage and move out of its reach (Hide
+            # too where the model found it legal), then shoot; the off-hand shots get fewer bonus actions then
             ev = evade_steps(ch["evade"].get("hide"))
             opening, steady = ev + opening, ev + steady
             bonus_steady = [dict(a, optional=True) for a in bonus_steady]
@@ -494,14 +497,17 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
 
 def evade_steps(hide):
     """The evade tactic's steps (model.TACTICS), before the turn's attacks: Disengage (Cunning Action) while the boss
-    stands in reach, a move to the arena's hide spot (arenas.json hide_spots) and, with a second bonus action, Hide.
-    Real casts and a real move: each later step only after the one before it was done this round."""
+    stands in reach, a move to a spot more than 3 m from the boss and out of its reach ("@leave_spot": the arena's
+    surveyed leave_spots, else one the harness finds by path) and, only when the model found Hide legal, Hide with a
+    second bonus action (to "@hide_spot" first, out of the boss's sight). Real casts and a real move: each later step
+    only after the one before it was done this round."""
+    to = "@hide_spot" if hide else "@leave_spot"
     out = [A("Shout_Disengage_CunningAction", "bonus", "@self", "evade: Disengage (Cunning Action)", when_adjacent=True,
              done_key="disengage"),
-           A(MOVE, "free", "@hide_spot", "evade: move out of the boss's sight", move_to="@hide_spot",
-             requires="disengage", done_key="hide_move", optional=True)]
+           A(MOVE, "free", to, "evade: move out of the boss's reach", move_to=to, requires="disengage",
+             done_key="left", optional=True)]
     if hide:
-        out.append(A("Shout_Hide_BonusAction", "bonus", "@self", "evade: Hide (Cunning Action)", requires="hide_move",
+        out.append(A("Shout_Hide_BonusAction", "bonus", "@self", "evade: Hide (Cunning Action)", requires="left",
                      done_key="hidden", optional=True))
     return out
 

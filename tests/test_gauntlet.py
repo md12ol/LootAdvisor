@@ -919,6 +919,69 @@ def evade_lua_tests(L):
           str(g.T_none.result).startswith("failed: no spot") and g.T_sum.actions_not_done == 1,
           f"{g.T_none.result} {g.T_sum.actions_not_done}")
     check("evade: the move only after Disengage", "skipped" in str(g.T_skip.result), str(g.T_skip.result))
+    L.execute(r"""
+      local G = GAUNTLET
+      local P = { c1 = { 0, 0, 0 }, b1 = { 2, 0, 0 } }
+      local gp, dead, route, mv = Osi.GetPosition, Osi.IsDead, G.route, Osi.GetActionResourceValuePersonal
+      Osi.GetActionResourceValuePersonal = function() return 9 end
+      Osi.GetPosition = function(u) local p = P[u]; if p then return p[1], p[2], p[3] end end
+      Osi.IsDead = function() return 0 end
+      G.route = function(_, x, y, z) return { { x, y, z } } end
+      local F = { char = "c1", enemies = { "b1" }, A = {} }
+      T_leave = G.moveTarget(F, "@leave_spot")
+      G.route = function() return nil end
+      T_noroute = G.moveTarget(F, "@leave_spot")
+      F.A = { leave_spots = { { 3, 0, 0 }, { 8, 0, 0 } } }
+      T_surveyed = G.moveTarget(F, "@leave_spot")
+      Osi.GetPosition, Osi.IsDead, G.route, Osi.GetActionResourceValuePersonal = gp, dead, route, mv
+    """)
+    lv = g.T_leave and lst(g.T_leave)
+    check("evade: with no surveyed spot the harness finds one 4.5 m from the boss by path, nearest the character",
+          lv is not None and abs(((lv[0] - 2) ** 2 + lv[2] ** 2) ** 0.5 - 4.5) < 1e-6 and lv[0] < 0, str(lv))
+    check("evade: no path, no spot", g.T_noroute is None, str(g.T_noroute))
+    check("evade: a surveyed leave spot too close to the boss is not taken",
+          g.T_surveyed is not None and g.T_surveyed[1] == 8, str(g.T_surveyed and lst(g.T_surveyed)))
+    dual_cost_tests(L)
+
+
+def dual_cost_tests(L):
+    """A main-hand attack whose off-hand half fired (a damage row of cause Offhand) pays that half's bonus action
+    (DualWieldingUseCosts), as the game does for a player; with no such row within OFFHAND_MS nothing more is paid.
+    The player cast path strips the options that skip the engine's checks and adds FromClient, only for its casters.
+    Hide is refused while the character is Threatened."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local stats = Ext.Stats.Get
+      Ext.Stats.Get = function(s) if s == "Main" then return { UseCosts = "ActionPoint:1",
+        DualWieldingUseCosts = "BonusActionPoint:1" } end end
+      T_dc = G.dualCosts("Main")
+      T_dc0 = G.dualCosts("Other")
+      local P = { who = "c1", dmg0 = 0 }
+      T_fired = G.offhandFired(P, { { source = "c1", cause = "Attack" }, { source = "c1", cause = "Offhand" } })
+      T_notfired = G.offhandFired(P, { { source = "c1", cause = "Attack" }, { source = "e1", cause = "Offhand" } })
+      Ext.Stats.Get = stats
+      local req = { { Caster = { Uuid = { EntityUuid = "c1" } }, Spell = { Prototype = "S" },
+                      CastOptions = { "IgnoreSpellRolls", "IgnoreCastChecks", "IgnoreTargetChecks", "Other" } },
+                    { Caster = { Uuid = { EntityUuid = "c2" } }, Spell = { Prototype = "S" },
+                      CastOptions = { "IgnoreSpellRolls", "IgnoreCastChecks" } } }
+      G.rollRequests(req, { c1 = { edits = {}, player = true }, c2 = { edits = {} } })
+      T_opts1, T_opts2 = req[1].CastOptions, req[2].CastOptions
+      local has = Osi.HasActiveStatus
+      Osi.HasActiveStatus = function(_, s) return s == "FLANKED" and 1 or 0 end
+      local R = { r = 1, done = {}, actions = {}, casts = {} }
+      G._doAction({ char = "c1", enemies = {}, cooldown = {}, afford = function() return true end, plan = {}, S = {} },
+        { spell = "Shout_Hide_BonusAction", group = "bonus", target = "@self" }, R)
+      T_hide = R.actions[1]
+      Osi.HasActiveStatus = has
+    """)
+    g = L.globals()
+    check("dual wield: the off-hand half's cost read from DualWieldingUseCosts",
+          g.T_dc is not None and g.T_dc[1].kind == "BonusActionPoint" and g.T_dc0 is None)
+    check("dual wield: paid only when the character's Offhand row came", g.T_fired and not g.T_notfired)
+    o1, o2 = sorted(lst(g.T_opts1)), sorted(lst(g.T_opts2))
+    check("player cast: checks kept and FromClient added for a player-path caster only",
+          o1 == ["FromClient", "Other"] and o2 == ["IgnoreCastChecks"], f"{o1} {o2}")
+    check("evade: Hide refused while Threatened", "Threatened" in str(g.T_hide.result), str(g.T_hide.result))
 
 
 def verdict_tests(L):
@@ -2644,9 +2707,10 @@ def plan_gap_tests(P):
 
 def evade_plan_tests(P):
     """The evade tactic in the plan (the model's choice "evade"): before the attacks, Disengage (Cunning Action) only
-    while the boss is in reach, a move to the arena's hide spot only after it, Hide only after the move, the off-hand
-    shots optional (no bonus action left in such a turn); the move is no spell for the book. Without the choice none
-    of it. A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark."""
+    while the boss is in reach, then a move out of its reach (no Hide); where the model found Hide legal, a move to the
+    arena's hide spot and Hide after it. The off-hand shots are optional (a dual-wield main-hand attack may take the
+    bonus action); the move is no spell for the book. Without the choice none of it. A Thief's second bonus action
+    fires an off-hand shot in round 1 beside Hunter's Mark."""
     from types import SimpleNamespace as NS
     model = NS(slots=lambda cl: [], ADV_SURE=0.99, ROUNDS=16)
     st = NS(plan={"mode": "ranged", "offhand": "ranged", "hunters_mark": True}, classes={"Ranger": 5, "Rogue": 4},
@@ -2662,6 +2726,13 @@ def evade_plan_tests(P):
     hide = next((a for a in steady if a["spell"] == "Shout_Hide_BonusAction"), {})
     shots = [a for a in steady if a["spell"] == "Projectile_OffhandAttack"]
     check("evade: the model's choice read", ch["evade"] == {"turns": 0.9375, "hide": True}, str(ch["evade"]))
+    leave = P.core_plan(model, st, {}, P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=[
+        ev[0], dict(ev[1], hide=False)])))["steady"]
+    lmv = next((a for a in leave if a.get("move_to")), {})
+    check("evade: leaving = Disengage, then a move out of the boss's reach, no Hide",
+          leave[0]["spell"] == "Shout_Disengage_CunningAction" and lmv.get("move_to") == "@leave_spot" and
+          lmv.get("requires") == "disengage" and not any(a["spell"] == "Shout_Hide_BonusAction" for a in leave),
+          str([a["spell"] for a in leave]))
     check("evade: Disengage first, only while the boss is in reach, a real bonus-action cast",
           dis["spell"] == "Shout_Disengage_CunningAction" and dis.get("when_adjacent") and dis["group"] == "bonus" and
           dis.get("done_key") == "disengage", str(dis))
@@ -2675,10 +2746,9 @@ def evade_plan_tests(P):
           "Shout_Disengage_CunningAction", str([a["spell"] for a in core["rounds"][0]]))
     check("evade: the move is not a spell for the book", P.MOVE not in P.plan_spells(core) and
           "Shout_Hide_BonusAction" in P.plan_spells(core))
-    one = P.core_plan(model, st, {}, P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=[
-        ev[0], dict(ev[1], hide=False)])))
-    check("evade: with one bonus action no Hide", not any(a["spell"] == "Shout_Hide_BonusAction"
-                                                          for a in one["steady"]))
+    check("plan: off-hand shots optional also without the tactic",
+          all(a.get("optional") for a in P.core_plan(model, st, {}, P.model_choices(
+              NS(st=NS(sheet={"nAtt": 2}), plan_events=ev[:1])))["steady"] if a["spell"] == "Projectile_OffhandAttack"))
     plain = P.core_plan(model, st, {}, P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=ev[:1])))
     r1 = [a["spell"] for a in plain["rounds"][0]]
     check("evade: none without the model's choice", not any(a.get("when_adjacent") or a.get("move_to")
@@ -4355,11 +4425,22 @@ MUTATIONS = [
      "  if a.when_status and try(Osi.HasActiveStatus, F.char, a.when_status) ~= 1 then", "  if false then"),
     ("evade: Disengage with the boss out of reach", GL,
      "    if not b or not dist(F.char, b) or dist(F.char, b) > G.REACH then", "    if false then"),
-    ("evade: the hide spot inside the boss's reach", GL,
-     "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= G.REACH", "    local clear = true"),
     ("evade: a move with nowhere to go not counted", GL,
      '    rec.result, rec.optional = "failed: no spot for " .. tostring(a.move_to) .. " in the arena", false',
      '    rec.result = "failed: no spot for " .. tostring(a.move_to) .. " in the arena"'),
+    ("evade: a leave spot inside 3 m of the boss", GL,
+     "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7",
+     "    local clear = true"),
+    ("dual wield: the off-hand half never paid", GL, "      pay(F.char, P.dual, P.dualBefore)\n", ""),
+    ("dual wield: any Offhand row counted", GL,
+     "    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then",
+     "    if tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then"),
+    ("player cast: FromClient not added", GL, "      if c.player and not from then keep[#keep + 1] = G.PLAYER_ADD; had = true end\n",
+     ""),
+    ("player cast: every caster's checks stripped", GL, "(c.player and G.PLAYER_STRIP[f])", "G.PLAYER_STRIP[f]"),
+    ("evade: Hide while Threatened", GL,
+     '  if tostring(a.spell):find("^Shout_Hide") and try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then',
+     "  if false then"),
     ("evade: the plan ignores the model's choice", PL, '        if ch.get("evade") and mode == "ranged":',
      "        if False:"),
     ("evade: the off-hand shots counted as failed", PL,
