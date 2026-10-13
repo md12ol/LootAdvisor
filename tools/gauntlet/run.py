@@ -66,6 +66,11 @@ roll applies: Sharpshooter's +10, Hunter's Mark, Sneak Attack); --no-real-rolls 
 and skip saves, for comparison. Every record carries real_rolls (older records without it ran without rolls); runs of
 the other kind are not counted for --repeats and are left out of the report, since the two are not comparable.
 
+Cast path: scripted casts go to the game as a player's click does, so the game checks and pays the costs (the off-hand
+half of a dual-wield attack takes the bonus action), range and line of sight. A cast refused for range or sight makes
+the run invalid (its movement was wrong), and so does a cast that spent other than its costs. --old-cast-path casts
+through Osiris instead, with the checks skipped and the costs paid by the harness, for comparison.
+
 Validity: a run the game marks invalid (ended early, a cast never confirmed in a round, a reaction outside the plan,
 ...) or that never finished is kept in results.jsonl with its causes and left out of the report. Control gate: a
 control pair (two sets the model rates alike) must measure alike in the game too; when its two sets differ by more
@@ -452,7 +457,8 @@ def _req(a, i, p, side, sc, haste, char):
     return {"mode": "scripted", "scenario": sc, "act": spec["act"], "haste": False, "rounds": a.rounds, "arena": arena,
             "char": char, "label": f"pair{i}:{side}", "pair": i, "side": side, "respec": getattr(a, "respec", "real"),
             "retry_any_refusal": True if getattr(a, "retry_any_refusal", False) else None,
-            "real_rolls": not getattr(a, "no_real_rolls", False), "boss": getattr(a, "boss", None)}
+            "real_rolls": not getattr(a, "no_real_rolls", False), "boss": getattr(a, "boss", None),
+            "player_cast": False if getattr(a, "old_cast_path", False) else None}
 
 
 def _record(a, rec, i, side, t0, extra=None):
@@ -1309,6 +1315,9 @@ def main(argv=None):
     ap.add_argument("--no-real-rolls", action="store_true",
                     help="scripted casts never roll (always hit, saves skipped), as runs before rolls did; only for "
                     "comparison with those runs. Also picks which runs --report and --repeats count")
+    ap.add_argument("--old-cast-path", action="store_true",
+                    help="cast through Osiris with the engine's cost, range and sight checks skipped and the costs paid "
+                    "by the harness, as runs before the player cast path did; only for comparison")
     ap.add_argument("--report")
     ap.add_argument("--turns", help="a results file: the turn list of every run in it (or --run RUN_ID only)")
     ap.add_argument("--run", help="with --turns: one run id")
