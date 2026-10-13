@@ -1059,6 +1059,8 @@ def main(argv=None):
     ap.add_argument("--pairs", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--test-plans", help="the optimizer's test plans (default: pairs.py TEST_PLANS)")
+    ap.add_argument("--strategy", help="replace each round plan with this strategy family's best policy "
+                                       "(the optimizer's strategy.py FAMILIES; its prediction in expect.strategy)")
     a = ap.parse_args(argv)
     sys.path.insert(0, os.path.abspath(a.optimizer))
     import mech
@@ -1085,6 +1087,10 @@ def main(argv=None):
                                           respec=r, maneuvers=mv,
                                           plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None,
                                           known=known)
+            if a.strategy:
+                import strategy as SG
+                P = SG.profile_from_spec(row["specs"][side], stats)
+                row["specs"][side] = SG.apply_to_spec(row["specs"][side], P, a.strategy, A, evade_steps)
         row.pop("a", None), row.pop("b", None)
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", " / ".join(sp["set"] for sp in row["specs"].values()))
