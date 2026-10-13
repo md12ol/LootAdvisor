@@ -2211,6 +2211,58 @@ function G.moveSettled(F, t)
   return true
 end
 
+-- The spot a move step goes to: "@hide_spot" = the arena's hide spot (arenas.json "hide_spots", [x, y, z] or
+-- {at = [x, y, z]}, surveyed in game as out of the boss's sight) nearest the character and outside the boss's reach;
+-- a plain {x, y, z} is used as given. nil when the arena has none.
+function G.moveTarget(F, to)
+  if type(to) == "table" then return { to[1], to[2], to[3] } end
+  if to ~= "@hide_spot" then return nil end
+  local b = resolveTarget(F, "@boss")
+  local bx, _, bz
+  if b then bx, _, bz = xyz(b) end
+  local x0, _, z0 = xyz(F.char)
+  local best, bd
+  for _, s in ipairs((F.A or {}).hide_spots or {}) do
+    local p = s.at or s
+    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= G.REACH
+    local d = x0 and math.sqrt((p[1] - x0) ^ 2 + (p[3] - z0) ^ 2) or 0
+    if clear and (not bd or d < bd) then best, bd = { p[1], p[2], p[3] }, d end
+  end
+  return best
+end
+-- A move step (a.move_to): walks there with the turn's movement (the shared F.moving wait, which charges the Movement
+-- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails and counts as
+-- an action not done, so a run without surveyed hide spots shows it.
+function G.moveStep(F, a, R, rec0)
+  if rec0 then
+    local m = rec0.move or {}
+    if m.result == "there" then
+      rec0.result = "done"
+      R.done[a.done_key or "move"] = true
+    else
+      rec0.result, rec0.optional = "failed: move " .. tostring(m.result), false
+    end
+    return
+  end
+  local rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, optional = a.optional }
+  R.actions[#R.actions + 1] = rec
+  local p = G.moveTarget(F, a.move_to)
+  if not p then
+    rec.result, rec.optional = "failed: no spot for " .. tostring(a.move_to) .. " in the arena", false
+    return
+  end
+  local x, y, z = xyz(F.char)
+  local spot = { x = p[1], y = p[2], z = p[3] }
+  rec.move = { x = spot.x, z = spot.z, to = a.move_to }
+  if not (x and pcall(Osi.CharacterMoveToPosition, F.char, spot.x, spot.y, spot.z, "Run", "LA_gauntlet_move")) then
+    rec.result, rec.optional = "failed: the engine refused the move", false
+    return
+  end
+  F.moving = { a = a, R = R, rec = rec, spot = spot, t0 = now(), p0 = { x, y, z }, last = { x, y, z }, lastT = now(),
+    mv0 = resAmount(F.char, "Movement") }
+  rec.result = "moving"
+end
+
 -- one scripted action: {spell, target, group ("action" | "bonus" | "free"), cost (override; "free" = granted, e.g.
 -- an Extra Attack), requires ("action" / "surge": only after that succeeded this round), alt (fallback action),
 -- done_key (what R.done records instead of the group), ms}. A cast that the engine accepts is left PENDING in
@@ -2228,6 +2280,16 @@ local function doAction(F, a, R, rec0)
       result = "not needed: no " .. a.when_status .. " this turn" }
     return
   end
+  -- a step of the evade tactic, taken only while the boss stands in melee reach of the character
+  if a.when_adjacent then
+    local b = resolveTarget(F, "@boss")
+    if not b or not dist(F.char, b) or dist(F.char, b) > G.REACH then
+      R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
+        result = "not needed: the boss is not in reach" }
+      return
+    end
+  end
+  if a.move_to then return G.moveStep(F, a, R, rec0) end
   local tgt = resolveTarget(F, a.target or "@boss")
   local rec = rec0
   if not rec then

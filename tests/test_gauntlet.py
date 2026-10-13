@@ -865,6 +865,60 @@ def plan_gap_lua_tests(L):
     check("item rule: a yielding bonus action gives way only to a bonus item spell worth more",
           g.T_y1 == "Atk,Off" and "worth less" in str(g.T_y1r) and g.T_y2 == "Atk,Strong", f"{g.T_y1} {g.T_y2}")
     check("item rule: a core bonus action that does not yield keeps the bonus action", g.T_y3 == "Atk,HM", str(g.T_y3))
+    evade_lua_tests(L)
+
+
+def evade_lua_tests(L):
+    """The evade tactic's steps in the harness: a step for an adjacent boss is not needed (and no failed action) when
+    the boss stands out of reach; a move to "@hide_spot" goes to the arena's spot nearest the character outside the
+    boss's reach, through the engine's move; with no spot surveyed it fails and counts as an action not done; after
+    the move it is done and opens the steps that need it."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local P = { c1 = { 0, 0, 0 }, b1 = { 10, 0, 0 } }
+      local gp, dead, mtp = Osi.GetPosition, Osi.IsDead, Osi.CharacterMoveToPosition
+      Osi.GetPosition = function(u) local p = P[u]; if p then return p[1], p[2], p[3] end end
+      Osi.IsDead = function() return 0 end
+      local moved = {}
+      Osi.CharacterMoveToPosition = function(u, x, y, z) moved[#moved + 1] = { x, y, z } end
+      local F = { char = "c1", enemies = { "b1" }, cooldown = {}, afford = function() return true end, plan = {}, S = {},
+        A = { hide_spots = { { 20, 0, 5 }, { 1, 0, 0 }, { -6, 0, 0 } } } }
+      local R = { r = 1, done = {}, actions = {}, casts = {} }
+      G._doAction(F, { spell = "Shout_Disengage_CunningAction", group = "bonus", target = "@self", when_adjacent = true,
+        done_key = "disengage" }, R)
+      T_far = R.actions[1]
+      P.b1 = { 2, 0, 0 }
+      local mv = { spell = "@move", group = "free", target = "@hide_spot", move_to = "@hide_spot", requires = "disengage",
+        done_key = "hide_move", optional = true }
+      R.done.disengage = true
+      G._doAction(F, mv, R)
+      T_moved, T_moving = moved[1], F.moving ~= nil
+      local M = F.moving
+      F.moving = nil
+      M.rec.move.result = "there"
+      G._doAction(F, M.a, M.R, M.rec)
+      T_rec, T_done = M.rec, R.done.hide_move
+      local R2 = { r = 2, done = { disengage = true }, actions = {}, casts = {} }
+      F.A = { hide_spots = {} }
+      G._doAction(F, mv, R2)
+      T_none = R2.actions[1]
+      G.rounds, G.dmg = { R2 }, {}
+      T_sum = G._summarize({ char = "c1", enemies = {} })
+      local R3 = { r = 3, done = {}, actions = {}, casts = {} }
+      G._doAction(F, mv, R3)
+      T_skip = R3.actions[1]
+      Osi.GetPosition, Osi.IsDead, Osi.CharacterMoveToPosition = gp, dead, mtp
+    """)
+    g = L.globals()
+    check("evade: Disengage not needed while the boss is out of reach, not a failed action",
+          "not needed" in str(g.T_far.result) and g.T_far.optional, str(g.T_far.result))
+    check("evade: the move goes to the hide spot nearest the character outside the boss's reach",
+          g.T_moved is not None and g.T_moved[1] == -6 and g.T_moving, str(g.T_moved and lst(g.T_moved)))
+    check("evade: the move done opens the next step", g.T_rec.result == "done" and g.T_done, str(g.T_rec.result))
+    check("evade: no hide spot surveyed: the move fails and counts as an action not done",
+          str(g.T_none.result).startswith("failed: no spot") and g.T_sum.actions_not_done == 1,
+          f"{g.T_none.result} {g.T_sum.actions_not_done}")
+    check("evade: the move only after Disengage", "skipped" in str(g.T_skip.result), str(g.T_skip.result))
 
 
 def verdict_tests(L):
@@ -2585,6 +2639,57 @@ def plan_gap_tests(P):
     import mech
     check("plan gaps: Destructive Wrath's gain is the lightning dice at their maximum",
           abs(P._dw_gain(W, mech, "Chain", 12) - 35.0) < 1e-9, str(P._dw_gain(W, mech, "Chain", 12)))
+    evade_plan_tests(P)
+
+
+def evade_plan_tests(P):
+    """The evade tactic in the plan (the model's choice "evade"): before the attacks, Disengage (Cunning Action) only
+    while the boss is in reach, a move to the arena's hide spot only after it, Hide only after the move, the off-hand
+    shots optional (no bonus action left in such a turn); the move is no spell for the book. Without the choice none
+    of it. A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark."""
+    from types import SimpleNamespace as NS
+    model = NS(slots=lambda cl: [], ADV_SURE=0.99, ROUNDS=16)
+    st = NS(plan={"mode": "ranged", "offhand": "ranged", "hunters_mark": True}, classes={"Ranger": 5, "Rogue": 4},
+            sheet={"nAtt": 2}, subs={"Rogue": "Thief"}, level=9)
+    ev = [{"name": "attack", "n": 2.0, "dmg": 50.0, "adv": 1.0},
+          {"name": "evade", "kind": "tactic", "n": 0.9375, "hide": True, "dmg": 0.0}]
+    ch = P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=ev))
+    core = P.core_plan(model, st, {}, ch)
+    steady = core["steady"]
+    names = [a["spell"] for a in steady]
+    dis = steady[0]
+    mv = next((a for a in steady if a.get("move_to")), {})
+    hide = next((a for a in steady if a["spell"] == "Shout_Hide_BonusAction"), {})
+    shots = [a for a in steady if a["spell"] == "Projectile_OffhandAttack"]
+    check("evade: the model's choice read", ch["evade"] == {"turns": 0.9375, "hide": True}, str(ch["evade"]))
+    check("evade: Disengage first, only while the boss is in reach, a real bonus-action cast",
+          dis["spell"] == "Shout_Disengage_CunningAction" and dis.get("when_adjacent") and dis["group"] == "bonus" and
+          dis.get("done_key") == "disengage", str(dis))
+    check("evade: then a move to the arena's hide spot, then Hide, before the attacks",
+          mv.get("move_to") == "@hide_spot" and mv.get("requires") == "disengage" and
+          hide.get("requires") == mv.get("done_key") and hide.get("group") == "bonus" and
+          "Shout_Hide_BonusAction" in names and
+          names.index("Shout_Hide_BonusAction") < names.index("Projectile_MainHandAttack"), str(names))
+    check("evade: the off-hand shots optional", len(shots) == 2 and all(a.get("optional") for a in shots), str(shots))
+    check("evade: in round 1 too (when the boss came first)", core["rounds"][0][0]["spell"] ==
+          "Shout_Disengage_CunningAction", str([a["spell"] for a in core["rounds"][0]]))
+    check("evade: the move is not a spell for the book", P.MOVE not in P.plan_spells(core) and
+          "Shout_Hide_BonusAction" in P.plan_spells(core))
+    one = P.core_plan(model, st, {}, P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=[
+        ev[0], dict(ev[1], hide=False)])))
+    check("evade: with one bonus action no Hide", not any(a["spell"] == "Shout_Hide_BonusAction"
+                                                          for a in one["steady"]))
+    plain = P.core_plan(model, st, {}, P.model_choices(NS(st=NS(sheet={"nAtt": 2}), plan_events=ev[:1])))
+    r1 = [a["spell"] for a in plain["rounds"][0]]
+    check("evade: none without the model's choice", not any(a.get("when_adjacent") or a.get("move_to")
+                                                           for a in plain["steady"]), str(r1))
+    check("plan: a Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark",
+          r1[-2:] == ["Target_HuntersMark", "Projectile_OffhandAttack"], str(r1))
+    st1 = NS(plan=st.plan, classes=st.classes, sheet=st.sheet, subs={}, level=9)
+    one_ba = [a["spell"] for a in P.core_plan(model, st1, {}, P.model_choices(
+        NS(st=NS(sheet={"nAtt": 2}), plan_events=ev[:1])))["rounds"][0]]
+    check("plan: one bonus action: only Hunter's Mark in round 1",
+          one_ba[-1] == "Target_HuntersMark" and "Projectile_OffhandAttack" not in one_ba, str(one_ba))
 
 
 def item_resource_tests(P):
@@ -4248,6 +4353,20 @@ MUTATIONS = [
     ("plan gaps: the extra action every turn", GL, "    if a.if_status and not has[a.if_status] then", "    if false then"),
     ("plan gaps: GWM's bonus attack asked without its status", GL,
      "  if a.when_status and try(Osi.HasActiveStatus, F.char, a.when_status) ~= 1 then", "  if false then"),
+    ("evade: Disengage with the boss out of reach", GL,
+     "    if not b or not dist(F.char, b) or dist(F.char, b) > G.REACH then", "    if false then"),
+    ("evade: the hide spot inside the boss's reach", GL,
+     "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= G.REACH", "    local clear = true"),
+    ("evade: a move with nowhere to go not counted", GL,
+     '    rec.result, rec.optional = "failed: no spot for " .. tostring(a.move_to) .. " in the arena", false',
+     '    rec.result = "failed: no spot for " .. tostring(a.move_to) .. " in the arena"'),
+    ("evade: the plan ignores the model's choice", PL, '        if ch.get("evade") and mode == "ranged":',
+     "        if False:"),
+    ("evade: the off-hand shots counted as failed", PL,
+     "            bonus_steady = [dict(a, optional=True) for a in bonus_steady]", "            pass"),
+    ("plan: round 1 leaves Fast Hands' bonus action unused", PL,
+     "        bon = [bonus_open[i]] + list(bonus_steady[:n_bonus - 1]) if i < len(bonus_open) else list(bonus_steady)",
+     "        bon = [bonus_open[i]] if i < len(bonus_open) else list(bonus_steady)"),
     ("plan gaps: an optional action counted as failed", GL,
      'if a.result ~= "done" and not a.optional then failed', 'if a.result ~= "done" then failed'),
     ("item rule: no value check", GL, '    elseif it.group == "action" and it.value and takes and it.value <= takes then',

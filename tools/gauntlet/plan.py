@@ -216,7 +216,7 @@ def plan_spells(core):
     for r in core["rounds"] + [core["steady"]]:
         for a in r:
             while a:
-                if not a.get("granted_by"):
+                if not a.get("granted_by") and not a.get("move_to"):
                     used.add(a["spell"])
                 a = a.get("alt")
     return used
@@ -327,9 +327,10 @@ def model_choices(pred):
     """What the model's evaluation decided for the plan (the boss fight's: one target, 16 rounds), from its events:
     {"action": damage of one attack action, "adv": the attacks' own Advantage, "offhand": an off-hand attack kept,
     "gwm": the GWM bonus attack counted, "buffs": {spell: {turns, gain, buff}}, "conc": the concentration damage spell,
-    "fillers": [spells], "values": {event name: damage per use}}."""
+    "fillers": [spells], "values": {event name: damage per use}, "evade": {turns, hide} when the model's plan steps
+    away from an enemy in reach (model.TACTICS) or None}."""
     out = {"action": None, "adv": 0.0, "offhand": False, "gwm": False, "buffs": {}, "conc": None, "fillers": [],
-           "values": {}}
+           "values": {}, "evade": None}
     for e in getattr(pred, "plan_events", None) or []:
         n = e.get("n") or 0
         if e.get("name") == "attack" and n:
@@ -346,6 +347,8 @@ def model_choices(pred):
             out["conc"] = e.get("spell")
         elif e.get("name") == "filler spell" and n:
             out["fillers"].append(e.get("spell"))
+        elif e.get("kind") == "tactic" and e.get("name") == "evade" and n:
+            out["evade"] = {"turns": n, "hide": bool(e.get("hide"))}
         if n and e.get("name") in ("levelled spell", "cantrip", "filler spell"):
             out["values"][e.get("spell")] = e["dmg"] / n
     return out
@@ -439,6 +442,12 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
                 break
         steady = steady + hasted
         opening = opening + hasted
+        if ch.get("evade") and mode == "ranged":
+            # the model's evade tactic: in a turn the boss stands in reach, Disengage, move to the arena's hide spot
+            # and Hide (a second bonus action), then shoot; the off-hand shots get no bonus action in such a turn
+            ev = evade_steps(ch["evade"].get("hide"))
+            opening, steady = ev + opening, ev + steady
+            bonus_steady = [dict(a, optional=True) for a in bonus_steady]
     else:
         cantrip = plan.get("cantrip")
         nukes = [s_ for s_, lv in plan.get("nukes") or [] if st.level >= lv
@@ -470,15 +479,34 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
             bonus_open.append(A("Target_SpiritualWeapon", "bonus", "@boss", "Spiritual Weapon"))
         if plan.get("hex") and cl.get("Warlock", 0):
             bonus_open.append(A("Target_Hex", "bonus", "@boss", "Hex"))
-    # one bonus action per round: the opening bonus actions go out one per round, then the steady ones
+    # the opening bonus actions go out one per round, then the steady ones; a second bonus action (Thief's Fast
+    # Hands) takes the first steady one in an opening round (round 1: Hunter's Mark and an off-hand shot)
+    n_bonus = 2 if cl.get("Rogue", 0) >= 3 and "Thief" in (st.subs.get("Rogue") or "") else 1
     rounds = []
     for i in range(max(2, len(bonus_open))):
         base = opening if i == 0 else steady
-        bon = [bonus_open[i]] if i < len(bonus_open) else list(bonus_steady)
+        bon = [bonus_open[i]] + list(bonus_steady[:n_bonus - 1]) if i < len(bonus_open) else list(bonus_steady)
         rounds.append(list(base) + bon)
     return {"rounds": rounds, "steady": steady + bonus_steady, "fight_rounds": 4, "mode": mode,
             "selfaoe": bool(plan.get("conc") or plan.get("rotd")),
             "defence_opening": [a for a in bonus_open if a["target"] == "@self"], "riders": plan_riders(rounds)}
+
+
+def evade_steps(hide):
+    """The evade tactic's steps (model.TACTICS), before the turn's attacks: Disengage (Cunning Action) while the boss
+    stands in reach, a move to the arena's hide spot (arenas.json hide_spots) and, with a second bonus action, Hide.
+    Real casts and a real move: each later step only after the one before it was done this round."""
+    out = [A("Shout_Disengage_CunningAction", "bonus", "@self", "evade: Disengage (Cunning Action)", when_adjacent=True,
+             done_key="disengage"),
+           A(MOVE, "free", "@hide_spot", "evade: move out of the boss's sight", move_to="@hide_spot",
+             requires="disengage", done_key="hide_move", optional=True)]
+    if hide:
+        out.append(A("Shout_Hide_BonusAction", "bonus", "@self", "evade: Hide (Cunning Action)", requires="hide_move",
+                     done_key="hidden", optional=True))
+    return out
+
+
+MOVE = "@move"                      # the spell field of a move step (a.move_to): not a spell
 
 
 def _val(ch, spell):

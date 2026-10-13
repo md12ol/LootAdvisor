@@ -65,6 +65,9 @@ model as the research sets. It needs the Rebuild outputs and writes only to `too
 python tools/optimizer/run.py --jobs 8      # all origins, builds, acts (--only gale[:build[:act]] for one)
 python tests/test_optimizer.py              # checks its output against the game data
 ```
+Mechanics not yet confirmed in the game are switches (`SWITCHES` in `tools/optimizer/model.py`); the run reports
+each set with every switch flipped. `offhand_shot_with_main` (off by default) counts the off-hand hand crossbow's
+shot that the main-hand shot fires along with it.
 The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it takes a character levelled to the
 build (a test save per build; `--respec emulated` rebuilds the sheet with boosts instead), spawns the items and
 enemies, fights scripted rounds and records damage and survival. It changes the loaded save, so use a test save and
@@ -204,7 +207,10 @@ Battle Master whose every attack has Advantage keeps the superiority dice for Ri
 weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
 lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
 replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
-adds most to.
+adds most to. A ranged attack with the boss in melee reach has Disadvantage, so a ranged Rogue whose model finds it
+worth more steps away in such a turn: Disengage (Cunning Action), a move to the arena's hide spot (`hide_spots` in
+`arenas.json`, surveyed in the game; while there is none the move is an action not done), Hide with a second bonus
+action, then the attacks from hiding. A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

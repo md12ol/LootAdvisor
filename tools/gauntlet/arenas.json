@@ -8,7 +8,9 @@
   "dir": [0.0, -1.0],
   "park": [-175.0, 18.0, 934.0],
   "door": "06e45a4e-409a-4cb0-84ab-487bbdaedbee",
-  "surveyed": true
+  "surveyed": true,
+  "hide_spots_about": "Spots out of the boss's sight for the evade tactic (Disengage, move, Hide, shoot from hiding): [x, y, z] each, surveyed in game; the plan's move step (@hide_spot) takes the one nearest the character outside the boss's reach. Empty until surveyed: the move step then fails and the run shows it.",
+  "hide_spots": []
  },
  "undercity_cistern": {
   "about": "Act 3, Lower City level, Undercity Ruins / Abandoned Cistern. Surveyed by engine: ground 10-18 m (a 5 m ledge east of the start), caustic brine and water puddles that are part of the level, no living NPC within 30 m in a save where the Undercity Ruins fights are over. Chasm edge at z < 857: every spot stays north of it.",
