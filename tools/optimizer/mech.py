@@ -248,7 +248,7 @@ def _status_p(c, args):
         return st.target_uptime[name]
     if name in st.self_uptime:
         return st.self_uptime[name]
-    return 0.1
+    return OTHER_STATUS_P
 
 
 def _passive_p(c, args):
@@ -596,6 +596,9 @@ def lmv_names(level):
 MAX_TARGETS = None                      # model.scenario(): at most this many enemies per cast (None: no cap)
 TARGET_HP_PCT = None                    # model.scenario(): the target's hit points in percent at our turns (None: a day)
 MELEE_CONTACT = 0.0                     # model.scenario(): share of a ranged build's turns an enemy stands in its reach
+# chance of a status nothing in the loadout or plan applies (others in a day's fights may); model.scenario() sets 0 for
+# the boss fight, where no one else acts
+OTHER_STATUS_P = 0.1
 
 
 def area_targets(sp, enemies=4):
@@ -718,9 +721,22 @@ def p_hit(bonus, ac, adv=0.0, dis=0.0):
     return adv_eff * pa + dis_eff * pd + (1 - adv_eff - dis_eff) * p
 
 
-def p_crit(thr, adv=0.0):
+def p_crit(thr, adv=0.0, dis=0.0):
+    """adv / dis: the shares of rolls with net Advantage / net Disadvantage (roll_mix)."""
     p = max(0.05, (21 - thr) / 20)
-    return adv * (1 - (1 - p) ** 2) + (1 - adv) * p
+    return adv * (1 - (1 - p) ** 2) + dis * p * p + (1 - adv - dis) * p
+
+
+def roll_mix(adv, dis):
+    """Independent chances of Advantage and Disadvantage on a roll -> (net Advantage, net Disadvantage): both at
+    once cancel to a straight roll."""
+    adv, dis = min(1.0, max(0.0, adv)), min(1.0, max(0.0, dis))
+    return adv * (1 - dis), dis * (1 - adv)
+
+
+def p_hit_mix(bonus, ac, adv, dis):
+    """Hit chance with net Advantage / net Disadvantage shares (roll_mix)."""
+    return adv * p_hit(bonus, ac, 1.0) + dis * p_hit(bonus, ac, 0.0, 1.0) + (1 - adv - dis) * p_hit(bonus, ac)
 
 
 def p_fail(dc, save_bonus, adv=0.0):
