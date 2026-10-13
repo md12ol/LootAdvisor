@@ -1434,10 +1434,10 @@ def check_jobs_parallel(_out=None, only=PARALLEL_SUBSET):
 
 def check_plan_gaps(out=None):
     """The plan gaps in the boss fight (expectations from the game data and the gauntlet's rules): a Gloom Stalker
-    with a melee off-hand weapon attacks with it in a free bonus action once the boss stands in reach (not in the
-    day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight spends the
-    level 1-2 slots too, holds Wall of Fire when its ticks beat one nuke and answers the boss's hits with Wrath of the
-    Storm; a Battle Master whose every attack has
+    with a melee off-hand weapon, standing, attacks with it in a free bonus action once the boss stands in reach
+    (not in the day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight
+    spends the level 1-2 slots too, holds Wall of Fire when its ticks beat one nuke and answers the boss's hits with
+    Wrath of the Storm; a Battle Master whose every attack has
     Advantage (Risky Ring) plans no Trip and ripostes instead. The day's numbers are the same before and after."""
     import model
     W = _world()
@@ -1447,15 +1447,16 @@ def check_plan_gaps(out=None):
     gale = {"MainHand": "MAG_TheChromatic_Staff"}
     risky = {"MainHand": names["Balduran's Giantslayer"], "Ring1": names["Risky Ring"]}
 
-    def ev(cid, bid, lo, boss):
+    def ev(cid, bid, lo, boss, tactic=None):
         if boss:
             with model.scenario("boss"):
-                r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
+                r = model._evaluate(W, cid, bid, 3, lo, None, True, None) if not tactic else                     model._evaluate_tactic(W, cid, bid, 3, lo, None, True, None, None, tactic)
         else:
             r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
         return {e["name"]: e for e in r.plan_events}, r.dpr
     day_before = ev("astarion", "gloomassassin", ast, False)[1]
-    a_boss, _ = ev("astarion", "gloomassassin", ast, True)
+    # standing in the boss's reach (leaving spends the bonus action the off-hand attack would take)
+    a_boss, _ = ev("astarion", "gloomassassin", ast, True, "stand")
     a_day, day_after = ev("astarion", "gloomassassin", ast, False)
     n += 3
     if not (a_boss.get("off-hand attack") or {}).get("n"):
