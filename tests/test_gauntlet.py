@@ -40,6 +40,7 @@ import itertools
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -160,7 +161,8 @@ def lua_tests():
               rules_tests, setup_tests, lane_tests, respec_tests, enemy_tests, party_tests, item_resource_check_tests,
               summon_turn_tests, npc_park_tests, summon_attack_tests, item_rule_surge_tests, toggle_tests,
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
-              plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests):
+              plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
+              boss_reuse_tests, campaign_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -2771,7 +2773,8 @@ def py_tests():
               lambda: control_tests(PA), lambda: tuned_respec_tests(PA), lambda: grants_tests(P), lambda: reach_tests(P),
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
-              lambda: real_rolls_py_tests(R)):
+              lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
+              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -3174,7 +3177,7 @@ def gate_tests(R):
         import io
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            g = R.main(["--report", rs, "--specs", sp])
+            g = R.main(["--report", rs, "--specs", sp, "--v1"])
         text = buf.getvalue()
         check("report: PILOT INVALID at the top when the control fails", g["valid"] is False and
               text.startswith("**PILOT INVALID**"), text[:200])
@@ -3311,7 +3314,7 @@ def engine_tests():
             E.run({"label": "z", "run_id": "z"}, None, poll=0.0, timeout=0.05, log=lambda *a: None)
         except E.RunInvalid as e:
             raised = str(e)
-        starts = sum(1 for c in calls if "GAUNTLET.run(" in c)
+        starts = sum(1 for c in calls if "GAUNTLET_TEST.start(" in c)
         check("engine: a start the game never showed is sent once more (and only once)", starts == 2, str(starts))
         check("engine: a run that does not finish in time is invalid", "did not finish" in str(raised), str(raised))
     finally:
@@ -3319,8 +3322,528 @@ def engine_tests():
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _load_lua(L, path):
+    with open(path, encoding="utf-8") as fh:
+        return L.eval("function(s) return load(s)() end")(fh.read())
+
+
+def campaign_tests(L):
+    """No bonus from outside the build and set: a story / mood status with a roll or damage effect and every tadpole
+    passive still on the character are listed at setup (the set's own statuses are not) and fail the setup check by
+    name; the harness itself removes nothing and puts nothing back."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local removedS, removedP, added = {}, {}, {}
+      local oldGet, oldStats = Ext.Entity.Get, Ext.Stats.Get
+      local saved = { RemoveStatus = Osi.RemoveStatus, RemovePassive = Osi.RemovePassive, AddPassive = Osi.AddPassive,
+        HasPassive = Osi.HasPassive }
+      Ext.Stats.Get = function(id)
+        if id == "ASTARION_HAPPY" then return { Boosts = "RollBonus(SavingThrow,1);RollBonus(Attack,1)" } end
+        if id == "SET_STATUS" then return { Boosts = "RollBonus(Attack,2)" } end
+        if id == "WET" then return { Boosts = "" } end
+      end
+      Ext.Entity.Get = function()
+        return { StatusContainer = { Statuses = { a = "ASTARION_HAPPY", b = "SET_STATUS", c = "WET" } },
+          PassiveContainer = { Passives = { { Passive = { PassiveId = "TAD_PeaceBreaker" } },
+            { Passive = { PassiveId = "Sharpshooter_AllIn" } } } } }
+      end
+      Osi.RemoveStatus = function(_, st) removedS[#removedS + 1] = st end
+      Osi.RemovePassive = function(_, id) removedP[#removedP + 1] = id end
+      Osi.AddPassive = function(_, id) added[#added + 1] = id end
+      Osi.HasPassive = function() return 0 end
+      T_camp = G.campaignEffects("c1", { item_statuses = { { status = "SET_STATUS", item = "x" } } })
+      T_rs, T_rp = removedS, removedP
+      T_back = G.restoreCampaign == nil and #added == 0
+      G.results = { prep = { campaign = T_camp, bare = {} } }
+      local sc = G.setupCheck({ char = "c1" }, { item_statuses = { { status = "SET_STATUS" } } }, "start", nil)
+      T_fields = {}
+      for _, m in ipairs(sc.mismatches) do T_fields[#T_fields + 1] = m.field end
+      Ext.Entity.Get, Ext.Stats.Get = oldGet, oldStats
+      for k, v in pairs(saved) do Osi[k] = v end
+    """)
+    g = L.globals()
+    c = g.T_camp
+    check("campaign: a story status with an attack bonus and a tadpole passive are listed; the set's status and a "
+          "status without roll effects are not",
+          lst(c.statuses) == ["ASTARION_HAPPY"] and lst(c.passives) == ["TAD_PeaceBreaker"], f"{lst(c.statuses)} {lst(c.passives)}")
+    check("campaign: the harness removes nothing and puts nothing back",
+          not lst(g.T_rs) and not lst(g.T_rp) and g.T_back is True, f"{lst(g.T_rs)} {lst(g.T_rp)}")
+    f = lst(g.T_fields)
+    check("campaign: one still on fails the setup check, named",
+          any("campaign passive TAD_PeaceBreaker" in x for x in f) and
+          any("campaign status ASTARION_HAPPY" in x for x in f) and not any("campaign status SET_STATUS" in x for x in f), str(f))
+
+
+def popup_tests(L):
+    """The test popup's state machine (gauntlet_test.lua): Manual by default, a mode check, Start without a test file
+    is a setup failure that starts nothing, Start with one runs the scripted setup as a popup run in the chosen mode,
+    a second Start while a run is on is refused, and the phases set Setting up -> Fighting -> Result, or Setup failed
+    with the mismatches listed and the fight not started."""
+    res = _load_lua(L, os.path.join(G_DIR, "gauntlet_test.lua"))
+    check("popup: gauntlet_test.lua loads", "test mode ready" in str(res), str(res))
+    L.execute(r"""
+      local G, T = GAUNTLET, GAUNTLET_TEST
+      local sent, runs = {}, {}
+      local oldRun, oldParse, oldLoad, oldBc = G.run, Ext.Json.Parse, Ext.IO.LoadFile, Ext.ServerNet.BroadcastMessage
+      Ext.ServerNet.BroadcastMessage = function(ch, s) sent[#sent + 1] = ch end
+      G.run = function(req) runs[#runs + 1] = req; return "started" end
+      G.F = nil
+      T_default = T.mode
+      T_bad = T.setMode("fast")
+      Ext.IO.LoadFile = function() return nil end
+      T_nofile = T.start()
+      T_nofile_status, T_nofile_runs = T.status, #runs
+      local file = { req = { char = "c1", arena = "house_of_hope", act = 3 }, spec = { set = "S" } }
+      Ext.IO.LoadFile = function(name) if name == T.FILE then return "x" end end
+      Ext.Json.Parse = function() return file end
+      T_start = T.start()
+      T_req = runs[1]
+      T_status = T.status
+      G.F = { state = "fight" }
+      T_busy = T.start()
+      T.setMode("automatic")
+      G.F = nil
+      T.start({ run_id = "r42" })
+      T_req2 = runs[#runs]
+      T.setMode("manual")
+      G.onPhase({ popup = true }, "starting")
+      T_ph1 = T.status
+      G.onPhase({ popup = true, player = true }, "fighting")
+      T_ph2, T_ph2d = T.status, T.detail
+      local failed = { run_id = "r1", valid = false, invalid = { "ended: setup mismatch at the start" },
+        results = { ended = "setup mismatch at the start", summary = {},
+          setup = { start = { mismatches = { { field = "enemy 1 AC", want = 19, got = 10 } } } } } }
+      G.onPhase({ popup = true }, "done", failed)
+      T_ph3, T_ph3lines = T.status, T.last.lines
+      local good = { run_id = "r2", test_mode = "automatic", valid = true, invalid = {},
+        expect = { boss = { dpr = 100, hit_rate = 0.8 } },
+        results = { ended = "rounds done", summary = { dpr = 90, rounds = 16, attacks = { hit = 40, crit = 5, miss = 15 } },
+          hit_riders = { hunters_mark = { hits = 30, rider = 28 }, sneak_attack = { turns = 8, rider = 8 } } } }
+      G.onPhase({ popup = true, tFight = 1 }, "done", good)
+      T_ph4, T_ph4last = T.status, T.last
+      T_sent = #sent
+      G.run, Ext.Json.Parse, Ext.IO.LoadFile, Ext.ServerNet.BroadcastMessage = oldRun, oldParse, oldLoad, oldBc
+      G.F = nil
+    """)
+    g = L.globals()
+    check("popup: Manual by default, an unknown mode refused", g.T_default == "manual" and "unknown" in str(g.T_bad))
+    check("popup: Start without a test file starts nothing and says Setup failed",
+          str(g.T_nofile).startswith("failed") and g.T_nofile_status == "Setup failed" and g.T_nofile_runs == 0)
+    r = g.T_req
+    check("popup: Start runs the scripted setup as a popup run in the chosen mode, with the file's spec and a run id",
+          g.T_start == "started" and r.popup is True and r.mode == "scripted" and r.play == "manual" and
+          r.spec.set == "S" and r.char == "c1" and str(r.run_id).startswith("gt") and g.T_status == "Setting up",
+          f"{g.T_start} {g.T_status}")
+    check("popup: a second Start while a run is on is refused", g.T_busy == "busy")
+    check("popup: Automatic mode plays the plan; a script's run id is kept",
+          g.T_req2.play == "automatic" and g.T_req2.run_id == "r42")
+    check("popup: phases Setting up -> Fighting (your turns in Manual)",
+          g.T_ph1 == "Setting up" and g.T_ph2 == "Fighting" and "your turns" in str(g.T_ph2d))
+    lines = lst(g.T_ph3lines)
+    check("popup: a setup failure says the fight was not started and lists each mismatch",
+          g.T_ph3 == "Setup failed" and "NOT started" in lines[0] and any("enemy 1 AC: want 19, got 10" in x
+                                                                             for x in lines), str(lines))
+    last = g.T_ph4last
+    ll = lst(last.lines)
+    check("popup: a finished run shows Result with damage against the model's boss scenario, hit rate and riders",
+          g.T_ph4 == "Result" and abs(last.hit_rate - 0.75) < 1e-9 and any("model boss 100.0" in x for x in ll) and
+          any("Hunter's Mark on 28 of 30" in x for x in ll) and g.T_sent > 0, str(ll))
+
+
+def release_tests(L):
+    """A popup run: the enemies keep their own faction through the setup; a setup mismatch stops the run before the
+    fight with no recorder marker and no hostile enemy; a clean setup writes the "fight started" marker, turns the
+    enemies hostile and starts the fight; an enemy that never turns hostile stops it; the "fight over" marker follows
+    the record, only after a start marker, and legacy runs write none."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local files, factions, fought, released = {}, {}, 0, 0
+      local oldSave, oldFaction, oldGo, oldRel, oldCheck, oldSpawn, oldEnemy =
+        Ext.IO.SaveFile, Osi.SetFaction, G.goFight, G.release, G.setupCheck, G.spawnEnemies, Osi.IsEnemy
+      Ext.IO.SaveFile = function(name, s) files[name] = s end
+      Osi.SetFaction = function(d, f) factions[#factions + 1] = f end
+      G.goFight = function() fought = fought + 1 end
+      -- setup failure: the release never comes
+      G.release = function() released = released + 1 end
+      G.spawnEnemies = function(_, _, faction) T_spawn_faction = faction; G.enemyForced = { e1 = true }; return { "e1" } end
+      G.setupCheck = function() return { checked = 1, mismatches = { { field = "enemy 1 AC", want = 19, got = 10 } } } end
+      G.reset()
+      local F = { req = { run_id = "rid", label = "t" }, popup = true, char = "c1", spec = {}, plan = {}, S = {},
+        cooldown = {}, started = 1, state = "prep" }
+      G.F = F
+      G.spawnAndFight(F, { { 0, 0, 0 } }, { ac = 19, damage_scale = 0.5 }, {}, { enemy_faction = "EVIL" })
+      T_fail = { state = F.state, ended = G.results.ended, released = released, fought = fought,
+        started = files[G.MARK_FILES.started], faction = T_spawn_faction }
+      -- a clean setup: marker, hostile, fight
+      G.release = oldRel
+      G.setupCheck = function() return { checked = 1, mismatches = {} } end
+      Osi.IsEnemy = function() return 1 end
+      files = {}
+      G.reset()
+      F = { req = { run_id = "rid2", label = "t" }, popup = true, char = "c1", spec = {}, plan = {}, S = {},
+        cooldown = {}, started = 1, state = "prep" }
+      G.F = F
+      G.spawnAndFight(F, { { 0, 0, 0 } }, { ac = 19, damage_scale = 0.5 }, {}, { enemy_faction = "EVIL" })
+      T_ok = { started = files[G.MARK_FILES.started], over = files[G.MARK_FILES.over], fought = fought,
+        faction = factions[#factions] }
+      -- never hostile: stopped before any turn, the over marker follows
+      local t = 0
+      local oldNow = Ext.Utils.MonotonicTime
+      Ext.Utils.MonotonicTime = function() t = t + 400; return t end
+      Osi.IsEnemy = function() return 0 end
+      files = {}
+      G.reset()
+      F = { req = { run_id = "rid3", label = "t" }, popup = true, char = "c1", spec = {}, plan = {}, S = {},
+        cooldown = {}, started = 1, state = "prep", enemies = { "e1" }, enemyFaction = "EVIL" }
+      G.F = F
+      local before = fought
+      G.release(F)
+      T_never = { state = F.state, ended = G.results.ended, fought = fought - before,
+        over = files[G.MARK_FILES.over] }
+      Ext.Utils.MonotonicTime = oldNow
+      -- markers on their own
+      files = {}
+      G.mark("over", { popup = true, req = { run_id = "x" } }, "rounds done")
+      T_over_alone = files[G.MARK_FILES.over]
+      G.mark("started", { popup = false, req = { run_id = "x" } })
+      T_legacy = files[G.MARK_FILES.started]
+      Ext.IO.SaveFile, Osi.SetFaction, G.goFight, G.release, G.setupCheck, G.spawnEnemies, Osi.IsEnemy =
+        oldSave, oldFaction, oldGo, oldRel, oldCheck, oldSpawn, oldEnemy
+      G.F, G.fighting = nil, false
+    """)
+    g = L.globals()
+    f = g.T_fail
+    check("popup setup failure: stopped before the fight, no release, no marker, enemies spawned in their own faction",
+          f.state == "done" and f.ended == "setup mismatch at the start" and f.released == 0 and f.fought == 0 and
+          f.started is None and f.faction is None, f"{f.state} {f.ended} {f.released} {f.started} {f.faction}")
+    o = g.T_ok
+    check("popup start: the start marker holds the run id, the enemies join the hostile faction, the fight starts",
+          o.started == "rid2\n" and o.over == "" and o.faction == "EVIL" and o.fought >= 1,
+          f"{o.started!r} {o.over!r} {o.faction} {o.fought}")
+    n = g.T_never
+    check("popup start: an enemy that never turns hostile stops the run before any turn; the over marker follows",
+          n.state == "done" and "did not turn hostile" in str(n.ended) and n.fought == 0 and
+          str(n.over).startswith("rid3 "), f"{n.state} {n.ended} {n.over!r}")
+    check("markers: no over marker without a start, none for legacy runs",
+          g.T_over_alone is None and g.T_legacy is None)
+
+
+def boss_reuse_tests(L):
+    """The save's own boss (req.boss): the gauntlet's earlier boosts come off, it moves to the enemy spot and is forced
+    again (forced stats do not survive a reload); the setup check reads every forced boost back; at the end it gets
+    its own faction back and is never deleted; it is no intruder in the arena."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local removed, moved, added, factions, deleted = 0, nil, {}, {}, {}
+      local saved = {}
+      for _, k in ipairs({ "RemoveBoosts", "TeleportToPosition", "AddBoosts", "IsDead", "GetFaction", "SetFaction",
+                           "RequestDelete", "RequestDeleteTemporary", "GetMaxHitpoints" }) do saved[k] = Osi[k] end
+      local oldGet = Ext.Entity.Get
+      Osi.RemoveBoosts = function(d, _, _, cause) if cause == "Gauntlet" then removed = removed + 1 end end
+      Osi.TeleportToPosition = function(d, x, y, z) moved = { x, z } end
+      Osi.AddBoosts = function(d, b) added[#added + 1] = b end
+      Osi.IsDead = function() return 0 end
+      Osi.GetFaction = function() return "HOUSE_OF_HOPE" end
+      Osi.SetFaction = function(d, f) factions[#factions + 1] = f end
+      Osi.RequestDelete = function(d) deleted[#deleted + 1] = d end
+      Osi.RequestDeleteTemporary = Osi.RequestDelete
+      Osi.GetMaxHitpoints = function() return 5024 end
+      Ext.Entity.Get = function(u)
+        return { Stats = { Abilities = { 0, 16, 11, 14, 12, 12, 14 }, ProficiencyBonus = 2 }, Resistances = { AC = 10,
+          Resistances = {} }, Replicate = function() end }
+      end
+      G.bossFaction = nil
+      T_reuse = G.reuseBoss("boss1", { 5, 0, 7 }, { ac = 19, save = 5, atk = 9, dmg = 12, dc = 17, hp = 5000 })
+      T_removed, T_moved, T_added = removed, moved, added
+      T_given = G.enemyBoosts and G.enemyBoosts.boss1
+      G.reset()
+      G._finish({ req = { label = "t" }, manual = true, boss = "boss1", enemies = { "boss1", "spawned2" },
+        started = 1, state = "fight", cooldown = {}, plan = {}, S = {} }, "aborted")
+      T_factions = factions
+      T_deleted = deleted
+      for k, v in pairs(saved) do Osi[k] = v end
+      Ext.Entity.Get = oldGet
+    """)
+    g = L.globals()
+    check("boss reuse: the save's boss is used, the gauntlet's old boosts removed, moved to the enemy spot",
+          g.T_reuse is not None and g.T_removed >= 1 and lst(g.T_moved) == [5, 7], str(lst(g.T_moved)))
+    added = lst(g.T_added) or []
+    check("boss reuse: its stats are forced again on every Start (AC and attack boosts given again)",
+          any(x.startswith("AC(") for x in added) and any(x.startswith("RollBonus(Attack") for x in added),
+          str(added))
+    check("boss reuse: the boosts given are remembered for the setup check", g.T_given is not None and
+          len(lst(g.T_given)) == sum(1 for x in added if not x.startswith("Ability(")), str(lst(g.T_given)))
+    check("boss reuse: back in its own faction at the end, never deleted",
+          lst(g.T_factions) == ["HOUSE_OF_HOPE"] and "boss1" not in (lst(g.T_deleted) or []) and
+          "spawned2" in (lst(g.T_deleted) or []), f"{lst(g.T_factions)} {lst(g.T_deleted)}")
+    with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
+        src = fh.read()
+    check("boss reuse: the setup check reads each forced boost back and the arena check skips the boss",
+          'cmp("enemy " .. i .. " boost " .. x, true, G.hasBoost(have, x))' in src and
+          "G.arenaIntruders(A, req.boss and uuid(req.boss))" in src)
+
+
+TESTMOD_STUBS = r"""
+local noop = function() end
+TM = { listeners = {}, net = {}, loadstrings = 0, prints = {}, broadcast = {}, files = {}, players = {} }
+Ext = { Utils = { Print = function(s) TM.prints[#TM.prints + 1] = s end,
+    LoadString = function(src) TM.loadstrings = TM.loadstrings + 1; return function() return "loaded " .. src end end },
+  IO = { LoadFile = function(name, ctx) return TM.files[(ctx or "user") .. ":" .. name] end },
+  Json = { Parse = function(s) return TM.parsed end },
+  Osiris = { RegisterListener = function(name, n, when, fn) TM.listeners[name] = fn end },
+  Events = { NetMessage = { Subscribe = function(_, fn) TM.net[#TM.net + 1] = fn end },
+    GameStateChanged = { Subscribe = noop } },
+  ServerNet = { BroadcastMessage = function(ch) TM.broadcast[#TM.broadcast + 1] = ch end },
+  ClientNet = { PostMessageToServer = noop } }
+Osi = { DB_Players = { Get = function() return TM.players end } }
+"""
+
+
+def testmod_tests():
+    """The test mod's server bootstrap is inert in every save the test file does not name: no file -> nothing read
+    but the file and nothing printed; a file whose character is not in the party, or an arena in another level ->
+    the harness is never run; the test save -> the harness runs from the pak and the client is told to load F9."""
+    try:
+        import lupa
+    except ImportError:
+        print("skip test mod tests (pip install lupa)")
+        return
+    boot = os.path.join(G_DIR, "testmod", "LootAdvisorGauntletTest", "Mods", "LootAdvisorGauntletTest",
+                        "ScriptExtender", "Lua")
+    for fn in ("BootstrapServer.lua", "BootstrapClient.lua"):
+        L0 = lupa.LuaRuntime(unpack_returned_tuples=True)
+        with open(os.path.join(boot, fn), encoding="utf-8") as fh:
+            err = L0.eval("function(s) local f, e = load(s) return e end")(fh.read())
+        check(f"test mod: {fn} compiles", err is None, str(err))
+
+    def scenario(files, parsed, players, level):
+        L = lupa.LuaRuntime(unpack_returned_tuples=True)
+        L.execute(TESTMOD_STUBS)
+        g = L.globals()
+        for k, v in files.items():
+            g.TM.files[k] = v
+        g.TM.parsed = L.eval("function(s) return load('return ' .. s)() end")(parsed) if parsed else None
+        for i, p in enumerate(players):
+            L.execute(f'TM.players[{i + 1}] = {{ "{p}" }}')
+        with open(os.path.join(boot, "BootstrapServer.lua"), encoding="utf-8") as fh:
+            L.eval("function(s) return load(s)() end")(fh.read())
+        L.execute(f'TM.listeners.LevelGameplayStarted("{level}", 0)')
+        return g
+    req = '{ req = { char = "11111111-2222-3333-4444-555555555555", arena_def = { level = "CTY_Main_A" } }, spec = {} }'
+    harness = {"data:Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/Harness/gauntlet.lua": "G",
+               "data:Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/Harness/gauntlet_test.lua": "T"}
+    g = scenario(harness, None, ["x_c1"], "CTY_Main_A")
+    check("test mod: no test file -> inert and silent, the harness never runs",
+          g.TM.loadstrings == 0 and len(g.TM.prints) == 0 and len(g.TM.broadcast) == 0 and
+          g.GAUNTLET_TESTMOD.armed is False)
+    g = scenario(dict(harness, **{"user:LootAdvisor_gauntlet_test.json": "x"}), req, ["Astarion_11111111-2222-3333-4444-000000000000"], "CTY_Main_A")
+    check("test mod: a save whose party lacks the test character stays inert",
+          g.TM.loadstrings == 0 and g.GAUNTLET_TESTMOD.armed is False and "not in this save" in str(g.GAUNTLET_TESTMOD.why))
+    g = scenario(dict(harness, **{"user:LootAdvisor_gauntlet_test.json": "x"}), req, ["Astarion_11111111-2222-3333-4444-555555555555"], "WLD_Main_A")
+    check("test mod: the party in another level than the arena's stays inert",
+          g.TM.loadstrings == 0 and g.GAUNTLET_TESTMOD.armed is False)
+    g = scenario(dict(harness, **{"user:LootAdvisor_gauntlet_test.json": "x"}),
+                 req.replace("spec = {}", "spec = {}, enabled = false"), ["Astarion_11111111-2222-3333-4444-555555555555"], "CTY_Main_A")
+    check("test mod: a disabled test file stays inert", g.TM.loadstrings == 0 and g.GAUNTLET_TESTMOD.armed is False)
+    g = scenario(dict(harness, **{"user:LootAdvisor_gauntlet_test.json": "x"}), req, ["Astarion_11111111-2222-3333-4444-555555555555"], "CTY_Main_A")
+    check("test mod: the test save -> harness and popup run from the pak, the client is told to load the window",
+          g.TM.loadstrings == 2 and g.GAUNTLET_TESTMOD.armed is True and lst(g.TM.broadcast) == ["GauntletTestArm"],
+          f"{g.TM.loadstrings} {lst(g.TM.prints)}")
+
+
+def no_leak_tests():
+    """The test mod never reaches the player download: it is its own mod (own folder, UUID and pak), outside the Loot
+    Advisor mod source; the Loot Advisor pak's file list holds none of its files and no harness code, and the build's
+    mod and release lists do not name it."""
+    import testmod as TM
+    names = [rel for rel, _f in TM.files()]
+    check("no leak: every test mod file lies under its own mod folder",
+          names and all(n.startswith("Mods/%s/" % TM.MOD) for n in names), str(names[:3]))
+    src_root = os.path.join(LA, "LootAdvisor")
+    check("no leak: the test mod's source is outside the Loot Advisor mod source",
+          not os.path.abspath(TM.SRC).startswith(os.path.abspath(src_root) + os.sep))
+    with open(os.path.join(TM.SRC, "Mods", TM.MOD, "meta.lsx"), encoding="utf-8") as fh:
+        meta = fh.read()
+    with open(os.path.join(src_root, "Mods", "LootAdvisor", "meta.lsx"), encoding="utf-8") as fh:
+        la_meta = fh.read()
+    uid = re.search(r'id="UUID" type="FixedString" value="([^"]+)"', meta).group(1)
+    check("no leak: the test mod has its own UUID and folder",
+          uid not in la_meta and 'value="%s"' % TM.MOD in meta)
+    try:
+        TM.bg3tools()
+        import build_pak
+    except SystemExit:
+        print("skip no-leak pak checks (BG3Tools not next to this repository)")
+        return
+    old = dict(build_pak.REPO_DIRS)
+    try:
+        build_pak.REPO_DIRS["LootAdvisor"] = LA
+        files = build_pak.collect("LootAdvisor")
+    finally:
+        build_pak.REPO_DIRS.clear()
+        build_pak.REPO_DIRS.update(old)
+    bad = [n for n, data in files if TM.MOD in n or "Harness/" in n or n.endswith(("gauntlet.lua", "gauntlet_ui.lua",
+                                                                                 "gauntlet_test.lua"))
+           or b"GAUNTLET_TEST" in data or uid.encode() in data]
+    check("no leak: the Loot Advisor pak holds no test mod file and no harness code", files and not bad, str(bad[:3]))
+    check("no leak: the build's mod and release lists do not name the test mod",
+          TM.MOD not in build_pak.MODS and TM.MOD not in build_pak.RELEASE)
+
+
+def v2_stat_tests(R):
+    """Method v2's one statistic: the t-interval of the mean of run means on their logarithms, per side and for a
+    pair's ratio."""
+    gm, ci = R.mean_interval([100.0, 100.0, 100.0, 100.0])
+    check("v2 stats: equal runs -> their value, a zero-width interval", abs(gm - 100) < 1e-9 and abs(ci[1] - ci[0]) < 1e-9)
+    gm, ci = R.mean_interval([95.0, 105.0, 98.0, 102.0])
+    check("v2 stats: four runs ~3% apart -> an interval of a few percent around 100 (t with 3 df)",
+          99 < gm < 101 and 92 < ci[0] < 97 and 103 < ci[1] < 108, f"{gm} {ci}")
+    check("v2 stats: one run has no interval", R.mean_interval([90.0])[1] is None)
+    r, rci = R.ratio_interval([110.0, 112.0, 108.0, 111.0], [100.0, 101.0, 99.0, 100.0])
+    check("v2 stats: a pair 10% apart with little spread -> its interval excludes 1", rci[0] > 1.05 and abs(r - 1.10) < 0.01,
+          f"{r} {rci}")
+    check("v2 stats: t quantiles by degrees of freedom", R.t975(3) == 3.182 and R.t975(11) == 2.228 and R.t975(100) == 1.96)
+
+
+def _v2_rec(i, side, dpr, hit=40, crit=5, miss=15, valid=True, test_mode="automatic", run_id=None, scenario="boss"):
+    dealt = [dpr] * 16
+    return {"mode": "scripted", "pair": i, "side": side, "scenario": scenario, "real_rolls": True, "valid": valid,
+            "invalid": [] if valid else ["ended: aborted"], "test_mode": test_mode, "run_id": run_id or f"{side}{dpr}",
+            "spec_id": {"set_name": "S", "build": "b", "act": 3}, "req": {"char": "x_c1", "pair": i, "side": side},
+            "rounds": [{"r": r + 1, "done": {"action": True},
+                        "actions": [{"spell": "Projectile_MainHandAttack", "target": "@boss", "result": "done",
+                                     "outcome": "hit"}]} for r in range(16)],
+            "results": {"ended": "rounds done", "summary": {"dealt": dealt, "dpr": dpr, "rounds": 16,
+                                                            "attacks": {"hit": hit, "crit": crit, "miss": miss}},
+                        "hit_riders": {"hunters_mark": {"hits": 45, "rider": 44}}}}
+
+
+def v2_run_tests(R):
+    """Method v2 in run.py: the popup is set to Automatic right after loading, before any run; a side runs until it has
+    --repeats valid runs (an invalid one is not counted, at most twice as many tries); the turn list is written per
+    run; --report compares with the model's BOSS scenario part by part (not the day numbers), flags a part outside
+    +-10%, lists manual runs apart without counting them, and gives one interval per side and per pair."""
+    d = tempfile.mkdtemp(prefix="gauntlet_v2_")
+    old = (R.engine.load, R.engine.run, R.engine.set_mode)
+    try:
+        boss = {"dpr": 100.0, "attacks": 3.75, "hit_rate": 0.75, "crit_rate": 0.08, "dmg_per_hit": 35.0}
+        spec = {"set": "S", "act": 3, "expect": {"dpr": 60.0, "score": 70, "boss": boss}}
+        pairs = [{"char": "astarion", "build": "b", "act": 3, "single": True, "specs": {"a": spec}}]
+        sp, res = os.path.join(d, "specs.json"), os.path.join(d, "res.jsonl")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        log = []
+        seq = iter([95.0, None, 100.0, 105.0, 98.0, 99.0])
+
+        def fake_run(req, spec_):
+            log.append(("run", req.get("pair"), req.get("side")))
+            v = next(seq)
+            if v is None:
+                return dict(_v2_rec(0, "a", 1.0, valid=False), run_id=f"bad{len(log)}")
+            return dict(_v2_rec(0, "a", v), run_id=f"ok{len(log)}")
+        R.engine.load = lambda: "loaded"
+        R.engine.run = fake_run
+        R.engine.set_mode = lambda m: (log.append(("mode", m)), m)[1]
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            R.main([sp, "--results", res, "--sides", "a,b"])
+        runs = [x for x in log if x[0] == "run"]
+        check("v2 runs: the popup is set to Automatic as the first step after loading", log[0] == ("mode", "automatic"),
+              str(log[:2]))
+        check("v2 runs: a side runs until 4 valid runs (the invalid one not counted); a side the entry lacks is skipped",
+              len(runs) == 5 and all(x[2] == "a" for x in runs), str(runs))
+        tdir = os.path.splitext(res)[0] + "_turns"
+        check("v2 runs: a turn list per run next to the results", os.path.isdir(tdir) and len(os.listdir(tdir)) == 5)
+        with open(os.path.join(tdir, sorted(x for x in os.listdir(tdir) if x.startswith("ok"))[0]), encoding="utf-8") as f:
+            tl = f.read()
+        check("v2 turns: round by round, the attack, its target and its result",
+              "Round 1" in tl and "Projectile_MainHandAttack -> @boss: hit" in tl, tl[:200])
+        with open(res, "a", encoding="utf-8") as f:
+            f.write(json.dumps(_v2_rec(0, "a", 300.0, hit=10, crit=0, miss=50, test_mode="manual", run_id="man1")) + "\n")
+            f.write(json.dumps(_v2_rec(0, "a", 50.0, scenario="pack")) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            out = R.main(["--report", res, "--specs", sp])
+        text = buf.getvalue()
+        s = out["sides"][(0, "a")]
+        check("v2 report: the 4 valid automatic runs only (the manual and the other scenario's runs not counted)",
+              s["n"] == 4 and 98 < s["mean"] < 101, f"{s['n']} {s['mean']}")
+        check("v2 report: compared with the model's boss scenario, not the day numbers",
+              "model boss 100.0" in text and "60.0" not in text.split("Manual")[0], text[:600])
+        rows = {r_[0]: r_ for r_ in s["rows"]}
+        check("v2 report: part by part, a part within 10% unflagged (hit rate 0.75 vs 0.75)",
+              rows["hit_rate"][5] == "" and abs(rows["hit_rate"][2] - 0.75) < 1e-9)
+        check("v2 report: a part outside 10% flagged (crits 0.083 vs 0.08 is inside, attacks 3.75 vs 3.75 inside)",
+              rows["attacks"][5] == "" and rows["crit_rate"][5] == "")
+        check("v2 report: manual runs listed apart, flagged against the automatic runs",
+              "Manual runs" in text and "man1" in text and "OUTSIDE" in text.split("Manual runs")[1], text[-500:])
+        R.engine.load, R.engine.run, R.engine.set_mode = old
+        tl2 = R.turn_list({"run_id": "p1", "test_mode": "manual", "valid": True, "req": {"char": "Astarion_11111111-2222-3333-4444-555555555555"},
+                           "results": {"summary": {"dealt": [12]}},
+                           "rounds": [{"r": 1, "casts": [{"who": "11111111-2222-3333-4444-555555555555", "spell": "Projectile_MainHandAttack"},
+                                                         {"who": "boss", "spell": "Target_Bite"}]}],
+                           "hits": [{"r": 1, "source": "11111111-2222-3333-4444-555555555555", "hit": True, "total": 12,
+                                     "spell": "Projectile_MainHandAttack"}]})
+        check("v2 turns: a player's turn lists its own casts and the hits they made, not the boss's",
+              any("Projectile_MainHandAttack" in x for x in tl2) and not any("Target_Bite" in x for x in tl2) and
+              any("hit 12" in x for x in tl2), str(tl2))
+    finally:
+        R.engine.load, R.engine.run, R.engine.set_mode = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def engine_popup_tests():
+    """engine.run goes through the popup's Start: the request (with its arena's definition) and the spec are written
+    to the test file, the eval sets Automatic and calls GAUNTLET_TEST.start; a refused Start is an invalid run."""
+    import engine as E
+    old = (E.ev, E.write_se, E.LOCK, E.RUNS)
+    d = tempfile.mkdtemp(prefix="gauntlet_eng_")
+    try:
+        written, calls = {}, []
+        E.write_se = lambda name, obj: written.__setitem__(name, obj)
+        E.LOCK, E.RUNS = os.path.join(d, "lock"), d
+
+        def ev(code, timeout=10.0, side="server"):
+            calls.append(code)
+            return "failed: no test file"
+        E.ev = ev
+        try:
+            E.run({"label": "p", "arena": "house_of_hope", "char": "c1"}, {"set": "S"}, poll=0.0, log=lambda *a: None)
+            raised = None
+        except E.RunInvalid as e:
+            raised = str(e)
+        tf = written.get(E.TEST_FILE) or {}
+        check("engine: a run writes the test file with its request, the arena's definition and the spec",
+              tf.get("spec") == {"set": "S"} and (tf.get("req") or {}).get("arena_def", {}).get("level") == "CTY_Main_A"
+              and tf["req"].get("run_id"), str(tf)[:200])
+        check("engine: the start sets Automatic and presses the popup's Start in one eval",
+              'setMode("automatic")' in calls[0] and "GAUNTLET_TEST.start(" in calls[0], calls[0][:120])
+        check("engine: a refused Start is an invalid run with the reason", raised and "refused" in raised, str(raised))
+        p = E.arm.__defaults__
+        check("engine: arm takes the save's boss", p is not None and "boss" in E.arm.__code__.co_varnames)
+    finally:
+        E.ev, E.write_se, E.LOCK, E.RUNS = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def no_outside_buff_tests():
+    """No buff from outside the set: the catalogue lists none, run.py has no Haste variant, the harness applies no
+    catalogue buff."""
+    import catalog as C
+    check("no outside buffs: the catalogue's buffs are empty for every act",
+          all(v == [] for v in C.BUFFS.values()) and not hasattr(C, "HASTE"))
+    with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
+        src = fh.read()
+    check("no outside buffs: the harness applies none", "C.buffs" not in src and "C.haste" not in src)
+    with open(os.path.join(G_DIR, "run.py"), encoding="utf-8") as fh:
+        rsrc = fh.read()
+    check("no outside buffs: run.py has no --haste", '"--haste"' not in rsrc)
+
+
 # ============================================================================================ mutations
 GL, PL, RN, EN, PA = "gauntlet.lua", "plan.py", "run.py", "engine.py", "pairs.py"
+TL = "gauntlet_test.lua"
+TB = "testmod/LootAdvisorGauntletTest/Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/BootstrapServer.lua"
 MUTATIONS = [
     ("lanes: one state for all lanes", GL, "  for _, k in ipairs(G.LANE_FIELDS) do G[k] = nxt[k] end\n",
      "  for _, k in ipairs({}) do G[k] = nxt[k] end\n"),
@@ -3340,7 +3863,8 @@ MUTATIONS = [
      "try(Osi.IsEnemy, e, u))", ""),
     ("lanes: spacing not checked", GL, "F.lane.gap_need == nil or d >= F.lane.gap_need)", "true)"),
     ("lanes: enemies in the shared enemy faction", GL,
-     "G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)", "G.spawnEnemies(pts, E, C.enemy_faction)"),
+     "F.enemyFaction = (F.lane and F.lane.enemy_faction) or C.enemy_faction or G.ENEMY_FACTION",
+     "F.enemyFaction = C.enemy_faction or G.ENEMY_FACTION"),
     ("lanes: each lane parks the party itself", GL,
      "G.results.parked = F.lane and G.LANES and G.LANES.parkedCount or G.parkOthers(u, A and A.park)",
      "G.results.parked = G.parkOthers(u, A and A.park)"),
@@ -3556,8 +4080,8 @@ MUTATIONS = [
     ("summary: HP buffer counted as the sheet's", GL, "- (F.hpBuffer or 0))", "- 0)"),
     ("run boosts: HP buffer left on", GL, 'list[#list + 1] = string.format("IncreaseMaxHP(%d)", hpBuffer)', ""),
     ("cleanup: earlier runs' enemies skipped by the arena check", GL,
-     "if u and not party[u] and standing(u) and inArena(u, A) then",
-     "if u and not party[u] and not (G.spawned or {})[u] and standing(u) and inArena(u, A) then"),
+     "if u and not party[u] and u ~= except and standing(u) and inArena(u, A) then",
+     "if u and not party[u] and u ~= except and not (G.spawned or {})[u] and standing(u) and inArena(u, A) then"),
     ("cleanup: leftovers never killed", GL, "      if standing(d) then\n        pcall(Osi.Die",
      "      if false then\n        pcall(Osi.Die"),
     ("cleanup: summons left behind", GL, "if u and u ~= me and try(Osi.IsSummon, u) == 1", "if false and u"),
@@ -3639,7 +4163,8 @@ MUTATIONS = [
      r'            m = re.match(r"(\d+d\d+)\s+(\w+)", ((row.get("dmgf") or [""])[0]) or "")', "            m = None"),
     ("riders: none listed", PL, "            if hit and (hit[0], hit[1]) not in seen:", "            if False:"),
     ("fail fast: a start mismatch fought anyway", GL,
-     'if sc and #sc.mismatches > 0 and G.FAIL_FAST then return stop(F, "setup mismatch at the start") end', ""),
+     'if sc and #sc.mismatches > 0 and (G.FAIL_FAST or F.popup) then return stop(F, "setup mismatch at the start") end',
+     ""),
     ("fail fast: a void round fought on", GL, "    if fault then return finish(F, fault) end\n", ""),
     ("fail fast: an idle round is no fault", GL,
      "if (F.S or {}).char_acts ~= false and not (R.done and (R.done.action or R.done.item)) then", "if false then"),
@@ -3757,12 +4282,40 @@ MUTATIONS = [
     ("rolls: runs without rolls counted for repeats", RN, "        if rolls_of(r) != real_rolls:\n            continue\n",
      ""),
     ("rolls: the report mixes runs without rolls", RN,
-     "        if rolls_of(r) != want_rolls:\n            other_rolls += 1\n            continue\n", ""),
-    ("rolls: --no-real-rolls ignored", RN, '"real_rolls": not getattr(a, "no_real_rolls", False)}', '"real_rolls": True}'),
+     "        if rolls_of(r) != want_rolls:\n            other_rolls += 1\n            continue\n        i, side = rec_pair_side(r)",
+     "        i, side = rec_pair_side(r)"),
+    ("rolls: --no-real-rolls ignored", RN, '"real_rolls": not getattr(a, "no_real_rolls", False),', '"real_rolls": True,'),
     ("rolls: older records read as rolled", RN, '.get("real_rolls", False)) is not False',
      '.get("real_rolls", True)) is not False'),
-    ("boss: full hit points at our turn", GL, "pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT)",
-     "pcall(Osi.SetHitpointsPercentage, d, 100)"),
+    ("boss: full hit points at our turn", GL,
+     "for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT) end",
+     "for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, 100) end"),
+    ("popup: enemies hostile before the setup check", GL,
+     "G.spawnEnemies(pts, E, not F.popup and F.enemyFaction or nil)", "G.spawnEnemies(pts, E, F.enemyFaction)"),
+    ("popup: a setup mismatch still starts the fight", GL, "(G.FAIL_FAST or F.popup)", "(G.FAIL_FAST and not F.popup)"),
+    ("markers: no start marker", GL, '    try(Ext.IO.SaveFile, G.MARK_FILES.started, id .. "\\n")\n', ""),
+    ("markers: an over marker without a start", GL, '  elseif kind == "over" and F.marked then', '  elseif kind == "over" then'),
+    ("popup: Automatic by default", TL, 'T.mode = T.mode or "manual"', 'T.mode = T.mode or "automatic"'),
+    ("popup: a second Start while a run is on", TL,
+     '  if G.F and G.F.state and G.F.state ~= "done" then return "busy" end\n  local t, err = T.read()',
+     "  local t, err = T.read()"),
+    ("test mod: the gate ignored", TB, "  if not pass then\n", "  if false then\n"),
+    ("boss: not forced again", GL, "  wait(G.SETTLE_MS, function() forceEnemy(d, E) end)\n", ""),
+    ("boss: deleted at the end", GL, "    if d == F.boss then G.restoreBoss(d) else gone[#gone + 1] = d end",
+     "    gone[#gone + 1] = d"),
+    ("campaign: story statuses not listed", GL,
+     "    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then out.statuses",
+     "    if false then out.statuses"),
+    ("campaign: tadpole passives not checked", GL,
+     'if id:find(G.CAMPAIGN_PASSIVE) then cmp("campaign passive "', 'if false then cmp("campaign passive "'),
+    ("v2: manual runs in the statistic", RN, "(manual if is_manual(r) else auto)", "auto"),
+    ("v2: compared with the day numbers", RN, 'boss = (spec.get("expect") or {}).get("boss")',
+     'boss = spec.get("expect")'),
+    ("v2: Automatic not set before the runs", RN, '    print("popup mode:", engine.set_mode("automatic"))\n', ""),
+    ("v2: invalid runs counted", RN, "                have += len(runs)\n", "                have += 1\n"),
+    ("v2: no part flagged", RN, '"OUTSIDE" if ratio is not None and abs(ratio - 1) > tol else ""', '""'),
+    ("no outside buffs: Bless back", "catalog.py", 'BUFFS = {"1": [], "2": [], "3": []}',
+     'BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}'),
 ]
 
 

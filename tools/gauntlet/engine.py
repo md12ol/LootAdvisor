@@ -1,10 +1,21 @@
 """Talk to the running game through the mod's dev eval hook ("Dev": true in LootAdvisor_settings.json).
 
-    python tools/gauntlet/engine.py load            # load gauntlet.lua (server) + gauntlet_ui.lua (client, F9 window)
+    python tools/gauntlet/engine.py load            # gauntlet.lua + gauntlet_test.lua (server), gauntlet_ui.lua (F9)
     python tools/gauntlet/engine.py probe           # API availability, party, position, difficulty -> JSON
     python tools/gauntlet/engine.py eval "return GAUNTLET.status"
     python tools/gauntlet/engine.py ceval "return GAUNTLET_UI ~= nil"   # client side
     python tools/gauntlet/engine.py survey undercity_lanes   # ground + bystanders of an arena / of every lane
+    python tools/gauntlet/engine.py arm specs.json --pair 0 --side a --arena NAME --char UUID [--boss UUID]
+                                    [--rounds 16]   # the test file for the F9 popup and the test mod; --boss: the
+                                                    # save's own boss (re-forced every run) instead of a new one
+    python tools/gauntlet/engine.py disarm          # remove the test file: the test mod stays inert in every save
+    python tools/gauntlet/engine.py mode automatic  # the popup's mode (manual | automatic)
+    python tools/gauntlet/engine.py start           # the popup's Start (prints "started", "busy" or why not)
+    python tools/gauntlet/engine.py state           # the popup's mode, status and last result
+
+Scripted runs (run()) go through the popup's own Start: the run's request and spec are written to the test file,
+the mode is set to Automatic and GAUNTLET_TEST.start is called, so a scripted run and a run started from the popup
+take the same setup, check and record.
 
 While a run is active (run.py, or a lane run) nothing else may talk to the eval hook: the run's own status reads share
 the channel and an answer can be lost (a dry run stalled that way). The run holds a lock file; the commands above
@@ -19,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SE_DIR = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Larian Studios", "Baldur's Gate 3", "Script Extender")
 PREFIX = os.environ.get("EV_PREFIX", "LootAdvisor")
 OUT = "LootAdvisor_gauntlet_out.json"
+TEST_FILE = "LootAdvisor_gauntlet_test.json"
 RUNS = os.path.join(SE_DIR, "LootAdvisor_gauntlet")
 LOCK = os.path.join(SE_DIR, "LootAdvisor_gauntlet_active.lock")
 
@@ -95,8 +107,47 @@ def _load(src_name, dst_name, side):
 
 
 def load():
-    return _load("gauntlet.lua", "LootAdvisor_gauntlet.lua", "server").strip() + " / " + \
-        _load("gauntlet_ui.lua", "LootAdvisor_gauntlet_ui.lua", "client").strip()
+    return " / ".join([_load("gauntlet.lua", "LootAdvisor_gauntlet.lua", "server").strip(),
+                       _load("gauntlet_test.lua", "LootAdvisor_gauntlet_test.lua", "server").strip(),
+                       _load("gauntlet_ui.lua", "LootAdvisor_gauntlet_ui.lua", "client").strip()])
+
+
+def load_arenas():
+    with open(os.path.join(HERE, "arenas.json"), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def test_request(req):
+    """A run request as the test file holds it: the arena's definition copied in (the game then needs no catalogue
+    for it), the spec left out (the file carries it beside the request)."""
+    out = {k: v for k, v in req.items() if k not in ("spec", "spec_file")}
+    if out.get("arena") and not out.get("arena_def"):
+        out["arena_def"] = load_arenas().get(out["arena"])
+    return out
+
+
+def write_test(req, spec, enabled=True):
+    """The test file the popup's Start and the test mod read: {req, spec, enabled}."""
+    write_se(TEST_FILE, {"req": test_request(req), "spec": spec, "enabled": enabled})
+
+
+def arm(specs_path, pair, side, arena, char, rounds=16, boss=None):
+    """The test file for one side of a pair from plan.py's specs: what the popup's Start runs in the test save."""
+    with open(specs_path, encoding="utf-8") as f:
+        p = json.load(f)[pair]
+    spec = p["specs"][side]
+    if arena and arena not in load_arenas():
+        raise SystemExit(f"unknown arena {arena} (tools/gauntlet/arenas.json)")
+    req = {"mode": "scripted", "scenario": "boss", "act": spec["act"], "rounds": rounds, "arena": arena, "char": char,
+           "label": f"pair{pair}:{side}", "pair": pair, "side": side, "respec": "real", "real_rolls": True}
+    if boss:
+        req["boss"] = boss
+    write_test(req, spec)
+    return os.path.join(SE_DIR, TEST_FILE)
+
+
+def set_mode(mode):
+    return ev(f'return GAUNTLET_TEST.setMode("{mode}")').strip()
 
 
 def dump():
@@ -127,14 +178,16 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
         return _run(req, spec, timeout, poll, log, max_misses)
 
 
+# The popup's Start in Automatic mode; the mode is set in the same eval, so a load in between cannot leave it Manual.
+START = 'GAUNTLET_TEST.setMode("automatic")\nreturn GAUNTLET_TEST.start(Ext.Json.Parse([==[{body}]==]))'
+
+
 def _run(req, spec, timeout, poll, log, max_misses):
     os.makedirs(RUNS, exist_ok=True)
     before = set(os.listdir(RUNS))
-    if spec is not None:
-        write_se("LootAdvisor_gauntlet_spec.json", spec)
-        req = dict(req, spec_file="LootAdvisor_gauntlet_spec.json")
     req = dict(req, run_id=req.get("run_id") or f"run{time.time_ns()}")
-    start = "return GAUNTLET.run(Ext.Json.Parse([==[" + json.dumps(req) + "]==]))"
+    write_test(req, spec if spec is not None else {})
+    start = START.format(body=json.dumps({"run_id": req["run_id"]}))
     label = req["run_id"]
 
     def send_start():
@@ -146,6 +199,8 @@ def _run(req, spec, timeout, poll, log, max_misses):
     log("  run:", r)
     if r == "busy":
         raise RunInvalid("the game is still busy with another run")
+    if r.startswith("failed") or "GAUNTLET_TEST" in r:
+        raise RunInvalid(f"the popup's Start refused: {r}")
     seen, resent, misses, failed_polls, polls = r == "started", False, 0, 0, 0
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -262,7 +317,7 @@ def _abort():
 def main(argv):
     cmd = argv[1] if len(argv) > 1 else "probe"
     held = active()
-    if held and "--force" not in argv and cmd in ("load", "probe", "eval", "ceval", "survey"):
+    if held and "--force" not in argv and cmd in ("load", "probe", "eval", "ceval", "survey", "mode", "start", "state"):
         print(f"a run is active ({held.get('what')}): not talking to the game until it ends (--force overrides)")
         return 2
     argv = [x for x in argv if x != "--force"]
@@ -278,6 +333,22 @@ def main(argv):
     elif cmd == "survey":
         print(ev("return GAUNTLET.survey(" + json.dumps(argv[2]) + ")"))
         print(json.dumps(dump().get("results", {}).get("survey"), indent=1))
+    elif cmd == "arm":
+        opt = dict(zip(argv[3::2], argv[4::2]))
+        print(arm(argv[2], int(opt.get("--pair", 0)), opt.get("--side", "a"), opt.get("--arena"), opt.get("--char"),
+                  int(opt.get("--rounds", 16)), opt.get("--boss")))
+    elif cmd == "disarm":
+        try:
+            os.remove(os.path.join(SE_DIR, TEST_FILE))
+            print("test file removed")
+        except OSError:
+            print("no test file")
+    elif cmd == "mode":
+        print(set_mode(argv[2]))
+    elif cmd == "start":
+        print(ev("return GAUNTLET_TEST.start()").strip())
+    elif cmd == "state":
+        print(ev("return Ext.Json.Stringify(GAUNTLET_TEST.state())").strip())
     else:
         print(__doc__)
 

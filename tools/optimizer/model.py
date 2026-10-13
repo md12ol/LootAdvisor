@@ -1786,6 +1786,28 @@ def auto_save(W, iid):
     return (mech.ABIL.get(ab.group(1)) if ab else None, "IsSpell" in cond, uses)
 
 
+def attack_parts(evs, results, dmg, sa):
+    """Per round, what the gauntlet compares with the game part by part: attack rolls, landed hits (critical ones
+    included), critical hits, their rates, all damage per landed hit and Sneak Attack's damage. Save spells and
+    automatic damage make no attack roll and are left out of the counts, not of the damage."""
+    att = hits = crits = 0.0
+    for ev, r in zip(evs, results):
+        if not r.get("ph"):
+            continue
+        tg = 1
+        if ev.get("kind") == "spell":
+            sp = ev.get("sp") or {}
+            if sp.get("roll") != "attack":
+                continue
+            tg = ev.get("targets", sp.get("targets", 1)) + sp.get("chain", 0)
+        att += (ev.get("n") or 0.0) * tg
+        hits += r.get("hits") or 0.0
+        crits += r.get("crits") or 0.0
+    return {"attacks": round(att, 3), "hits": round(hits, 3), "crits": round(crits, 3),
+            "hit_rate": round(hits / att, 4) if att else None, "crit_rate": round(crits / att, 4) if att else None,
+            "dmg_per_hit": round(dmg / hits, 2) if hits else None, "sneak": round(sa, 2)}
+
+
 class Result:
     def __init__(self, st, offence, dmg, ctrl, dur, evs, results, extra, sa, tgt, detail):
         self.st = st
@@ -1808,6 +1830,7 @@ class Result:
                                  dmg=round(r["dmg"], 2), toggle=bool(r.get("toggle")), adv=round(r.get("adv_own", 0.0), 3),
                                  turns=ev.get("turns"), gain=ev.get("gain_per_cast"))
                             for ev, r in zip(evs, results)] if detail else None
+        self.parts = attack_parts(evs, results, dmg, sa) if detail else None
 
     def raw_value(self):
         return self.offence * (1.0 - self.lost) * math.sqrt(sat(self.R))

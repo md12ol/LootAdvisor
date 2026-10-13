@@ -24,8 +24,9 @@ TEMPLATE = "b7f6f34b-07e6-4bcc-a4bc-023b25fb6e84"   # a plain humanoid (Absolute
 # hostile faction ("Evil NPC") instead. SetFaction needs the full "<name>_<guid>" string.
 ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
 ENEMY_HP = 5000
-BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}
-HASTE = "HASTE"
+# No buff from outside the set: the build, the set, the planned actions and the consumables give every status a
+# run has (the model scores nothing else), so the catalogue lists none.
+BUFFS = {"1": [], "2": [], "3": []}
 PRIME = {"Barbarian": "STR", "Fighter": "STR", "Paladin": "STR", "Monk": "DEX", "Rogue": "DEX", "Ranger": "DEX",
          "Bard": "CHA", "Sorcerer": "CHA", "Warlock": "CHA", "Cleric": "WIS", "Druid": "WIS", "Wizard": "INT"}
 HIT_DIE = {"Barbarian": 12, "Fighter": 10, "Paladin": 10, "Ranger": 10, "Monk": 8, "Rogue": 8, "Bard": 8, "Cleric": 8,
@@ -160,7 +161,7 @@ def main(argv=None):
         for c in opt.get("compare") or []:
             pass
     out = {"version": 1, "enemies": {str(k): dict(v, template=TEMPLATE, hp=ENEMY_HP) for k, v in model.ENEMY.items()},
-           "buffs": BUFFS, "haste": HASTE, "enemy_faction": ENEMY_FACTION, "arenas": arenas(), "builds": builds, "sets": sets, "tuned": {}}
+           "buffs": BUFFS, "enemy_faction": ENEMY_FACTION, "arenas": arenas(), "builds": builds, "sets": sets, "tuned": {}}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, default=str)
     print(f"{len(builds)} builds, {len(sets)} sets -> {a.out}")

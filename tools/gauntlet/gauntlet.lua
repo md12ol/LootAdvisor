@@ -550,6 +550,7 @@ function G.prep(spec)
     G.unencumber(u, true)
     G.results.used_statuses_removed = G.removeUsedStatuses(u)
     G.results.carry_over = G.removeCarryOver(u)
+    if not G.manualPrep then G.results.campaign = G.campaignEffects(u, spec) end
     for _, p in ipairs(emulate and spec.passives_remove or {}) do
       if try(Osi.HasPassive, u, p) == 1 then pcall(Osi.RemovePassive, u, p); note("passive -%s", p) end
     end
@@ -719,6 +720,51 @@ function G.removeCarryOver(u)
   return out
 end
 
+-- ------------------------------------------------------------------------------------------------ campaign effects
+-- No bonus the build, the set, the planned actions or the consumables do not give: the save's story and mood statuses
+-- with a roll or damage effect (ASTARION_HAPPY: +1 to every attack roll) and the tadpole powers (TAD_* passives:
+-- Favourable Beginnings adds the proficiency bonus to the first attack on each target) are removed from the test save
+-- once, by hand. The harness never removes them: every setup lists what is still there (the run record's
+-- prep.campaign) and the setup check fails on each one, so the fight does not start with them.
+-- -> { statuses = {}, passives = {} } (what was found)
+G.CAMPAIGN_BOOST = { "RollBonus", "DamageBonus", "WeaponDamage", "CharacterWeaponDamage", "Advantage",
+  "Disadvantage", "CriticalHit", "ReduceCriticalAttackThreshold", "WeaponEnchantment", "AC%(", "Ability%(" }
+G.CAMPAIGN_PASSIVE = "^TAD_"
+function G.campaignStatus(st)
+  local s_ = try(Ext.Stats.Get, st)
+  local b = s_ and try(function() return s_.Boosts end)
+  if type(b) ~= "string" then return false end
+  for _, pat in ipairs(G.CAMPAIGN_BOOST) do if b:find(pat) then return true end end
+  return false
+end
+function G.passiveIds(u)
+  local e, out = ent(u), {}
+  for _, p in ipairs(e and try(function() return e.PassiveContainer.Passives end) or {}) do
+    local id = try(function() return p.Passive.PassiveId end)
+    if id then out[#out + 1] = tostring(id) end
+  end
+  return out
+end
+-- statuses the set itself puts on (its equip statuses and what they chain to) and the spec's chosen ones stay
+local function setStatuses(spec)
+  local ok = {}
+  for _, st in ipairs(spec.statuses or {}) do ok[st] = true end
+  for _, st in ipairs(spec.item_statuses_allowed or {}) do ok[st] = true end
+  for _, x in ipairs(spec.item_statuses or {}) do ok[x.status or x] = true end
+  return ok
+end
+function G.campaignEffects(u, spec)
+  local out, keep = { statuses = {}, passives = {} }, setStatuses(spec or {})
+  for st in pairs(G.statusSet(u)) do
+    if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then out.statuses[#out.statuses + 1] = st end
+  end
+  for _, id in ipairs(G.passiveIds(u)) do
+    if id:find(G.CAMPAIGN_PASSIVE) then out.passives[#out.passives + 1] = id end
+  end
+  table.sort(out.statuses)
+  table.sort(out.passives)
+  return out
+end
 -- ------------------------------------------------------------------------------------------------ boosts
 -- The boosts on a creature as "Type(params)" text, or nil when the container cannot be read. BoostsContainer maps a
 -- boost type to the boost entities of that type; each has its BoostInfo (the boost's name and its parameters).
@@ -1029,7 +1075,7 @@ end
 -- logged as a miss (so the reaction list can be completed) and ends the run, because the engine offers no safe way to
 -- answer it (writing the server's interrupt decision crashed the game). When a person has control it does nothing.
 function G.reactionGuard(F)
-  if not F or F.manual then return nil end
+  if not F or F.manual or F.player then return nil end
   local open = G.pendingReactions(F.char)
   for s in pairs(F.summons or {}) do
     for _, p in ipairs(G.pendingReactions(s)) do open[#open + 1] = p end
@@ -1138,9 +1184,15 @@ local function forceEnemy(d, E, tries)
     local b = { string.format("AC(%d)", E.ac - ac), string.format("RollBonus(SavingThrow,%d)", E.save),
       string.format("RollBonus(Attack,%d)", E.atk - prof), string.format("DamageBonus(%d)", E.dmg - 1),
       string.format("SpellSaveDC(%d)", E.dc - (8 + prof)), string.format("IncreaseMaxHP(%d)", E.hp) }
+    G.enemyBoosts = G.enemyBoosts or {}
+    local given = {}
     for _, x in ipairs(b) do
-      if not x:match("%(%-?0%)$") and not x:match(",0%)$") then pcall(Osi.AddBoosts, d, x, CAUSE, d) end
+      if not x:match("%(%-?0%)$") and not x:match(",0%)$") then
+        pcall(Osi.AddBoosts, d, x, CAUSE, d)
+        given[#given + 1] = x
+      end
     end
+    G.enemyBoosts[uuid(d)] = given
     pcall(function()
       local r = e.Resistances.Resistances
       for i = 1, #r do r[i] = "None" end
@@ -1162,6 +1214,27 @@ local function forceEnemy(d, E, tries)
     end
     wait(G.POLL_MS, full)
   end)
+end
+
+-- The save's own boss (a test save keeps one standing in the arena, req.boss): its forced stats do not survive a
+-- reload (the boosts are gone, the template's abilities are back), so every run takes the gauntlet's boosts off,
+-- moves it to the enemy spot and forces it again, as a spawned enemy is. It keeps its own faction until the fight
+-- starts and gets it back at the end; it is never deleted. -> { d } or nil when it is not standing.
+function G.reuseBoss(d, p, E)
+  if try(Osi.IsDead, d) ~= 0 then return nil end
+  G.bossFaction = G.bossFaction or {}
+  G.bossFaction[uuid(d)] = G.bossFaction[uuid(d)] or try(Osi.GetFaction, d)
+  pcall(Osi.RemoveBoosts, d, "", 0, CAUSE, d)
+  pcall(Osi.TeleportToPosition, d, p[1], p[2], p[3], "", 0, 0, 0, 0, 1)
+  G.enemyForced = G.enemyForced or {}
+  G.enemyForced[uuid(d)] = nil
+  wait(G.SETTLE_MS, function() forceEnemy(d, E) end)
+  return { d }
+end
+function G.restoreBoss(d)
+  local f = (G.bossFaction or {})[uuid(d)]
+  if f then pcall(Osi.SetFaction, d, f) end
+  pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT)
 end
 
 function G.spawnEnemies(list, E, faction)
@@ -1360,6 +1433,17 @@ function G.setupCheck(F, spec, phase, extra)
     end
   end
   for _, p in ipairs(spec.passives_add or {}) do cmp("passive " .. p, true, try(Osi.HasPassive, u, p) == 1) end
+  if phase == "start" and (G.results.prep or {}).campaign then
+    for _, id in ipairs(G.passiveIds(u)) do
+      if id:find(G.CAMPAIGN_PASSIVE) then cmp("campaign passive " .. id .. " (not the build's)", false, true) end
+    end
+    local keep = setStatuses(spec)
+    for st in pairs(G.statusSet(u)) do
+      if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then
+        cmp("campaign status " .. st .. " (not the set's)", false, true)
+      end
+    end
+  end
   for _, p in ipairs(spec.passives_remove or {}) do cmp("passive removed " .. p, false, try(Osi.HasPassive, u, p) == 1) end
   for _, st in ipairs(spec.statuses or {}) do cmp("status " .. st, true, try(Osi.HasActiveStatus, u, st) == 1) end
   for _, st in ipairs((extra and extra.buffs) or {}) do cmp("buff " .. st, true, try(Osi.HasActiveStatus, u, st) == 1) end
@@ -1416,7 +1500,14 @@ function G.setupCheck(F, spec, phase, extra)
       local E = extra.E or {}
       local de = ent(d)
       cmp("enemy " .. i .. " AC", E.ac, de and try(function() return de.Resistances.AC end))
-      cmp("enemy " .. i .. " hostile to the character", 1, try(Osi.IsEnemy, F.char, d))
+      if extra.hostile_later then
+        -- the popup turns the enemies hostile after this check (G.release checks it there)
+        out.notes = out.notes or {}
+        out.notes[#out.notes + 1] = string.format("enemy %d hostile before the start: %s", i,
+          tostring(try(Osi.IsEnemy, F.char, d)))
+      else
+        cmp("enemy " .. i .. " hostile to the character", 1, try(Osi.IsEnemy, F.char, d))
+      end
       -- the model's enemy: every ability 10, unarmed (its attack and damage come from the forced boosts alone)
       local ab = abilities(d)
       for _, n in ipairs(ABIL) do cmp("enemy " .. i .. " " .. n, 10, ab[n]) end
@@ -1424,6 +1515,11 @@ function G.setupCheck(F, spec, phase, extra)
       for _ in pairs(G.equipped(d)) do gear = gear + 1 end
       cmp("enemy " .. i .. " items worn", 0, gear)
       cmp("enemy " .. i .. " damage scale", extra.scale, E.damage_scale)
+      cmp("enemy " .. i .. " max HP at least " .. tostring(E.hp), true, (try(Osi.GetMaxHitpoints, d) or 0) >= (E.hp or 0))
+      local have = G.boostList(d)
+      for _, x in ipairs((G.enemyBoosts or {})[uuid(d)] or {}) do
+        cmp("enemy " .. i .. " boost " .. x, true, G.hasBoost(have, x))
+      end
     end
     for m in pairs(extra.parked or {}) do
       cmp("party member parked out of combat " .. tostring(m):sub(-12), 0, try(Osi.IsInCombat, m) or 0)
@@ -2447,14 +2543,14 @@ function G.judge(rounds, why, results, opts)
   if rep and rep.verified == false then
     causes[#causes + 1] = "reactions not set: " .. table.concat(rep.uncovered or {}, ", ")
   end
-  if results.foreign_casts and #results.foreign_casts > 0 then
+  if results.foreign_casts and #results.foreign_casts > 0 and not (opts and opts.player) then
     local seen, names = {}, {}
     for _, c in ipairs(results.foreign_casts) do
       if not seen[c.spell] then seen[c.spell] = true; names[#names + 1] = c.spell end
     end
     causes[#causes + 1] = "the test character cast outside the plan: " .. table.concat(names, ", ")
   end
-  if not (opts and opts.char_acts == false) then
+  if not (opts and (opts.char_acts == false or opts.player)) then
     local idle = 0
     for _, R in ipairs(rounds or {}) do
       if not R.downed and not (R.done and (R.done.action or R.done.item)) then idle = idle + 1 end
@@ -2532,13 +2628,13 @@ end
 
 -- Living characters inside the arena that are not the party: an arena must be empty before a run starts. Runs
 -- G.clearLeftovers first; whatever it could not remove (an earlier run's enemy, a summon) is an intruder.
-function G.arenaIntruders(A)
+function G.arenaIntruders(A, except)
   local out = {}
   local party = {}
   for _, m in ipairs(partyMembers()) do party[m] = true end
   for _, e in ipairs(try(Ext.Entity.GetAllEntitiesWithComponent, "ServerCharacter") or {}) do
     local u = try(function() return e.Uuid.EntityUuid end)
-    if u and not party[u] and standing(u) and inArena(u, A) then
+    if u and not party[u] and u ~= except and standing(u) and inArena(u, A) then
       local x, _, z = Osi.GetPosition(u)
       out[#out + 1] = string.format("%s at %.0f,%.0f", name(u), x, z)
     end
@@ -2649,7 +2745,7 @@ local function roundStart(F)
   end
   G.rounds[#G.rounds + 1] = R
   -- the queue is planned on the first act step, once the engine has refilled the turn's resources
-  F.queue, F.qi, F.pending, F.moving = (F.manual and {} or nil), 0, nil, nil
+  F.queue, F.qi, F.pending, F.moving = ((F.manual or F.player) and {} or nil), 0, nil, nil
 end
 
 -- The round's queue from the character's real resources now: each entry of the round plan becomes the first
@@ -2724,6 +2820,20 @@ function G.castOutcomes(R, hits, dmg, me)
   return tally
 end
 
+-- A round's attack outcomes from the hit log alone (a player's turn has no planned actions): every row the
+-- character dealt in the round, a critical hit counted as a crit only. -> { hit, crit, miss }
+function G.hitTally(R, hits, me)
+  local tally = { hit = 0, crit = 0, miss = 0 }
+  for _, h in ipairs(hits or {}) do
+    if h.r == R.r and h.source == me then
+      if h.crit then tally.crit = tally.crit + 1
+      elseif h.miss then tally.miss = tally.miss + 1
+      elseif h.hit then tally.hit = tally.hit + 1 end
+    end
+  end
+  return tally
+end
+
 -- The riders the plan relies on (plan.riders: Hunter's Mark's HUNTERS_MARK on the boss, Dread Ambusher's
 -- DREAD_AMBUSHER on the character), checked as the turn that casts them ends: the status is on now, was on as the turn
 -- started, or was put on during the round. A missing one fails the run like a refused cast (results.rider_misses),
@@ -2736,7 +2846,7 @@ local function riderMissed(R, spell)
   return false
 end
 function G.riderCheck(F, R)
-  if F.manual or R.downed then return end
+  if F.manual or F.player or R.downed then return end
   for _, rd in ipairs((F.plan or {}).riders or {}) do
     if rd.round == R.r then
       local who = resolveTarget(F, rd.on or "@boss")
@@ -2897,7 +3007,9 @@ local function finish(F, why)
   end
   -- this run's enemies and the character's summons go; whatever still stands after CLEANUP_MS is killed
   local gone = {}
-  for _, d in ipairs(F.enemies or {}) do gone[#gone + 1] = d end
+  for _, d in ipairs(F.enemies or {}) do
+    if d == F.boss then G.restoreBoss(d) else gone[#gone + 1] = d end
+  end
   if F.char then
     for _, d in ipairs(G.leftoverSummons(uuid(F.char), F.A)) do
       gone[#gone + 1] = d
@@ -2934,7 +3046,8 @@ local function finish(F, why)
   if F.char and not F.manual then G.revive(F.char) end
   if not F.manual then
     G.results.foreign_casts = G.foreignCasts(G.rounds, uuid(F.char), F.plan or {})
-    local j = G.judge(G.rounds, G.results.ended, G.results, { me = uuid(F.char), char_acts = F.S and F.S.char_acts })
+    local j = G.judge(G.rounds, G.results.ended, G.results, { me = uuid(F.char), char_acts = F.S and F.S.char_acts,
+      player = F.player })
     G.results.valid, G.results.invalid = j.valid, j.causes
   end
   G.status = "done"
@@ -2942,7 +3055,8 @@ local function finish(F, why)
   local spec = F.spec or {}
   local rec = { run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
     lane = F.lane and F.lane.id, lanes_run = F.lane and F.lane.run, first_lane = F.lane and F.lane.first,
-    difficulty = G.difficulty(), scenario = F.req.scenario, haste = F.req.haste and true or false,
+    difficulty = G.difficulty(), scenario = F.req.scenario, haste = false, run_id = F.req.run_id,
+    test_mode = F.popup and (F.player and "manual" or "automatic") or nil,
     real_rolls = F.realRolls == true,
     respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
@@ -2951,6 +3065,8 @@ local function finish(F, why)
   try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d%s.json", F.started, G.runSeq,
     F.lane and ("_" .. F.lane.id) or ""), Ext.Json.Stringify(rec))
   G.dump()
+  G.mark("over", F, G.results.ended)
+  G.phase(F, "done", rec)
   G.notify({ kind = "result", run = G.runSeq, mode = rec.mode, spec = rec.spec_id, scenario = rec.scenario,
     summary = G.results.summary, expect = spec.expect })
   if F.lane then
@@ -2978,7 +3094,10 @@ G.OLD_HP_BUFFER = 200
 G.HP_BUFFER = 0
 
 -- G.run(req): req = {mode = "scripted" | "manual", char (uuid; default the host), build, set, act, scenario
--- ("boss" | "pack" | "defence" | "longday"), haste, tuned, rounds, label, spec (a full spec from run.py)}
+-- ("boss" | "pack" | "defence" | "longday"), tuned, rounds, label, spec (a full spec from run.py), popup, play}
+-- popup (the test popup's Start, gauntlet_test.lua): the enemies keep their own faction through the setup and turn
+-- hostile only once the setup check has passed (G.release); play = "manual" hands the character's turns to the
+-- player, "automatic" plays the plan. Both keep the scripted run's setup, check and record.
 -- Returns at once ("started"): the spec is read and the character prepared on timers, so the eval that starts a run
 -- stays small and does not time out. Anything that stops a run before or during the fight (bad request, prep failed
 -- or timed out, arena not clear) still ends in a run record, marked invalid with its cause.
@@ -2994,7 +3113,8 @@ function G.run(req)
   if G.F and G.F.state and G.F.state ~= "done" then return "busy" end
   if G.LANES and G.LANES.on and not req.lane then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
-    state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"], realRolls = G.realRollsFor(req) }
+    state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"], realRolls = G.realRollsFor(req),
+    popup = req.popup == true, player = req.mode ~= "manual" and req.play == "manual" }
   G.F = F
   G.reset()
   G.status = "starting"
@@ -3023,13 +3143,13 @@ function G.start(F)
   if not S then return stop(F, "unknown scenario " .. tostring(scn)) end
   local C = G.catalog() or {}
   local act = tostring(req.act or spec.act)
-  local E0 = req.enemy or (C.enemies and C.enemies[act])
+  local E0 = req.enemy or spec.enemy or (C.enemies and C.enemies[act])
   if not E0 then return stop(F, "no enemy stats for act " .. act) end
   local E = G.scaleEnemy(E0, req.enemy_damage_scale or S.enemy_damage_scale or G.ENEMY_DAMAGE_SCALE)
   F.enemyDamageScale = E.damage_scale
   local A
   if req.arena then
-    A = (C.arenas or {})[req.arena]
+    A = req.arena_def or (C.arenas or {})[req.arena]
     if not A then return stop(F, "unknown arena " .. tostring(req.arena)) end
   end
   F.lane = req.lane
@@ -3067,10 +3187,9 @@ function G.start(F)
         if F.hpBuffer > 0 then boost(u, string.format("IncreaseMaxHP(%d)", F.hpBuffer)) end
         G.results.hp_buffer = F.hpBuffer
       end
+      -- no buff from outside the set: the build, the set, the planned actions and the consumables give every
+      -- status the fight has (an older catalogue's buffs and a request's haste are ignored)
       local buffs = {}
-      for _, s in ipairs((C.buffs or {})[act] or {}) do buffs[#buffs + 1] = s end
-      if req.haste then buffs[#buffs + 1] = C.haste or "HASTE" end
-      for _, s in ipairs(buffs) do pcall(Osi.ApplyStatus, u, s, -1, 1, u) end
       G.results.buffs = buffs
       G.awaitStatuses(u, buffs, function(missing)
         G.results.buffs_missing = #missing > 0 and missing or nil
@@ -3078,7 +3197,7 @@ function G.start(F)
           G.results.leftovers = left
           if A then
             G.results.arena = req.arena
-            local intr = G.arenaIntruders(A)
+            local intr = G.arenaIntruders(A, req.boss and uuid(req.boss))
             if #intr > 0 then return stop(F, "arena " .. req.arena .. " not clear: " .. table.concat(intr, "; ")) end
           end
           -- lanes: every lane waits here until all are ready, then all spawn their enemies in the same frame, the first
@@ -3122,9 +3241,11 @@ end
 -- The enemies, the setup check, then the fight.
 function G.spawnAndFight(F, pts, E, buffs, C)
   local u, spec = F.char, F.spec
-  F.enemies = G.spawnEnemies(pts, E, (F.lane and F.lane.enemy_faction) or C.enemy_faction)
+  F.enemyFaction = (F.lane and F.lane.enemy_faction) or C.enemy_faction or G.ENEMY_FACTION
+  F.boss = F.req.boss and G.reuseBoss(F.req.boss, pts[1], E) and F.req.boss or nil
+  F.enemies = F.boss and { F.boss } or G.spawnEnemies(pts, E, not F.popup and F.enemyFaction or nil)
   if #F.enemies == 0 then return stop(F, "no enemies") end
-  if not F.lane then F.hostility = G.makeHostile(u, F.enemies[1], C.enemy_faction) end
+  if not F.lane and not F.popup then F.hostility = G.makeHostile(u, F.enemies[1], F.enemyFaction) end
   if F.lane and G.LANES then
     local m = G.LANES.members[F.lane.id] or {}
     m[uuid(u)] = true
@@ -3156,15 +3277,66 @@ function G.spawnAndFight(F, pts, E, buffs, C)
       local me = uuid(u)
       local rep = G.results.reactions and G.results.reactions[me]
       F.setupExtra = { buffs = buffs, encumbered = G.results.encumbered, enemies = F.enemies, E = E,
-        scale = F.enemyDamageScale, parked = G.parked, reactions = rep and rep.verified or nil }
+        scale = F.enemyDamageScale, parked = G.parked, reactions = rep and rep.verified or nil,
+        hostile_later = F.popup or nil }
       G.results.setup = { start = G.setupCheck(F, spec, "start", F.setupExtra) }
     end
     if F.lane then G.laneSetup(F) end
     -- fail fast: a run that starts with a mismatch never counts, so it ends here instead of after 16 rounds
     local sc = G.results.setup and G.results.setup.start
-    if sc and #sc.mismatches > 0 and G.FAIL_FAST then return stop(F, "setup mismatch at the start") end
+    if sc and #sc.mismatches > 0 and (G.FAIL_FAST or F.popup) then return stop(F, "setup mismatch at the start") end
+    if F.popup then return G.release(F) end
     G.goFight(F)
   end)
+end
+
+-- The popup's start of the fight, once the setup check passed: the "fight started" marker (a recorder watching the
+-- marker files starts with it), REC_LEAD_MS for the recorder to come up, then the enemies join the hostile faction
+-- and the fight starts. An enemy still not hostile after HOSTILE_MS stops the run before any turn.
+G.ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
+G.REC_LEAD_MS, G.HOSTILE_MS = 3000, 2000
+function G.release(F)
+  G.mark("started", F)
+  G.phase(F, "starting")
+  wait(G.REC_LEAD_MS, function()
+    if F.state == "done" then return end
+    for _, d in ipairs(F.enemies) do pcall(Osi.SetFaction, d, F.enemyFaction) end
+    if not F.lane then F.hostility = G.makeHostile(F.char, F.enemies[1], F.enemyFaction) end
+    local t0 = now()
+    local function hostile()
+      if F.state == "done" then return end
+      local all = true
+      for _, d in ipairs(F.enemies) do if try(Osi.IsEnemy, F.char, d) ~= 1 then all = false end end
+      if all then
+        G.results.hostile_after_ms = now() - t0
+        return G.goFight(F)
+      end
+      if now() - t0 >= G.HOSTILE_MS then return stop(F, "the enemies did not turn hostile at the start") end
+      wait(G.POLL_MS, hostile)
+    end
+    hostile()
+  end)
+end
+
+-- Marker files for a screen recorder (a watcher script polls them): LootAdvisor_gauntlet_fight_started.txt holds the
+-- run id from the moment the fight is about to start, LootAdvisor_gauntlet_fight_over.txt the run id and how the run
+-- ended once its record is written. Popup runs only (F.popup): legacy and lane runs write none.
+G.MARK_FILES = { started = "LootAdvisor_gauntlet_fight_started.txt", over = "LootAdvisor_gauntlet_fight_over.txt" }
+function G.mark(kind, F, extra)
+  if not (F and F.popup) then return end
+  local id = tostring(F.req and F.req.run_id or "run")
+  if kind == "started" then
+    F.marked = true
+    try(Ext.IO.SaveFile, G.MARK_FILES.over, "")
+    try(Ext.IO.SaveFile, G.MARK_FILES.started, id .. "\n")
+  elseif kind == "over" and F.marked then
+    try(Ext.IO.SaveFile, G.MARK_FILES.over, id .. " " .. tostring(extra or "") .. "\n")
+  end
+end
+-- The popup follows a run through these phases (gauntlet_test.lua sets G.onPhase): "starting" (setup passed),
+-- "fighting" (the combat is on), "done" (the record is written; info = the record).
+function G.phase(F, name, info)
+  if F and F.popup and G.onPhase then pcall(G.onPhase, F, name, info) end
 end
 
 -- The fight starts: round 0, the combat entered, the fight loop waits for the character's turn.
@@ -3185,7 +3357,8 @@ function G.goFight(F)
     G.notify({ kind = "checklist", rows = rows, hotbar = G.results.hotbar })
   end
   G.notify({ kind = "status", text = "fight on: " .. tostring(F.req.scenario or "boss") ..
-    (F.manual and " - your turns" or "") })
+    ((F.manual or F.player) and " - your turns" or "") })
+  G.phase(F, "fighting")
 end
 
 -- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
@@ -3213,7 +3386,7 @@ function G.combatLost(F, t)
 end
 -- A round that already makes the run invalid (G.judge): with FAIL_FAST the run ends after it. -> the cause, or nil.
 function G.roundFault(F, R)
-  if F.manual or not G.FAIL_FAST or R.downed then return nil end
+  if F.manual or F.player or not G.FAIL_FAST or R.downed then return nil end
   if (R.cast_misses or 0) > 0 then
     return string.format("round %d: %d planned cast(s) refused or never seen", R.r, R.cast_misses)
   end
@@ -3246,7 +3419,7 @@ G.SUMMON_CHECK_MS = 1000
 -- A summon of the character joins the run (scripted runs): its scripted attacks roll like the character's, and its
 -- reactions follow the run's policy, since a prompt for the summon would stop the fight as one for the character does.
 function G.summonJoins(F, s)
-  if F.manual then return end
+  if F.manual or F.player then return end
   G.addRealCaster(F, s)
   G.results.reactions = G.results.reactions or {}
   for u, rep in pairs(G.reactionsApply(F.plan, { s })) do G.results.reactions[u] = rep end
@@ -3357,7 +3530,7 @@ end
 -- Called while the fight waits for the character's turn: drives the summon whose turn it is (looked for once a
 -- second), one attack per summon and round; a summon still holding its turn after that is asked to end it again.
 function G.summonStep(F, t)
-  if F.manual then return end
+  if F.manual or F.player then return end
   if F.summon then return G.summonAdvance(F, F.summon, t) end
   if t < (F.summonCheck or 0) then return end
   F.summonCheck = t + G.SUMMON_CHECK_MS
@@ -3434,7 +3607,7 @@ function G.step(F, t)
         return finish(F, string.format("round %d: %d summon attack(s) refused or never seen", last.r, last.summon_misses))
       end
       roundStart(F)
-      F.state, F.next, F.turnStart = F.manual and "player" or "act", t + G.ACT_DELAY_MS, t
+      F.state, F.next, F.turnStart = (F.manual or F.player) and "player" or "act", t + G.ACT_DELAY_MS, t
     elseif not F.manual and G.combatLost(F, t) then
       -- the combat ended (an item spell ended it, the enemies are not hostile): no turn will come, nothing to wait for
       F.recoveries = (F.recoveries or 0) + 1
@@ -3460,7 +3633,20 @@ function G.step(F, t)
       F.deadline = t + G.TURN_WAIT_MS
     end
   elseif F.state == "player" then
-    if not activeTurn(F.char) then F.state, F.deadline = "wait", t + 600000 end
+    if not activeTurn(F.char) then
+      local R = G.rounds[#G.rounds]
+      if R and F.player then
+        -- a player's turn: its outcomes come from the hit log (no planned actions to match), and the last round
+        -- ends the run as the turn is released, as a scripted one does
+        R.attacks = G.hitTally(R, G.hits, uuid(F.char))
+        R.tm.released = t - G.t0
+        if G.round >= F.rounds then
+          F.lastCut = true
+          return finish(F)
+        end
+      end
+      F.state, F.deadline = "wait", t + (F.player and G.TURN_WAIT_MS or 600000)
+    end
   elseif F.state == "act" and t >= F.next then
     local R = G.rounds[#G.rounds]
     if t - (F.turnStart or t) > G.ACT_MAX_MS then
