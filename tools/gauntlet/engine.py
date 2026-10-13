@@ -1,12 +1,12 @@
 """Talk to the running game through the mod's dev eval hook ("Dev": true in LootAdvisor_settings.json).
 
-    python tools/gauntlet/engine.py load            # gauntlet.lua + gauntlet_test.lua (server), gauntlet_ui.lua (F9)
+    python tools/gauntlet/engine.py load            # gauntlet.lua + gauntlet_test.lua (server), gauntlet_ui.lua (F11)
     python tools/gauntlet/engine.py probe           # API availability, party, position, difficulty -> JSON
     python tools/gauntlet/engine.py eval "return GAUNTLET.status"
     python tools/gauntlet/engine.py ceval "return GAUNTLET_UI ~= nil"   # client side
     python tools/gauntlet/engine.py survey undercity_lanes   # ground + bystanders of an arena / of every lane
     python tools/gauntlet/engine.py arm specs.json --pair 0 --side a --arena NAME --char UUID [--boss UUID]
-                                    [--rounds 16]   # the test file for the F9 popup and the test mod; --boss: the
+                                    [--rounds 16]   # the test file for the F11 popup and the test mod; --boss: the
                                                     # save's own boss (re-forced every run) instead of a new one
     python tools/gauntlet/engine.py disarm          # remove the test file: the test mod stays inert in every save
     python tools/gauntlet/engine.py mode automatic  # the popup's mode (manual | automatic)
@@ -63,6 +63,17 @@ class _Held:
             pass
 
 
+# Script Extender gives each mod its own globals: the harness the test mod loaded (Mods.LootAdvisorGauntletTest) is
+# not visible to the eval hook's mod, so every eval first points GAUNTLET, GAUNTLET_TEST and GAUNTLET_UI at the test
+# mod's copy when it has one (else the copy engine.py load put in the hook's own globals stays).
+TESTMOD_GLOBALS = {
+    "server": "local _tm = Mods and Mods.LootAdvisorGauntletTest\n"
+              "if _tm and _tm.GAUNTLET_TEST then GAUNTLET, GAUNTLET_TEST = _tm.GAUNTLET, _tm.GAUNTLET_TEST end\n",
+    "client": "local _tm = Mods and Mods.LootAdvisorGauntletTest\n"
+              "if _tm and _tm.GAUNTLET_UI then GAUNTLET_UI = _tm.GAUNTLET_UI end\n",
+}
+
+
 def ev(code, timeout=10.0, side="server"):
     """Run Lua in the game; returns what it printed / returned (or raises TimeoutError)."""
     base = os.path.join(SE_DIR, f"{PREFIX}_{side}")
@@ -70,7 +81,7 @@ def ev(code, timeout=10.0, side="server"):
     if os.path.exists(out):
         os.remove(out)
     with open(base + "_eval.lua", "w", encoding="utf-8") as f:
-        f.write(code)
+        f.write(TESTMOD_GLOBALS.get(side, "") + code)
     t0 = time.time()
     while time.time() - t0 < timeout:
         if os.path.exists(out):
@@ -106,7 +117,15 @@ def _load(src_name, dst_name, side):
               'if not f then return "compile " .. tostring(e) end\nreturn f()', side=side)
 
 
+TESTMOD_ARMED = ("local _tm = Mods and Mods.LootAdvisorGauntletTest\n"
+                 "return tostring(_tm and _tm.GAUNTLET_TESTMOD and _tm.GAUNTLET_TESTMOD.armed == true)")
+
+
 def load():
+    """The harness into the eval hook's globals; in a save where the test mod armed itself, its packed harness is
+    used instead (a second copy would answer the popup's commands and tick beside it)."""
+    if ev(TESTMOD_ARMED).strip() == "true":
+        return "the test mod's harness (from its pak) is loaded in this save: using it"
     return " / ".join([_load("gauntlet.lua", "LootAdvisor_gauntlet.lua", "server").strip(),
                        _load("gauntlet_test.lua", "LootAdvisor_gauntlet_test.lua", "server").strip(),
                        _load("gauntlet_ui.lua", "LootAdvisor_gauntlet_ui.lua", "client").strip()])

@@ -1,4 +1,4 @@
--- Loot Advisor gauntlet test mod (client). Loads the F9 window (gauntlet_ui.lua) only once the server says this save
+-- Loot Advisor gauntlet test mod (client). Loads the F11 window (gauntlet_ui.lua) only once the server says this save
 -- is the test's (BootstrapServer.lua's gate); in any other save it only asks the server once the game is running.
 
 GAUNTLET_TESTMOD_UI = GAUNTLET_TESTMOD_UI or { loaded = false }

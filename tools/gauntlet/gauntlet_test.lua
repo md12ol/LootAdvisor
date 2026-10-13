@@ -1,4 +1,4 @@
--- Gauntlet test mode (server side): the F9 popup's mode and Start for the one character, set and arena the test
+-- Gauntlet test mode (server side): the F11 popup's mode and Start for the one character, set and arena the test
 -- file names. Dev/test only, never in the player download: the test mod (tools/gauntlet/testmod) or
 -- tools/gauntlet/engine.py load runs it after gauntlet.lua.
 --

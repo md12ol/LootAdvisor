@@ -72,9 +72,9 @@ never save afterwards. It talks to the game through Loot Advisor's dev eval hook
 (`"Dev": true` in `LootAdvisor_settings.json`; setup in BG3Tools `tools/testing/README.md`, whose `cheat.py` gives the
 same engine shortcuts for other tests).
 ```bash
-python tools/gauntlet/engine.py load        # gauntlet.lua + gauntlet_test.lua (server), the F9 window gauntlet_ui.lua
+python tools/gauntlet/engine.py load        # gauntlet.lua + gauntlet_test.lua (server), the F11 window gauntlet_ui.lua
 python tools/gauntlet/engine.py probe       # API check, party, position, difficulty
-# manual runs: build the catalogue, then press F9 in the game and pick build, set, act and scenario
+# manual runs: build the catalogue, then press F11 in the game and pick build, set, act and scenario
 python tools/gauntlet/catalog.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json
 # scripted runs: pick pairs (optimizer set vs research set), write specs, run, report
 python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/optimizer/.cache/optimized.json     --control --select shadowheart:lightcleric:3 --out pairs.json
@@ -86,14 +86,14 @@ python tools/gauntlet/pairs.py --optimizer tools/optimizer --optimized tools/opt
 ```
 
 ### The test popup and the test mod
-F9 opens the test popup on top of the window: mode **Manual** (you play the character's turns) or **Automatic** (the
+F11 opens the test popup on top of the window: mode **Manual** (you play the character's turns) or **Automatic** (the
 plan plays them), **Start**, Stop, the status (Ready, Setting up, Fighting, Result, Setup failed) and the last
 result. Start runs the same setup as a scripted run: hit points, resources, cooldowns, concentration and carried
 statuses reset, the set and the build checked field by field (also: no story or mood status with a roll or damage
 effect and no tadpole power may be on, since the build, the set, the planned actions and the consumables give no such
 bonus; remove them from the test save once, the check lists any it finds and the run record keeps the list), the consumables prepared, the enemy at its arena spot with its forced stats.
 The enemy turns hostile only once that check has passed: a mismatch is shown in the popup and the fight does not
-start. Both modes write the same run record (with `test_mode` manual or automatic) and per-hit log. The mode starts
+start. Both modes write the same run record (with `test_mode` manual or automatic) and per-hit log. The popup sits over the top rows of the game's Load list: close it (F11) before loading. The mode starts
 as Manual after every load. A test save may keep its own boss standing in the arena (`--boss UUID`): its forced stats
 do not survive a reload, so every Start forces them again and the setup check reads them back.
 
@@ -115,7 +115,7 @@ earlier method (early stopping, the control gate, two lanes, the day-score repor
 The **test mod** loads the harness with the save, with no eval hook: a developer-only pak of its own
 (`LootAdvisorGauntletTest`, source in `tools/gauntlet/testmod/`), never part of the Loot Advisor pak or download (the
 tests check both). It does nothing in a save the test file does not name (its character in the party, the party in
-its arena's level); in the test save it loads the harness and offers F9.
+its arena's level); in the test save it loads the harness and offers F11.
 ```bash
 python tools/gauntlet/testmod.py build      # dist/LootAdvisorGauntletTest.pak (the harness files packed in)
 python tools/gauntlet/testmod.py install    # game closed: copies the pak and enables this mod only

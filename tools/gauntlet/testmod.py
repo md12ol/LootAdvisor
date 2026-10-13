@@ -1,4 +1,4 @@
-"""The gauntlet test mod: a developer-only pak that loads the gauntlet harness and the F9 test popup in the test save,
+"""The gauntlet test mod: a developer-only pak that loads the gauntlet harness and the F11 test popup in the test save,
 with no eval hook. It is its own mod (LootAdvisorGauntletTest) and never part of the Loot Advisor pak or download.
 
     python tools/gauntlet/testmod.py build              # -> dist/LootAdvisorGauntletTest.pak

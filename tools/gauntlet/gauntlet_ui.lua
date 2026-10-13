@@ -1,12 +1,13 @@
 -- Gauntlet window (client side, Script Extender IMGUI). Dev/test only: it is not part of the Loot Advisor pak; the
--- test mod (tools/gauntlet/testmod) or tools/gauntlet/engine.py load loads it into a running game. Hotkey F9 toggles
+-- test mod (tools/gauntlet/testmod) or tools/gauntlet/engine.py load loads it into a running game. Hotkey F11 toggles
 -- it. On top, the test popup (gauntlet_test.lua on the server): mode Manual / Automatic, Start, Stop, the status and
 -- the last result. Below, folded, the free runs: pick build, set, act and scenario from the catalogue and Start sets
 -- up the arena on the host character and hands its turns to you.
 
 GAUNTLET_UI = GAUNTLET_UI or {}
 local U = GAUNTLET_UI
-U.HOTKEY = U.HOTKEY or "F9"
+-- F11: the game itself uses F9 (photo mode), F10 (hides the HUD) and F8 (quickload); Loot and Build Advisor F6, F7
+U.HOTKEY = U.HOTKEY or "F11"
 
 local function try(f, ...)
   local ok, r = pcall(f, ...)
@@ -18,7 +19,8 @@ local SCENARIOS = { "boss", "pack", "defence", "longday" }
 local SCN_TEXT = { boss = "Boss (1 target)", pack = "Pack (4 targets)", defence = "Defence (attackers)",
   longday = "Long day (4 fights, short rests)" }
 local MODE_IDS = { "manual", "automatic" }
-local MODE_TEXT = { manual = "Manual (you play the turns)", automatic = "Automatic (the plan plays the turns)" }
+-- short labels; what each mode does is in the how-to
+local MODE_TEXT = { manual = "Manual", automatic = "Automatic" }
 
 -- The game's own panel look: dark brown panels, gold text and frames.
 U.COLORS = {
@@ -233,6 +235,8 @@ function U.Toggle()
   if not U.window then
     U.window = Ext.IMGUI.NewWindow("Gauntlet (test)")
     U.window.Closeable = true
+    -- the window fits its lines (status, result): at its first size the status and the result were cut off
+    pcall(function() U.window.AlwaysAutoResize = true end)
     U.window.Open = false
     style(U.window)
     U.BuildTest()
