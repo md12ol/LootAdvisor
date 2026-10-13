@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 6
+G.VERSION = 7
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1663,6 +1663,16 @@ local function onCastFailed(caster, spell)
     R.cast_fails[#R.cast_fails + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }
   end
 end
+-- UsingSpell: the engine started a cast. On the player path it tells a refused request from one the engine casts
+-- (G.playerRefused).
+local function onUsing(caster, spell)
+  if not G.fighting then return end
+  local R = G.rounds[#G.rounds]
+  if R then
+    R.usings = R.usings or {}
+    R.usings[#R.usings + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+  end
+end
 local function onReaction(who, interrupt)
   if not G.fighting then return end
   local R = G.rounds[#G.rounds]
@@ -1812,6 +1822,7 @@ G._on = {
   end,
   cast = function(caster, spell, ...) G.dispatch(onCast, { n = 1, caster }, caster, spell, ...) end,
   failed = function(caster, spell, ...) G.dispatch(onCastFailed, { n = 1, caster }, caster, spell, ...) end,
+  using = function(caster, spell, ...) G.dispatch(onUsing, { n = 1, caster }, caster, spell, ...) end,
   reaction = function(who, interrupt, ...) G.dispatch(onReaction, { n = 1, who }, who, interrupt, ...) end,
   status_on = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, true, obj, status, causee) end,
   status_off = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, false, obj, status, causee) end,
@@ -1844,6 +1855,11 @@ if not G._listeners5 then
     hit = pcall(function() return Ext.Events.DealDamage:Subscribe(on("hit")) end),
   }
 end
+-- added in version 7: the start of a cast
+if not G._listeners7 then
+  local function on(k) return function(...) pcall(G._on[k], ...) end end
+  G._listeners7 = { using = pcall(Ext.Osiris.RegisterListener, "UsingSpell", 5, "after", on("using")) }
+end
 
 -- ------------------------------------------------------------------------------------------------ real rolls
 -- Osiris casts (UseSpell, UseSpellAtPosition) are queued with the cast option IgnoreSpellRolls: no attack roll and no
@@ -1854,16 +1870,10 @@ end
 -- itself), and IgnoreTargetChecks (range and sight stay the harness's job, G.castSpot). Only the Osiris queue is
 -- edited: reaction casts are queued elsewhere with options of their own. The enemies are not in the set: they act
 -- through the game's AI, whose casts roll already. G.REAL_ROLLS = false, or a request with real_rolls = false
--- (run.py --no-real-rolls), keeps the casts that never roll, for comparison with older runs.
+-- (run.py --no-real-rolls), keeps the casts that never roll, for comparison with older runs. This edit is the old cast
+-- path's (G.PLAYER_CAST = false); the player path's requests carry no IgnoreSpellRolls to take off.
 G.REAL_ROLLS = true
 G.ROLL_OPTION = "IgnoreSpellRolls"
--- The player path (off by default until checked in game; a request's player_cast = true turns it on for a run): the
--- character's requests also lose the options that skip the engine's checks and carry FromClient, as the requests of a
--- player's click do, so the engine checks and pays costs (the off-hand half's bonus action too), range and line of
--- sight. Off: the request keeps them and the harness pays the costs itself.
-G.PLAYER_CAST = false
-G.PLAYER_STRIP = { IgnoreCastChecks = true, IgnoreTargetChecks = true }
-G.PLAYER_ADD = "FromClient"
 G.realCasters = G.realCasters or {}
 -- The cast options as names: a list or set from Lua, or the engine's text form "CastOptions(A,B)".
 function G.castOptionNames(v)
@@ -1885,12 +1895,10 @@ function G.rollRequests(list, casters)
     local cu = r and try(function() return r.Caster.Uuid.EntityUuid end)
     local c = cu and casters[cu]
     if c then
-      local keep, had, from = {}, false, false
+      local keep, had = {}, false
       for _, f in ipairs(G.castOptionNames(try(function() return r.CastOptions end))) do
-        if f == G.ROLL_OPTION or (c.player and G.PLAYER_STRIP[f]) then had = true else keep[#keep + 1] = f end
-        if f == G.PLAYER_ADD then from = true end
+        if f == G.ROLL_OPTION then had = true else keep[#keep + 1] = f end
       end
-      if c.player and not from then keep[#keep + 1] = G.PLAYER_ADD; had = true end
       if had and pcall(function() r.CastOptions = keep end) then
         n = n + 1
         local sp = try(function() return r.Spell.Prototype end) or "?"
@@ -1922,7 +1930,7 @@ end
 function G.addRealCaster(F, u)
   u = uuid(u)
   if not u or F.manual or not F.realRolls or (F.realCasters or {})[u] then return end
-  local c = { edits = {}, player = F.playerCast or nil }
+  local c = { edits = {} }
   F.realCasters = F.realCasters or {}
   F.realCasters[u], G.realCasters[u] = c, c
 end
@@ -2058,6 +2066,181 @@ function G.precheck(F)
   for _, r in ipairs(plan.rounds or {}) do for _, a in ipairs(r) do chainOf(a) end end
   for _, a in ipairs(plan.steady or {}) do chainOf(a) end
   for _, it in ipairs(plan.item_actions or {}) do check(it.spell, true) end
+  return out
+end
+
+-- ------------------------------------------------------------------------------------------------ player cast path
+-- The default for every scripted cast: the harness queues the request a player's click sends (FromClient, no option
+-- that skips a check), so the engine checks and pays the costs (the off-hand half's bonus action too), range and line
+-- of sight, and rolls. Checked in game with two hand crossbows: 10 of 10 such requests fired main hand + off-hand and
+-- took action 1 -> 0, bonus action 2 -> 1, as a click does; with no bonus action left (toggle on), no action or the
+-- target 21 m away (range 18 m) the engine refused it and spent nothing. The old path (G.PLAYER_CAST = false, a
+-- request's player_cast = false, run.py --old-cast-path): Osi.UseSpell, whose request skips the cost, range and sight
+-- checks, and the harness pays the costs itself.
+G.PLAYER_CAST = true
+G.PLAYER_OPTIONS = { "FromClient", "ShowPrepareAnimation", "AvoidDangerousAuras", "NoMovement" }
+-- The engine's spell types, which a request target's TargetingType takes.
+G.TARGETING_TYPES = { MultiStrike = true, Projectile = true, ProjectileStrike = true, Rush = true, Shout = true,
+  Storm = true, Target = true, Teleportation = true, Throw = true, Wall = true, Zone = true }
+-- How a request targets: the spell's own SpellType, nil when its data does not give one. Never guessed: a melee attack
+-- sent as Projectile took the action and the bonus action in game and hit nothing.
+function G.targetingType(spell)
+  local st = try(Ext.Stats.Get, spell)
+  local t = st and try(function() return st.SpellType end)
+  t = t ~= nil and tostring(t) or nil
+  return t and G.TARGETING_TYPES[t] and t or nil
+end
+-- The spell's id in the caster's spell book (its source and source type, as a click sends them); an upcast variant
+-- goes out under its base spell's entry. nil when neither is in the book.
+function G.bookSpellId(u, spell)
+  local e = ent(u)
+  local spells = e and try(function() return e.SpellBook.Spells end)
+  local n = spells and try(function() return #spells end) or 0
+  for _, want in ipairs({ spell, baseSpell(spell) }) do
+    for i = 1, n do
+      local id = try(function() return spells[i].Id end)
+      local proto = id and try(function() return id.Prototype end)
+      if proto == want then
+        return { Prototype = spell,
+          OriginatorPrototype = proto == spell and (try(function() return id.OriginatorPrototype end) or spell) or proto,
+          Source = try(function() return id.Source end), SourceType = try(function() return id.SourceType end),
+          ProgressionSource = try(function() return id.ProgressionSource end) }
+      end
+    end
+  end
+  return nil
+end
+function G.newGuid()
+  local r = math.random
+  return string.format("%08x-%04x-4%03x-a%03x-%06x%06x", r(0, 0x7fffffff), r(0, 0xffff), r(0, 0xfff), r(0, 0xfff),
+    r(0, 0xffffff), r(0, 0xffffff))
+end
+-- Queues the player-like request of caster u for spell at tgt (atPos: at its position, for a spell cast on the ground).
+-- -> the request, or nil and why it could not be sent
+function G.playerRequest(F, u, spell, tgt, atPos)
+  local id = G.bookSpellId(u, spell)
+  if not id then return nil, "not in the spell book" end
+  local tt = G.targetingType(spell)
+  if not tt then return nil, "the spell's data gives no SpellType" end
+  local x, y, z = xyz(tgt)
+  if not x then return nil, "no target position" end
+  local opts = {}
+  for _, o in ipairs(G.PLAYER_OPTIONS) do opts[#opts + 1] = o end
+  if F and F.realRolls == false then opts[#opts + 1] = G.ROLL_OPTION end
+  local target = { TargetingType = tt, Position = { x, y, z } }
+  if not atPos then target.Target = ent(tgt) end
+  local req = { CastOptions = opts, Caster = ent(u), Spell = id, Targets = { target }, RequestGuid = G.newGuid(),
+    field_A8 = 1 }
+  local list = try(function() return Ext.System.ServerCastRequest.OsirisCastRequests end)
+  if not list then return nil, "no cast request queue" end
+  local ok, err = pcall(function() list[#list + 1] = req end)
+  if not ok then return nil, "the queue refused the request: " .. tostring(err) end
+  return req
+end
+-- Does the run take the player path? Scripted runs do unless asked not to (player_cast = false); a person's own casts
+-- are theirs.
+function G.playerCastFor(req)
+  req = req or {}
+  if req.mode == "manual" then return false end
+  if req.player_cast == nil then return G.PLAYER_CAST == true end
+  return req.player_cast == true
+end
+-- One scripted cast by u, on the run's path. -> true, or false and why it could not be asked for
+function G.castRequest(F, u, spell, tgt, atPos)
+  if F.playerCast then
+    local req, why = G.playerRequest(F, u, spell, tgt, atPos)
+    return req ~= nil, why
+  end
+  if atPos then
+    local x, y, z = Osi.GetPosition(tgt)
+    return pcall(Osi.UseSpellAtPosition, u, spell, x, y, z, 1)
+  end
+  -- cast from where the character stands (the 5-argument UseSpell, "without move"): the harness moved it first when
+  -- the target was out of range or sight. Left to itself the engine stepped away from an enemy in melee before a
+  -- ranged attack or a projectile spell, the enemy's Attack of Opportunity interrupted the step and the cast was
+  -- refused (every Fire Bolt once the enemy stood 1 m away); the game lets a player shoot from where they stand
+  return pcall(Osi.UseSpell, u, spell, tgt, tgt, 1)
+end
+-- The engine sends a CastSpellFailed for every player-path request, also for the ones it then casts (in game: one,
+-- then UsingSpell 0.26 s later; a refused request: one or two and no UsingSpell). So a refusal counts once
+-- PLAYER_FAIL_MS have passed since the first one with no UsingSpell of the spell since the request. -> the failure row
+G.PLAYER_FAIL_MS = 1000
+function G.playerRefused(P, R, t)
+  local f = G.castRefused(P, R.cast_fails)
+  if not f then return nil end
+  for i = (P.using0 or 0) + 1, #(R.usings or {}) do
+    local x = R.usings[i]
+    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return nil end
+  end
+  P.failAt = P.failAt or t
+  if t - P.failAt < G.PLAYER_FAIL_MS then return nil end
+  return f
+end
+-- Cost lists added up per resource (kind and level).
+local function costKey(c) return tostring(c.kind) .. ":" .. tostring(c.level or 0) end
+local function addCosts(...)
+  local out, at = {}, {}
+  for i = 1, select("#", ...) do
+    for _, c in ipairs(select(i, ...) or {}) do
+      local k = costKey(c)
+      if at[k] then at[k].n = at[k].n + c.n
+      else at[k] = { kind = c.kind, level = c.level, n = c.n }; out[#out + 1] = at[k] end
+    end
+  end
+  return out
+end
+-- Why the engine refused a player-path cast (it gives no reason), checked in this order: resources (the costs, and the
+-- off-hand half's when the toggle was on), range, line of sight. -> kind ("resources" | "range" | "line of sight" |
+-- nil when none of them), text
+function G.playerFailReason(F, P)
+  local ok, why = canPay(F.char, addCosts(P.costs, P.toggled and P.dual or nil))
+  if not ok then return "resources", "no resource " .. tostring(why) end
+  if P.target and P.target ~= P.who then
+    local d = dist(F.char, P.target)
+    if P.range and d > P.range then return "range", string.format("out of range %.1f > %.1f m", d, P.range) end
+    if try(Osi.CanSee, F.char, P.target) == 0 then return "line of sight", "no line of sight to the target" end
+  end
+  return nil, "no reason shown by the engine"
+end
+-- The resources a cast can spend, read before and after it: action, bonus action, each cost's resource, and the pact
+-- slots (a spell slot cost a warlock pays with one).
+function G.costSnapshot(u, costs)
+  local snap = {}
+  local function take(kind, level)
+    local k = costKey({ kind = kind, level = level })
+    if snap[k] == nil then snap[k] = resAmount(u, kind, level) end
+  end
+  take("ActionPoint")
+  take("BonusActionPoint")
+  for _, c in ipairs(costs or {}) do take(c.kind, c.level) end
+  local pact = 0
+  for _, entry in ipairs(resList(u, "WarlockSpellSlot") or {}) do pact = pact + (entry.Amount or 0) end
+  snap.pact = pact
+  return snap
+end
+-- What a player-path cast spent against what it owes: every owed resource exactly (maybe: what it may also have spent,
+-- the off-hand half of a toggled attack whose damage row was not seen), and no action or bonus action beyond them. A
+-- spell slot paid with a pact slot counts. -> the mismatches, { cost, want, got } each; empty when it matches
+function G.costCheck(owed, maybe, before, after)
+  local want, extra = {}, {}
+  for _, c in ipairs(addCosts(owed)) do want[costKey(c)] = c.n end
+  for _, c in ipairs(addCosts(maybe)) do extra[costKey(c)] = c.n end
+  for k in pairs(extra) do if want[k] == nil then want[k] = 0 end end
+  for _, k in ipairs({ "ActionPoint:0", "BonusActionPoint:0" }) do if want[k] == nil then want[k] = false end end
+  local pact = (before.pact or 0) - (after.pact or 0)
+  local out = {}
+  for k, w in pairs(want) do
+    local got = (before[k] or 0) - (after[k] or 0)
+    if k:find("^SpellSlot:") and w and got < w and pact >= w - got then
+      pact = pact - (w - got)
+      got = w
+    end
+    local bad
+    if w == false then bad = got > 1e-6
+    else bad = got < w - 1e-6 or got > w + (extra[k] or 0) + 1e-6 end
+    if bad then out[#out + 1] = { cost = k, want = w or 0, got = got } end
+  end
+  table.sort(out, function(a, b) return a.cost < b.cost end)
   return out
 end
 
@@ -2376,27 +2559,32 @@ local function doAction(F, a, R, rec0)
     before[i] = resAmount(F.char, c.kind, c.level)
     res[#res + 1] = { kind = c.kind, level = c.level, before = before[i] }
   end
-  -- the off-hand half's cost, paid once its damage row shows it fired (G.settle)
+  -- the off-hand half's cost: the game takes it on the player path; on the old path the harness pays it once its
+  -- damage row shows it fired (G.settle)
   local dual = G.dualCosts(a.spell)
-  if dual then rec.dual_toggle = G.dualToggle(F, a) end
+  local toggled, togglePrev, toggleField
+  if dual then
+    toggled, togglePrev, toggleField = G.dualToggle(F, a)
+    rec.dual_toggle = toggled
+  end
   local dualBefore = {}
   for i, c in ipairs(dual or {}) do dualBefore[i] = resAmount(F.char, c.kind, c.level) end
   local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
-    dual = dual, dualBefore = dualBefore,
+    dual = dual, dualBefore = dualBefore, toggled = toggled, togglePrev = togglePrev, toggleField = toggleField,
+    player = F.playerCast == true, range = range, using0 = #(R.usings or {}),
+    snap0 = F.playerCast and G.costSnapshot(F.char, addCosts(costs, dual)) or nil,
     target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now(), fails0 = #(R.cast_fails or {}),
     reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
-  local okc, err
-  if a.at_target_pos then
-    local x, y, z = Osi.GetPosition(tgt)
-    okc, err = pcall(Osi.UseSpellAtPosition, F.char, a.spell, x, y, z, 1)
-  else
-    -- cast from where the character stands (the 5-argument UseSpell, "without move"): the harness moved it first when
-    -- the target was out of range or sight. Left to itself the engine stepped away from an enemy in melee before a
-    -- ranged attack or a projectile spell, the enemy's Attack of Opportunity interrupted the step and the cast was
-    -- refused (every Fire Bolt once the enemy stood 1 m away); the game lets a player shoot from where they stand
-    okc, err = pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)
+  local okc, err = G.castRequest(F, F.char, a.spell, tgt, a.at_target_pos)
+  if not okc then
+    G.restoreToggle(F, P)
+    if F.playerCast then
+      -- a planned cast the player path cannot send makes the run something other than the plan
+      G.castFault(R, a.spell, "request", "the player path cannot send it: " .. tostring(err))
+      return fallback("failed: player path: " .. tostring(err))
+    end
+    return fallback("engine refused " .. tostring(err))
   end
-  if not okc then return fallback("engine refused " .. tostring(err)) end
   -- when and at whom it was cast: G.castOutcomes reads the cast's hits from there
   rec.cast_t, rec.target_u = now() - (G.t0 or 0), uuid(tgt)
   rec.result = "pending"
@@ -2414,19 +2602,69 @@ function G.reservedBonus(F)
   return n
 end
 -- Dual Wielding Attacks, set before each main-hand attack (checked in game with two hand crossbows): toggled on, the
--- attack fires the off-hand shot with it and takes a bonus action, and with no bonus action left the game refuses
--- the whole attack; toggled off, one shot and the bonus action kept. On only when a bonus action is free beyond the
--- ones the turn's later planned bonus actions need (Hunter's Mark) and the plan does not say dual = false.
--- -> the toggle set
+-- attack fires the off-hand shot with it and takes a bonus action; toggled off, one shot and the bonus action kept.
+-- With no bonus action left a toggled click fires the main hand only, while the player path's request is refused
+-- outright, so the toggle is off for an attack with no bonus action (and put back after it, G.restoreToggle). On only
+-- when a bonus action is free beyond the ones the turn's later planned bonus actions need (Hunter's Mark) and the plan
+-- does not say dual = false. -> the toggle set, the toggle before, the toggle's field
 function G.dualToggle(F, a)
   local on = a.dual ~= false and resAmount(F.char, "BonusActionPoint") - G.reservedBonus(F) >= 1
-  local ranged = tostring(a.spell):find("^Projectile_") ~= nil
+  local field = tostring(a.spell):find("^Projectile_") ~= nil and "RangedToggledOn" or "MeleeToggledOn"
   local e = ent(F.char)
+  local prev = e and try(function() return e.DualWielding[field] end)
   pcall(function()
-    if ranged then e.DualWielding.RangedToggledOn = on else e.DualWielding.MeleeToggledOn = on end
+    e.DualWielding[field] = on
     e:Replicate("DualWielding")
   end)
-  return on
+  return on, prev, field
+end
+-- Puts the toggle back as it was before the pending cast's attack set it.
+function G.restoreToggle(F, P)
+  if P.togglePrev == nil or not P.toggleField then return end
+  local e = ent(F.char)
+  pcall(function()
+    e.DualWielding[P.toggleField] = P.togglePrev
+    e:Replicate("DualWielding")
+  end)
+  P.togglePrev = nil
+end
+-- A fault of a planned cast that makes the run invalid (G.judge, G.roundFault): kind "movement" (refused for range or
+-- line of sight: the plan's movement was wrong), "costs" (spent other than its costs), "request" (could not be sent).
+function G.castFault(R, spell, kind, why)
+  R.cast_faults = R.cast_faults or {}
+  R.cast_faults[#R.cast_faults + 1] = { r = R.r, spell = spell, kind = kind, why = why }
+end
+-- The player path's end of a cast: CastedSpell (after its damage rows), or PLAYER_END_MS after the first evidence.
+G.PLAYER_END_MS = 3000
+-- Did the pending cast's main hand land a row (hit or miss) on its target: a damage row from the character since the
+-- cast that is not the off-hand half's.
+function G.mainFired(P, dmg)
+  for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
+    local d = dmg[i]
+    if (d.source == P.who or d.owner == P.who) and d.target == P.target
+      and not tostring(d.cause or ""):find("Offhand", 1, true) then
+      return true
+    end
+  end
+  return false
+end
+-- After a player-path cast: what it spent against what it costs (G.costCheck). The off-hand half is owed when its row
+-- came; with the toggle on and the main hand's row in but no off-hand row (the target fell to the first shot) it may
+-- have been spent. An attack that landed nothing owes no off-hand half: a melee attack sent as a projectile took the
+-- action and the bonus action in game and hit nothing. A mismatch is a cast fault.
+function G.checkSpent(F, R, P)
+  local fired = P.dual and G.offhandFired(P, G.dmg)
+  P.rec.offhand_half = P.dual and (fired and "fired" or "none") or nil
+  local owed, maybe = P.costs, nil
+  if fired then owed = addCosts(P.costs, P.dual) elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end
+  local bad = G.costCheck(owed, maybe, P.snap0 or {}, G.costSnapshot(F.char, addCosts(P.costs, P.dual)))
+  if #bad == 0 then return end
+  P.rec.cost_mismatch = bad
+  local parts = {}
+  for _, m in ipairs(bad) do
+    parts[#parts + 1] = string.format("%s spent %s, owed %s", m.cost, tostring(m.got), tostring(m.want))
+  end
+  G.castFault(R, P.spell, "costs", "spent other than its costs: " .. table.concat(parts, "; "))
 end
 -- The off-hand half's damage row comes about 0.4 s after the main hand's.
 G.OFFHAND_MS = 900
@@ -2444,7 +2682,13 @@ function G.settle(F, R, t)
   local P = F.pending
   if not P then return true end
   local ev = G.castEvidence(P, R.casts, G.dmg, function(k, lv) return resAmount(F.char, k, lv) end)
-  if ev and P.dual and not P.dualDone then
+  if ev and P.player and not P.ended then
+    -- the engine spends at the cast's start: the check waits for its end, when the damage rows are in
+    P.tConf = P.tConf or t
+    if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end
+    P.ended = true
+  end
+  if ev and P.dual and not P.dualDone and not P.player then
     -- a main-hand attack that can fire the off-hand half: wait up to OFFHAND_MS after the confirmation for its row
     P.tConf = P.tConf or t
     if G.offhandFired(P, G.dmg) then
@@ -2458,7 +2702,8 @@ function G.settle(F, R, t)
   end
   if ev then
     F.pending = nil
-    pay(F.char, P.costs, P.before)
+    G.restoreToggle(F, P)
+    if P.player then G.checkSpent(F, R, P) else pay(F.char, P.costs, P.before) end
     P.rec.result, P.rec.confirmed, P.rec.ms = "done", ev, t - P.t0
     local a = P.a
     R.done[a.done_key or a.group or "free"] = true
@@ -2467,10 +2712,12 @@ function G.settle(F, R, t)
     return true
   end
   local waited = t - P.t0
-  -- the engine's own refusal ends the wait at once
-  local refused = G.castRefused(P, R.cast_fails)
+  -- the engine's own refusal ends the wait at once (on the player path once no cast followed it)
+  local refused
+  if P.player then refused = G.playerRefused(P, R, t) else refused = G.castRefused(P, R.cast_fails) end
   if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char))) then return false end
   F.pending = nil
+  G.restoreToggle(F, P)
   R.cast_misses = (R.cast_misses or 0) + 1
   -- what the engine saw at the miss (range, line of sight, the caster's statuses, reactions, movement), and why
   local moved
@@ -2479,6 +2726,15 @@ function G.settle(F, R, t)
     if x then moved = math.sqrt((x - P.pos0[1]) ^ 2 + (y - P.pos0[2]) ^ 2 + (z - P.pos0[3]) ^ 2) end
   end
   local reason = G.refusalReason(P, R, try(G.spellBlockers, F, P.spell, P.target) or {}, moved)
+  if P.player then
+    -- the player path: the reason is resources, range or line of sight; a refusal for range or sight means the plan
+    -- moved the character to the wrong spot, and the run is invalid with that reason. Never asked for again.
+    local kind, why = G.playerFailReason(F, P)
+    reason.why, P.rec.fail_kind = why, kind
+    if kind == "range" or kind == "line of sight" then
+      G.castFault(R, P.spell, "movement", "the plan's movement was wrong: " .. why)
+    end
+  end
   P.rec.result = refused and ("failed: refused by the engine: " .. reason.why)
     or string.format("failed: no cast seen within %.1f s (%s)", waited / 1000, reason.why)
   P.rec.miss = { dist = try(dist, F.char, P.target), sees = try(Osi.CanSee, F.char, P.target), refused = refused ~= nil,
@@ -2495,7 +2751,7 @@ function G.settle(F, R, t)
   -- retry_any_refusal (off by default) asks again for any refused cast
   local tries = P.a.retried or 0
   local anyRefusal = (F.req and F.req.retry_any_refusal) or G.RETRY_ANY_REFUSAL
-  if refused and tries < G.CAST_RETRIES
+  if refused and not P.player and tries < G.CAST_RETRIES
     and (tries > 0 or anyRefusal or reason.why:find("Attack of Opportunity", 1, true)) then
     R.cast_misses = R.cast_misses - 1
     P.rec.retried = P.rec.retried or P.rec.result
@@ -2690,6 +2946,11 @@ function G.judge(rounds, why, results, opts)
   end
   local refused = (results.summary or {}).cast_misses or 0
   if refused > 0 then causes[#causes + 1] = refused .. " planned cast(s) refused or never seen" end
+  for _, R in ipairs(rounds or {}) do
+    for _, f in ipairs(R.cast_faults or {}) do
+      causes[#causes + 1] = string.format("round %s, %s: %s", tostring(f.r or R.r), tostring(f.spell), tostring(f.why))
+    end
+  end
   local smiss = (results.summary or {}).summon_misses or 0
   if smiss > 0 then causes[#causes + 1] = smiss .. " summon attack(s) refused or never seen" end
   if results.rider_misses and #results.rider_misses > 0 then
@@ -3450,7 +3711,7 @@ function G.run(req)
   if G.LANES and G.LANES.on and not req.lane then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
     state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"], realRolls = G.realRollsFor(req),
-    playerCast = (req.player_cast == nil and G.PLAYER_CAST or req.player_cast == true) and (req.mode ~= "manual"),
+    playerCast = G.playerCastFor(req),
     popup = req.popup == true, player = req.mode ~= "manual" and req.play == "manual" }
   G.F = F
   G.reset()
@@ -3724,6 +3985,8 @@ end
 -- A round that already makes the run invalid (G.judge): with FAIL_FAST the run ends after it. -> the cause, or nil.
 function G.roundFault(F, R)
   if F.manual or F.player or not G.FAIL_FAST or R.downed then return nil end
+  local f = (R.cast_faults or {})[1]
+  if f then return string.format("round %d: %s: %s", R.r, tostring(f.spell), tostring(f.why)) end
   if (R.cast_misses or 0) > 0 then
     return string.format("round %d: %d planned cast(s) refused or never seen", R.r, R.cast_misses)
   end
@@ -3806,8 +4069,8 @@ end
 local function summonCast(F, S, t)
   local R = G.rounds[#G.rounds] or { casts = {} }
   S.P = { who = uuid(S.u), spell = S.spell, target = uuid(S.tgt), casts0 = #(R.casts or {}), dmg0 = #G.dmg,
-    fails0 = #(R.cast_fails or {}), t0 = t }
-  local ok, err = pcall(Osi.UseSpell, S.u, S.spell, S.tgt, S.tgt, 1)
+    fails0 = #(R.cast_fails or {}), t0 = t, player = F.playerCast == true, using0 = #(R.usings or {}) }
+  local ok, err = G.castRequest(F, S.u, S.spell, S.tgt)
   if not ok then return summonDone(F, S, "failed: engine refused " .. tostring(err), true, t) end
   S.rec.result = "pending"
 end
@@ -3859,7 +4122,8 @@ function G.summonAdvance(F, S, t)
     return summonDone(F, S, "done", false, t)
   end
   local waited = t - P.t0
-  local refused = G.castRefused(P, R.cast_fails)
+  local refused
+  if P.player then refused = G.playerRefused(P, R, t) else refused = G.castRefused(P, R.cast_fails) end
   if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(S.u))) then return end
   summonDone(F, S, refused and "failed: refused by the engine"
     or string.format("failed: no attack seen within %.1f s", waited / 1000), true, t)

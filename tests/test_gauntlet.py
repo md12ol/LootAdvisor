@@ -30,7 +30,10 @@
 - what the worn items add to the resources (a status an item puts on), spells allowed only out of combat never
   planned, the character's own summon's turn ended, bystanders in a lane moved away and back;
 - the control pair: equal damage and equal damage taken in the model, and the search for one;
-- real rolls: the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
+- the player cast path (the default): a click's request (FromClient, no Ignore* option, the spell's own SpellType as the
+  TargetingType, its spell-book id); refusals with their reason and never asked for again, range or sight make the run
+  invalid; what each cast spent checked against its costs; a toggled attack with no bonus action goes untoggled;
+- real rolls (old path): the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
   reaction queue), on by default and recorded per run; a missed cast is done, with its outcome; riders and the turns
   of party members outside the fight; run.py counts and reports only runs of the same kind.
 """
@@ -77,6 +80,11 @@ Osi = setmetatable({}, { __index = function() return function() return nil end e
 
 def lst(t):
     return [t[i + 1] for i in range(len(t))] if t is not None else None
+
+
+def seq(t, n):
+    """The first n values of a Lua list that may hold nils."""
+    return [t[i + 1] for i in range(n)]
 
 
 def lua_tests():
@@ -947,8 +955,7 @@ def evade_lua_tests(L):
 def dual_cost_tests(L):
     """A main-hand attack whose off-hand half fired (a damage row of cause Offhand) pays that half's bonus action
     (DualWieldingUseCosts), as the game does for a player; with no such row within OFFHAND_MS nothing more is paid.
-    The player cast path strips the options that skip the engine's checks and adds FromClient, only for its casters.
-    Hide is refused while the character is Threatened."""
+    The old path's request edit takes off IgnoreSpellRolls only. Hide is refused while the character is Threatened."""
     L.execute(r"""
       local G = GAUNTLET
       local stats = Ext.Stats.Get
@@ -1035,9 +1042,272 @@ def dual_cost_tests(L):
     check("dual wield: off when the plan says so, on the melee toggle for a melee attack",
           g.T_tno is False and g.T_tnoe is False, f"{g.T_tno} {g.T_tnoe}")
     o1, o2 = sorted(lst(g.T_opts1)), sorted(lst(g.T_opts2))
-    check("player cast: checks kept and FromClient added for a player-path caster only",
-          o1 == ["FromClient", "Other"] and o2 == ["IgnoreCastChecks"], f"{o1} {o2}")
+    check("old path: the request edit takes off IgnoreSpellRolls only",
+          o1 == ["IgnoreCastChecks", "IgnoreTargetChecks", "Other"] and o2 == ["IgnoreCastChecks"], f"{o1} {o2}")
     check("evade: Hide refused while Threatened", "Threatened" in str(g.T_hide.result), str(g.T_hide.result))
+    player_cast_tests(L)
+
+
+def player_cast_tests(L):
+    """The player path (the default): every scripted cast is queued as a player's click request (FromClient, no
+    Ignore* option) with the TargetingType of the spell's own SpellType (never guessed: no SpellType, no cast) and the
+    spell's spell-book id; the old path (player_cast = false) keeps Osi.UseSpell. The engine's CastSpellFailed that
+    precedes every accepted request is not a refusal; a real one is recorded with its reason (resources, range, line of
+    sight), never asked for again, and range or sight make the run invalid. After each cast the resources spent match
+    its costs (the off-hand half's bonus action when it fired), else the run is invalid. A toggled attack with no bonus
+    action left goes untoggled, and the toggle is put back after the attack."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local stats, eget, gpos, gres = Ext.Stats.Get, Ext.Entity.Get, Osi.GetPosition, Osi.GetActionResourceValuePersonal
+      local canSee, useSpell, sys = Osi.CanSee, Osi.UseSpell, Ext.System.ServerCastRequest
+      local DATA = {
+        Projectile_MainHandAttack = { SpellType = "Projectile", UseCosts = "ActionPoint:1",
+          DualWieldingUseCosts = "BonusActionPoint:1", TargetRadius = "18" },
+        Target_MainHandAttack = { SpellType = "Target", UseCosts = "ActionPoint:1",
+          DualWieldingUseCosts = "BonusActionPoint:1", TargetRadius = "1.5" },
+        Shout_Dash = { SpellType = "Shout", UseCosts = "BonusActionPoint:1" },
+        Zone_Thing = { SpellType = "Zone", UseCosts = "ActionPoint:1" },
+        Target_NoType = { UseCosts = "ActionPoint:1" },
+        Target_Odd = { SpellType = "Sideways", UseCosts = "ActionPoint:1" },
+      }
+      Ext.Stats.Get = function(s) return DATA[s] end
+      local book = {}
+      for _, s in ipairs({ "Projectile_MainHandAttack", "Target_MainHandAttack", "Shout_Dash", "Zone_Thing",
+        "Target_NoType", "Target_Odd", "Target_Upcast" }) do
+        book[#book + 1] = { Id = { Prototype = s, OriginatorPrototype = s, Source = "src-" .. s, SourceType = "WeaponSpell",
+          ProgressionSource = "prog" } }
+      end
+      local E = { c1 = { SpellBook = { Spells = book }, DualWielding = { RangedToggledOn = true, MeleeToggledOn = false },
+        Replicate = function() end }, b1 = { tag = "boss" } }
+      Ext.Entity.Get = function(u) return E[u] end
+      local POS = { c1 = { 0, 0, 0 }, b1 = { 10, 0, 0 } }
+      Osi.GetPosition = function(u) local p = POS[u]; if p then return p[1], p[2], p[3] end end
+      local RES = { ActionPoint = 1, BonusActionPoint = 2 }
+      Osi.GetActionResourceValuePersonal = function(_, k) return RES[k] or 0 end
+      Osi.CanSee = function() return 1 end
+      local used = {}
+      Osi.UseSpell = function(...) used[#used + 1] = { ... } end
+      local queue = {}
+      Ext.System.ServerCastRequest = { OsirisCastRequests = queue }
+
+      -- the targeting type from the spell's data
+      T_tt = { G.targetingType("Projectile_MainHandAttack"), G.targetingType("Target_MainHandAttack"),
+        G.targetingType("Shout_Dash"), G.targetingType("Zone_Thing") }
+      T_tt_none = { G.targetingType("Target_NoType") == nil, G.targetingType("Target_Odd") == nil,
+        G.targetingType("Missing") == nil }
+      -- the requests
+      local Fp = { char = "c1", playerCast = true, realRolls = true }
+      T_ok1 = G.castRequest(Fp, "c1", "Projectile_MainHandAttack", "b1")
+      T_ok2 = G.castRequest(Fp, "c1", "Target_MainHandAttack", "b1")
+      T_ok3 = G.castRequest(Fp, "c1", "Zone_Thing", "b1", true)
+      T_req = queue
+      local okn, whyn = G.castRequest(Fp, "c1", "Target_NoType", "b1")
+      local okb, whyb = G.castRequest(Fp, "c1", "Target_NotInBook", "b1")
+      T_refuse = { okn, whyn, okb, whyb, #queue }
+      local up = G.bookSpellId("c1", "Target_Upcast_3")
+      T_up = { up and up.Prototype, up and up.OriginatorPrototype, up and up.Source }
+      local Fnr = { char = "c1", playerCast = true, realRolls = false }
+      G.castRequest(Fnr, "c1", "Projectile_MainHandAttack", "b1")
+      T_noroll = queue[#queue].CastOptions
+      T_old = { G.castRequest({ char = "c1" }, "c1", "Projectile_MainHandAttack", "b1"), #used, #queue }
+
+      -- the CastSpellFailed that comes before every accepted request
+      local P = { who = "c1", spell = "Projectile_MainHandAttack", fails0 = 0, using0 = 0 }
+      local Rf = { cast_fails = { { who = "c1", spell = "Projectile_MainHandAttack" } },
+        usings = { { who = "c1", spell = "Projectile_MainHandAttack" } } }
+      T_spur = G.playerRefused(P, Rf, 0) == nil and G.playerRefused(P, Rf, 5000) == nil
+      local P2 = { who = "c1", spell = "Projectile_MainHandAttack", fails0 = 0, using0 = 0 }
+      local Rg = { cast_fails = { { who = "c1", spell = "Projectile_MainHandAttack" } }, usings = {} }
+      T_early = G.playerRefused(P2, Rg, 100) == nil
+      T_late = G.playerRefused(P2, Rg, 100 + G.PLAYER_FAIL_MS) ~= nil
+
+      -- the spending check
+      local A1 = { { kind = "ActionPoint", n = 1 } }
+      local B1 = { { kind = "BonusActionPoint", n = 1 } }
+      local s = function(ap, ba, extra) local t = { ["ActionPoint:0"] = ap, ["BonusActionPoint:0"] = ba, pact = 0 }
+        for k, v in pairs(extra or {}) do t[k] = v end return t end
+      T_cc_ok = #G.costCheck({ A1[1], B1[1] }, nil, s(1, 2), s(0, 1))
+      T_cc_extra = G.costCheck(A1, nil, s(1, 2), s(0, 1))
+      T_cc_maybe = { #G.costCheck(A1, B1, s(1, 2), s(0, 1)), #G.costCheck(A1, B1, s(1, 2), s(0, 2)) }
+      T_cc_short = G.costCheck(A1, nil, s(1, 2), s(1, 2))
+      T_cc_surge = #G.costCheck({ { kind = "ActionSurgePoint", n = 1 } }, nil,
+        s(0, 1, { ["ActionSurgePoint:0"] = 1 }), s(1, 1, { ["ActionSurgePoint:0"] = 0 }))
+      local slot = { { kind = "SpellSlot", level = 1, n = 1 }, { kind = "BonusActionPoint", n = 1 } }
+      local b4, a4 = s(1, 1, { ["SpellSlot:1"] = 0 }), s(1, 0, { ["SpellSlot:1"] = 0 })
+      b4.pact, a4.pact = 2, 1
+      T_cc_pact = #G.costCheck(slot, nil, b4, a4)
+
+      -- settle on the player path: waits for the cast's end, checks what it spent, no harness payment
+      local function pend(spell, toggled, opts)
+        opts = opts or {}
+        local rec = { result = "pending" }
+        local F = { char = "c1", cooldown = {}, plan = {}, S = {}, playerCast = true, req = opts.req or {} }
+        local costs = G._parseCosts(DATA[spell].UseCosts)
+        local dual = G.dualCosts(spell)
+        local all = {}
+        for _, c in ipairs(costs) do all[#all + 1] = c end
+        for _, c in ipairs(dual or {}) do all[#all + 1] = c end
+        F.pending = { a = { spell = spell, group = "action", retried = opts.retried }, rec = rec, costs = costs,
+          before = {}, res = {}, who = "c1", spell = spell, target = "b1", casts0 = 0, dmg0 = 0, t0 = 0, fails0 = 0,
+          using0 = 0, dual = dual, dualBefore = {}, toggled = toggled, player = true, range = opts.range,
+          snap0 = G.costSnapshot("c1", all), togglePrev = opts.prev, toggleField = opts.prev ~= nil and "RangedToggledOn" or nil }
+        local R = { r = 3, done = {}, casts = {}, actions = { rec } }
+        return F, R, rec
+      end
+      -- a toggled shot: the engine spends AP 1 and BA 1, main + off-hand rows, then CastedSpell
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      E.c1.DualWielding.RangedToggledOn = true
+      local F1, R1, rec1 = pend("Projectile_MainHandAttack", true, { prev = false })
+      RES.ActionPoint, RES.BonusActionPoint = 0, 1
+      G.dmg = { { source = "c1", target = "b1", cause = "Attack", amount = 9 } }
+      T_s_wait = G.settle(F1, R1, 100)
+      G.dmg[#G.dmg + 1] = { source = "c1", target = "b1", cause = "Offhand", amount = 4 }
+      R1.casts[1] = { who = "c1", spell = "Projectile_MainHandAttack" }
+      T_s_done = G.settle(F1, R1, 1500)
+      T_s_rec = { rec1.result, rec1.offhand_half, R1.cast_faults == nil, RES.BonusActionPoint,
+        E.c1.DualWielding.RangedToggledOn }
+      -- a melee attack sent the wrong way: AP and BA gone, nothing hit
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      local F2, R2, rec2 = pend("Target_MainHandAttack", true)
+      RES.ActionPoint, RES.BonusActionPoint = 0, 1
+      G.dmg = {}
+      R2.casts[1] = { who = "c1", spell = "Target_MainHandAttack" }
+      G.settle(F2, R2, 1500)
+      T_bug = { rec2.result, R2.cast_faults and R2.cast_faults[1].kind, R2.cast_faults and R2.cast_faults[1].why,
+        G.roundFault({ S = {} }, R2) }
+      T_bug_judge = G.judge({ R2 }, "rounds done", { summary = {}, prep = {} }, {})
+      -- a refused shot 21 m out of an 18 m range: recorded, never asked for again, the run invalid
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      POS.b1 = { 21, 0, 0 }
+      local F3, R3, rec3 = pend("Projectile_MainHandAttack", true, { range = 18, req = { retry_any_refusal = true } })
+      G.dmg = {}
+      R3.cast_fails = { { who = "c1", spell = "Projectile_MainHandAttack" } }
+      local w1 = G.settle(F3, R3, 100)
+      local w2 = G.settle(F3, R3, 100 + G.PLAYER_FAIL_MS)
+      T_range = { w1, w2, rec3.result, rec3.fail_kind, rec3.retries, R3.cast_faults and R3.cast_faults[1].kind,
+        R3.cast_misses, F3.pending == nil }
+      -- refused for resources (toggled with no bonus action): recorded, not a movement fault
+      POS.b1 = { 10, 0, 0 }
+      local F4, R4, rec4 = pend("Projectile_MainHandAttack", true, { range = 18 })
+      RES.BonusActionPoint = 0
+      R4.cast_fails = { { who = "c1", spell = "Projectile_MainHandAttack" } }
+      G.settle(F4, R4, 100)
+      G.settle(F4, R4, 100 + G.PLAYER_FAIL_MS)
+      T_res = { rec4.fail_kind, R4.cast_faults == nil, rec4.result }
+      -- no line of sight
+      RES.BonusActionPoint = 2
+      Osi.CanSee = function() return 0 end
+      local F5, R5, rec5 = pend("Projectile_MainHandAttack", false, { range = 18 })
+      R5.cast_fails = { { who = "c1", spell = "Projectile_MainHandAttack" } }
+      G.settle(F5, R5, 100)
+      G.settle(F5, R5, 100 + G.PLAYER_FAIL_MS)
+      T_los = { rec5.fail_kind, R5.cast_faults and R5.cast_faults[1].kind }
+      Osi.CanSee = function() return 1 end
+
+      -- doAction: no bonus action -> untoggled; a spell with no SpellType is not cast
+      G.dmg = {}
+      RES.ActionPoint, RES.BonusActionPoint = 1, 0
+      E.c1.DualWielding.RangedToggledOn = true
+      local atk = { spell = "Projectile_MainHandAttack", group = "action", target = "@boss" }
+      local Fd = { char = "c1", enemies = { "b1" }, cooldown = {}, afford = function() return true end, plan = {}, S = {},
+        qi = 1, queue = { atk }, playerCast = true, realRolls = true }
+      local Rd = { r = 1, done = {}, actions = {}, casts = {} }
+      local n0 = #queue
+      G._doAction(Fd, atk, Rd)
+      T_d = { Rd.actions[1].dual_toggle, E.c1.DualWielding.RangedToggledOn, #queue - n0, Fd.pending and Fd.pending.player,
+        Fd.pending and Fd.pending.togglePrev }
+      Fd.pending = nil
+      local Rn = { r = 1, done = {}, actions = {}, casts = {} }
+      G._doAction(Fd, { spell = "Target_NoType", group = "action", target = "@boss" }, Rn)
+      T_dn = { Rn.actions[1].result, Rn.cast_faults and Rn.cast_faults[1].kind, Fd.pending == nil }
+
+      -- the default and the old path's switch
+      T_default = G.PLAYER_CAST
+
+      Ext.Stats.Get, Ext.Entity.Get, Osi.GetPosition, Osi.GetActionResourceValuePersonal = stats, eget, gpos, gres
+      Osi.CanSee, Osi.UseSpell, Ext.System.ServerCastRequest = canSee, useSpell, sys
+      G.dmg = {}
+    """)
+    g = L.globals()
+    check("player cast: TargetingType from the spell's SpellType (Projectile, Target, Shout, Zone)",
+          lst(g.T_tt) == ["Projectile", "Target", "Shout", "Zone"], str(lst(g.T_tt)))
+    check("player cast: no SpellType, or one the engine does not have, gives no TargetingType",
+          all(lst(g.T_tt_none)), str(lst(g.T_tt_none)))
+    q = [g.T_req[i + 1] for i in range(3)]
+    opts = [sorted(lst(r.CastOptions)) for r in q]
+    check("player cast: the request carries FromClient and no Ignore* option, as a click's",
+          g.T_ok1 is True and all(o == sorted(["FromClient", "ShowPrepareAnimation", "AvoidDangerousAuras",
+                                                "NoMovement"]) for o in opts), str(opts))
+    check("player cast: ranged attack as Projectile, melee attack as Target, a zone spell as Zone",
+          [r.Targets[1].TargetingType for r in q] == ["Projectile", "Target", "Zone"],
+          str([r.Targets[1].TargetingType for r in q]))
+    check("player cast: an attack names its target, a ground spell only the position",
+          q[0].Targets[1].Target.tag == "boss" and q[1].Targets[1].Target.tag == "boss"
+          and q[2].Targets[1].Target is None and q[2].Targets[1].Position[1] == 10)
+    check("player cast: the spell id from the spell book (source, source type)",
+          q[0].Spell.Source == "src-Projectile_MainHandAttack" and q[0].Spell.SourceType == "WeaponSpell"
+          and q[0].Spell.Prototype == "Projectile_MainHandAttack", str(q[0].Spell.Source))
+    rf = seq(g.T_refuse, 5)
+    check("player cast: no SpellType or not in the spell book: nothing queued, the reason given",
+          rf[0] is False and "SpellType" in str(rf[1]) and rf[2] is False and "spell book" in str(rf[3])
+          and rf[4] == 3, str(rf))
+    check("player cast: an upcast goes out under its base spell's book entry",
+          seq(g.T_up, 3) == ["Target_Upcast_3", "Target_Upcast", "src-Target_Upcast"], str(seq(g.T_up, 3)))
+    check("player cast: a run without real rolls asks for none", "IgnoreSpellRolls" in lst(g.T_noroll))
+    check("player cast: the old path still casts with Osi.UseSpell", seq(g.T_old, 3) == [True, 1, 4], str(seq(g.T_old, 3)))
+    check("player cast: the CastSpellFailed before an accepted request is not a refusal", g.T_spur is True)
+    check("player cast: a refusal counts once PLAYER_FAIL_MS passed with no UsingSpell",
+          g.T_early is True and g.T_late is True, f"{g.T_early} {g.T_late}")
+    check("spent: a toggled shot that fired both halves owes action + bonus action", g.T_cc_ok == 0, str(g.T_cc_ok))
+    ce = g.T_cc_extra
+    check("spent: a bonus action spent and not owed is a mismatch",
+          len(ce) == 1 and ce[1].cost == "BonusActionPoint:0" and ce[1].got == 1, str(len(ce)))
+    check("spent: the off-hand half may be spent when its row did not come (toggle on)",
+          lst(g.T_cc_maybe) == [0, 0], str(lst(g.T_cc_maybe)))
+    check("spent: an owed action not spent is a mismatch", len(g.T_cc_short) == 1, str(len(g.T_cc_short)))
+    check("spent: an action gained (Action Surge) is not a mismatch", g.T_cc_surge == 0, str(g.T_cc_surge))
+    check("spent: a spell slot paid with a pact slot counts", g.T_cc_pact == 0, str(g.T_cc_pact))
+    sr = seq(g.T_s_rec, 5)
+    check("player cast: settle waits for the cast's end (CastedSpell), not the resource drop",
+          g.T_s_wait is False and g.T_s_done is True, f"{g.T_s_wait} {g.T_s_done}")
+    check("player cast: a toggled shot that matches its costs is done, the harness pays nothing, the toggle put back",
+          sr[0] == "done" and sr[1] == "fired" and sr[2] is True and sr[3] == 1 and sr[4] is False, str(sr))
+    bug = seq(g.T_bug, 4)
+    check("player cast: action + bonus action spent and nothing hit (melee sent as a projectile) fails the run",
+          bug[0] == "done" and bug[1] == "costs" and "BonusActionPoint" in str(bug[2])
+          and "round 3" in str(bug[3]) and "spent other than its costs" in str(bug[3]), str(bug))
+    jc = lst(g.T_bug_judge.causes)
+    check("player cast: a cost mismatch is a cause in the run's verdict",
+          g.T_bug_judge.valid is False and any("spent other than its costs" in c for c in jc), str(jc))
+    rg = seq(g.T_range, 8)
+    check("player cast: a refusal waits PLAYER_FAIL_MS, then fails with its reason (out of range)",
+          rg[0] is False and rg[1] is True and "out of range 21.0 > 18.0" in str(rg[2]) and rg[3] == "range", str(rg))
+    check("player cast: a refusal is never asked for again (even with retry_any_refusal)",
+          rg[4] is None and rg[6] == 1 and rg[7] is True, str(rg))
+    check("player cast: refused for range = the plan's movement was wrong, the run invalid", rg[5] == "movement", str(rg))
+    rs = seq(g.T_res, 3)
+    check("player cast: refused for resources is recorded as such, not a movement fault",
+          rs[0] == "resources" and rs[1] is True and "BonusActionPoint" in str(rs[2]), str(rs))
+    check("player cast: refused with no line of sight = a movement fault",
+          seq(g.T_los, 2) == ["line of sight", "movement"], str(seq(g.T_los, 2)))
+    d = seq(g.T_d, 5)
+    check("dual wield: no bonus action left -> the attack goes untoggled (the request is not refused), toggle kept to put back",
+          d[0] is False and d[1] is False and d[2] == 1 and d[3] is True and d[4] is True, str(d))
+    dn = seq(g.T_dn, 3)
+    check("player cast: a planned spell with no SpellType is not cast and fails the run",
+          "player path" in str(dn[0]) and dn[1] == "request" and dn[2] is True, str(dn))
+    check("player cast: the default path", g.T_default is True)
+    L.execute(r"""
+      local G = GAUNTLET
+      T_pc = { G.playerCastFor({ mode = "scripted" }), G.playerCastFor({ mode = "scripted", player_cast = false }),
+        G.playerCastFor({ mode = "manual" }), G.playerCastFor({ mode = "scripted", player_cast = true }) }
+      G.PLAYER_CAST = false
+      T_pc_off = G.playerCastFor({ mode = "scripted" })
+      G.PLAYER_CAST = true
+    """)
+    check("player cast: scripted runs take it unless player_cast = false; manual runs never",
+          seq(L.globals().T_pc, 4) == [True, False, False, True] and L.globals().T_pc_off is False,
+          str(seq(L.globals().T_pc, 4)))
 
 
 def verdict_tests(L):
@@ -2575,7 +2845,7 @@ def idle_turn_tests(L):
 
 def real_rolls_py_tests(R):
     """run.py: every record says whether it rolled (older ones did not); --repeats and the report count only runs of
-    the same kind; --no-real-rolls goes into the request."""
+    the same kind; --no-real-rolls and --old-cast-path go into the request."""
     check("rolls: older records ran without rolls, new ones say so",
           R.rolls_of({}) is False and R.rolls_of({"real_rolls": True}) is True and
           R.rolls_of({"req": {"real_rolls": True}}) is True and R.rolls_of({"real_rolls": False}) is False)
@@ -2583,6 +2853,11 @@ def real_rolls_py_tests(R):
     p = {"specs": {"a": {"act": 3}}}
     on, off = A_(), A_()
     off.no_real_rolls = True
+    old = A_()
+    old.old_cast_path = True
+    check("player cast: requests leave the path to the harness unless --old-cast-path",
+          R._req(on, 0, p, "a", "boss", False, "c")["player_cast"] is None
+          and R._req(old, 0, p, "a", "boss", False, "c")["player_cast"] is False)
     check("rolls: requests roll unless --no-real-rolls", R._req(on, 0, p, "a", "boss", False, "c")["real_rolls"] is True
           and R._req(off, 0, p, "a", "boss", False, "c")["real_rolls"] is False)
     d = tempfile.mkdtemp(prefix="gauntlet_rolls_")
@@ -4471,8 +4746,8 @@ MUTATIONS = [
     ("party: player characters outside DB_Players left out", GL,
      "if u and not seen[u] and try(Osi.IsPlayer, u) == 1 then", "if false then"),
     ("hostility: only one way", GL, "  for _, p in ipairs({ { a, b }, { b, a } }) do", "  for _, p in ipairs({ { a, b } }) do"),
-    ("cast: the engine moves before a cast", GL, "pcall(Osi.UseSpell, F.char, a.spell, tgt, tgt, 1)",
-     "pcall(Osi.UseSpell, F.char, a.spell, tgt)"),
+    ("cast: the engine moves before a cast", GL, "  return pcall(Osi.UseSpell, u, spell, tgt, tgt, 1)",
+     "  return pcall(Osi.UseSpell, u, spell, tgt)"),
     ("grants: duplicate game rows counted twice", PL, "            if key in seen:\n                continue", "            pass"),
     ("grants: race passives removed", PL, "    remove = sorted(all_class_passives - set(passives) - race_passives)",
      "    remove = sorted(all_class_passives - set(passives))"),
@@ -4551,7 +4826,9 @@ MUTATIONS = [
     ("encumbrance: no carry boost", GL, "if addBoost then boost(u, G.CARRY_BOOST) end", "if false then end"),
     ("encumbrance: verdict ignores it", GL, "if results.encumbered and #results.encumbered > 0 then", "if false then"),
     ("items: earlier runs' items kept", GL, "if pcall(Osi.RequestDelete, it) then n = n + 1 end", "n = n + 1"),
-    ("refusal: CastSpellFailed ignored", GL, "local refused = G.castRefused(P, R.cast_fails)", "local refused = nil"),
+    ("refusal: CastSpellFailed ignored", GL,
+     "if P.player then refused = G.playerRefused(P, R, t) else refused = G.castRefused(P, R.cast_fails) end",
+     "refused = nil"),
     ("refusal: any caster's failure counts", GL, "if f.who == P.who and baseSpell(f.spell) == baseSpell(P.spell) then",
      "if baseSpell(f.spell) == baseSpell(P.spell) then"),
     ("refusal: Attack of Opportunity not named", GL,
@@ -4616,8 +4893,8 @@ MUTATIONS = [
     ("summon: its damage not the side's", GL, '(F.summons or {})[row.source or ""] == true', "false"),
     ("summon: an attack counted without evidence", GL, "  local ev = G.castEvidence(P, R.casts, G.dmg, nil)",
      '  local ev = "cast"'),
-    ("summon: the engine moves it before the attack", GL, "pcall(Osi.UseSpell, S.u, S.spell, S.tgt, S.tgt, 1)",
-     "pcall(Osi.UseSpell, S.u, S.spell, S.tgt)"),
+    ("summon: the engine moves it before the attack", GL, "local ok, err = G.castRequest(F, S.u, S.spell, S.tgt)",
+     "local ok, err = pcall(Osi.UseSpell, S.u, S.spell, S.tgt)"),
     ("item rule: the item takes the first action in a surge round", GL,
      '    elseif it.group == "action" and G.hasSurge(out) then', "    elseif false then"),
     ("toggles: never switched", GL, "    if before ~= nil and before ~= on then rec.method = flip(u, id, on) end", ""),
@@ -4743,10 +5020,43 @@ MUTATIONS = [
      "  local on = a.dual ~= false and resAmount(F.char, \"BonusActionPoint\") >= 1"),
     ("dual wield: optional bonus actions reserved", GL, "    if q.group == \"bonus\" and not q.optional then n = n + 1 end",
      "    if q.group == \"bonus\" then n = n + 1 end"),
-    ("dual wield: the toggle never set", GL, "  if dual then rec.dual_toggle = G.dualToggle(F, a) end\n", ""),
-    ("player cast: FromClient not added", GL, "      if c.player and not from then keep[#keep + 1] = G.PLAYER_ADD; had = true end\n",
-     ""),
-    ("player cast: every caster's checks stripped", GL, "(c.player and G.PLAYER_STRIP[f])", "G.PLAYER_STRIP[f]"),
+    ("dual wield: the toggle never set", GL, "    toggled, togglePrev, toggleField = G.dualToggle(F, a)\n", ""),
+    ("dual wield: the toggle not put back", GL, "    e.DualWielding[P.toggleField] = P.togglePrev\n", ""),
+    ("player cast: not the default", GL, "G.PLAYER_CAST = true\n", "G.PLAYER_CAST = false\n"),
+    ("player cast: the old path gone", GL, "  if F.playerCast then\n    local req, why", "  if true then\n    local req, why"),
+    ("player cast: an Ignore* option kept", GL, '{ "FromClient", "ShowPrepareAnimation",',
+     '{ "FromClient", "IgnoreCastChecks", "ShowPrepareAnimation",'),
+    ("player cast: the TargetingType guessed", GL, "  return t and G.TARGETING_TYPES[t] and t or nil",
+     '  return t or "Projectile"'),
+    ("player cast: no rolls asked for anyway", GL, "  if F and F.realRolls == false then opts", "  if false then opts"),
+    ("player cast: the CastSpellFailed before an accepted cast counted as a refusal", GL,
+     "    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return nil end\n", ""),
+    ("player cast: a refusal not waited for", GL, "  if t - P.failAt < G.PLAYER_FAIL_MS then return nil end\n", ""),
+    ("player cast: a refusal asked for again", GL, "  if refused and not P.player and tries < G.CAST_RETRIES",
+     "  if refused and tries < G.CAST_RETRIES"),
+    ("player cast: a range or sight refusal leaves the run valid", GL,
+     '      G.castFault(R, P.spell, "movement", "the plan\'s movement was wrong: " .. why)\n', ""),
+    ("player cast: a spell it cannot send leaves the run valid", GL,
+     '      G.castFault(R, a.spell, "request", "the player path cannot send it: " .. tostring(err))\n', ""),
+    ("player cast: what was spent never checked", GL,
+     "    if P.player then G.checkSpent(F, R, P) else pay(F.char, P.costs, P.before) end",
+     "    if not P.player then pay(F.char, P.costs, P.before) end"),
+    ("player cast: checked before the cast's end", GL,
+     '    if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end\n', ""),
+    ("player cast: an attack that hit nothing may owe the off-hand half", GL,
+     "elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end", "elseif P.toggled then maybe = P.dual end"),
+    ("spent: a bonus action not owed may be spent", GL,
+     '"BonusActionPoint:0" }) do if want[k] == nil then want[k] = false end',
+     '"BonusActionPoint:0" }) do if want[k] == nil then want[k] = 0 end'),
+    ("spent: a gained action is a mismatch", GL, "    if w == false then bad = got > 1e-6\n",
+     "    if w == false then bad = got ~= 0\n"),
+    ("player cast: a cast fault not in the verdict", GL,
+     '      causes[#causes + 1] = string.format("round %s, %s: %s", tostring(f.r or R.r), tostring(f.spell), '
+     'tostring(f.why))\n', ""),
+    ("player cast: a cast fault does not end the round", GL,
+     '  if f then return string.format("round %d: %s: %s", R.r, tostring(f.spell), tostring(f.why)) end\n', ""),
+    ("player cast: --old-cast-path ignored", RN, '"player_cast": False if getattr(a, "old_cast_path", False) else None',
+     '"player_cast": None'),
     ("evade: Hide while Threatened", GL,
      '  if tostring(a.spell):find("^Shout_Hide") and try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then',
      "  if false then"),
@@ -4784,7 +5094,7 @@ MUTATIONS = [
     ("plan gaps: Destructive Wrath on every damage type", PL,
      'for e, t in sp["dmg"] if t in ("Lightning", "Thunder")', 'for e, t in sp["dmg"]'),
     ("rolls: IgnoreSpellRolls kept", GL,
-     "if f == G.ROLL_OPTION or (c.player and G.PLAYER_STRIP[f]) then had = true else keep[#keep + 1] = f end",
+     "if f == G.ROLL_OPTION then had = true else keep[#keep + 1] = f end",
      "keep[#keep + 1] = f; had = true"),
     ("rolls: every caster's requests edited", GL, "    local c = cu and casters[cu]\n",
      "    local c = cu and (casters[cu] or { edits = {} })\n"),
