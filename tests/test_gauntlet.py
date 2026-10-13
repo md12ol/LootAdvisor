@@ -959,6 +959,24 @@ def dual_cost_tests(L):
       local P = { who = "c1", dmg0 = 0 }
       T_fired = G.offhandFired(P, { { source = "c1", cause = "Attack" }, { source = "c1", cause = "Offhand" } })
       T_notfired = G.offhandFired(P, { { source = "c1", cause = "Attack" }, { source = "e1", cause = "Offhand" } })
+      -- settle: a confirmed main-hand cast waits for its off-hand row up to OFFHAND_MS, then pays (or not)
+      local function pend(rows)
+        local rec = { result = "pending" }
+        local F = { char = "c1", cooldown = {}, plan = {}, S = {} }
+        F.pending = { a = { spell = "Main", group = "action" }, rec = rec, costs = {}, before = {}, res = {}, who = "c1",
+          spell = "Main", target = "b1", casts0 = 0, dmg0 = 0, t0 = 0, dual = G.dualCosts("Main"), dualBefore = {} }
+        local R = { r = 1, done = {}, casts = { { who = "c1", spell = "Main" } } }
+        G.dmg = rows
+        return F, R, rec
+      end
+      local F1, R1, rec1 = pend({ { source = "c1", target = "b1", cause = "Attack", amount = 5 } })
+      T_wait = G.settle(F1, R1, 100)
+      G.dmg[#G.dmg + 1] = { source = "c1", target = "b1", cause = "Offhand", amount = 4 }
+      T_paid = G.settle(F1, R1, 500) and rec1.offhand_half
+      local F2, R2, rec2 = pend({ { source = "c1", target = "b1", cause = "Attack", amount = 5 } })
+      G.settle(F2, R2, 100)
+      T_none = G.settle(F2, R2, 100 + G.OFFHAND_MS + 1) and rec2.offhand_half
+      G.dmg = {}
       Ext.Stats.Get = stats
       local req = { { Caster = { Uuid = { EntityUuid = "c1" } }, Spell = { Prototype = "S" },
                       CastOptions = { "IgnoreSpellRolls", "IgnoreCastChecks", "IgnoreTargetChecks", "Other" } },
@@ -978,6 +996,9 @@ def dual_cost_tests(L):
     check("dual wield: the off-hand half's cost read from DualWieldingUseCosts",
           g.T_dc is not None and g.T_dc[1].kind == "BonusActionPoint" and g.T_dc0 is None)
     check("dual wield: paid only when the character's Offhand row came", g.T_fired and not g.T_notfired)
+    check("dual wield: a confirmed main-hand cast waits for its off-hand row, then pays its bonus action",
+          g.T_wait is False and g.T_paid == "paid", f"{g.T_wait} {g.T_paid}")
+    check("dual wield: no off-hand row within OFFHAND_MS: nothing more paid", g.T_none == "none", str(g.T_none))
     o1, o2 = sorted(lst(g.T_opts1)), sorted(lst(g.T_opts2))
     check("player cast: checks kept and FromClient added for a player-path caster only",
           o1 == ["FromClient", "Other"] and o2 == ["IgnoreCastChecks"], f"{o1} {o2}")
@@ -4363,8 +4384,10 @@ MUTATIONS = [
     ("plan: Dread Ambusher waits for the action", PL,
      'opening.insert(0, A(dread, "free", "@boss", "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))',
      'opening.append(A(spell, "free", "@boss", "Dread Ambusher attack", requires="action"))'),
-    ("plan: status-granted spells expected in the book", PL, '                if not a.get("granted_by"):',
-     "                if True:"),
+    ("plan: status-granted spells expected in the book", PL,
+     '                if not a.get("granted_by") and not a.get("move_to"):', '                if not a.get("move_to"):'),
+    ("evade: the move expected in the book", PL,
+     '                if not a.get("granted_by") and not a.get("move_to"):', '                if not a.get("granted_by"):'),
     ("plan: item spells the model dropped are intended", PL,
      'return any(e.get("spell") == spell and not e.get("dropped") and', 'return any(e.get("spell") == spell and'),
     ("plan: the test plan's toggles ignored", PL, "    if plan_toggles is not None:", "    if False:"),
@@ -4431,7 +4454,7 @@ MUTATIONS = [
     ("evade: a leave spot inside 3 m of the boss", GL,
      "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7",
      "    local clear = true"),
-    ("dual wield: the off-hand half never paid", GL, "      pay(F.char, P.dual, P.dualBefore)\n", ""),
+    ("dual wield: the off-hand half never paid", GL, "    if G.offhandFired(P, G.dmg) then\n", "    if false then\n"),
     ("dual wield: any Offhand row counted", GL,
      "    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then",
      "    if tostring(d.cause or \"\"):find(\"Offhand\", 1, true) then"),
@@ -4443,8 +4466,9 @@ MUTATIONS = [
      "  if false then"),
     ("evade: the plan ignores the model's choice", PL, '        if ch.get("evade") and mode == "ranged":',
      "        if False:"),
-    ("evade: the off-hand shots counted as failed", PL,
-     "            bonus_steady = [dict(a, optional=True) for a in bonus_steady]", "            pass"),
+    ("plan: the off-hand shots counted as failed", PL,
+     'bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot", optional=True))',
+     'bonus_steady.append(A("Projectile_OffhandAttack", "bonus", "@boss", "off-hand shot"))'),
     ("plan: round 1 leaves Fast Hands' bonus action unused", PL,
      "        bon = [bonus_open[i]] + list(bonus_steady[:n_bonus - 1]) if i < len(bonus_open) else list(bonus_steady)",
      "        bon = [bonus_open[i]] if i < len(bonus_open) else list(bonus_steady)"),
