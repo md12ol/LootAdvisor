@@ -583,9 +583,165 @@ def test_wrath_storm():
     assert not fails, fails
 
 
+
+# ------------------------------------------------------------------------------- strategy search (strategy.py)
+def _thx_profile(**kw):
+    """Astarion thx with set astarion.thx.a3.1 as the hand-read sheet gives it (to-hit, dice, flat damage per weapon
+    row; Legacy of the Masters' +2 in the flat part), written here rather than read from the code under test."""
+    import strategy as G
+    crimson = G.Weapon("Crimson Mischief", 14, (6, 4, 4), 8, adv_flat=7)
+    blade = G.Weapon("Blade of the First Blood", 14, (4, 4, 4), 8)
+    hell = G.Weapon("Hellfire Hand Crossbow", 16, (6, 4), 8, ranged=True)
+    fire = G.Weapon("Firestoker", 14, (6, 4), 6, ranged=True)
+    return G.Profile(melee_main=crimson, melee_off=blade, ranged_main=hell, ranged_off=fire, riposte=crimson, **kw)
+
+
+def test_strategy_attack_odds():
+    """attack_odds against brute force over both d20s and the Precision die: natural 1 misses, 19-20 crits, Advantage
+    = higher die, Disadvantage = lower die."""
+    import strategy as G
+    fails = []
+    for bonus, ac, mode, die in ((11, 19, "adv", 0), (11, 19, "straight", 8), (9, 19, "dis", 0), (14, 19, "adv", 8),
+                                 (-3, 19, "adv", 0)):
+        miss = hit = crit = 0
+        for a in range(1, 21):
+            for b in range(1, 21):
+                nat = max(a, b) if mode == "adv" else min(a, b) if mode == "dis" else a
+                for k in range(1, (die or 1) + 1):
+                    w = 1 / (400 * (die or 1))
+                    if nat == 1:
+                        miss += w
+                    elif nat >= 19:
+                        crit += w
+                    elif nat + bonus + (k if die else 0) >= ac:
+                        hit += w
+                    else:
+                        miss += w
+        got = G.attack_odds(bonus, ac, mode, 19, die)
+        if max(abs(x - y) for x, y in zip(got, (miss, hit, crit))) > 1e-12:
+            fails.append(f"{bonus} {mode} d{die}: {got} want {(miss, hit, crit)}")
+    assert not fails, fails
+
+
+def _mc_turn(attacks, n, seed):
+    """Monte Carlo of one turn: (bonus, dice, flat, mode) against AC 19; Sneak Attack 2d6 on the first hit with
+    Advantage; crits (19-20) roll every die twice."""
+    import random
+    rnd = random.Random(seed)
+    tot = tot2 = 0.0
+    for _ in range(n):
+        d, sa = 0, False
+        for bonus, dice, flat, mode in attacks:
+            r1, r2 = rnd.randint(1, 20), rnd.randint(1, 20)
+            nat = max(r1, r2) if mode == "adv" else min(r1, r2) if mode == "dis" else r1
+            if nat == 1 or (nat < 19 and nat + bonus < 19):
+                continue
+            k = 2 if nat >= 19 else 1
+            dd = flat + sum(rnd.randint(1, s) for s in dice for _ in range(k))
+            if mode == "adv" and not sa:
+                sa = True
+                dd += sum(rnd.randint(1, 6) for _ in range(2 * k))
+            d += dd
+        tot += d
+        tot2 += d * d
+    m = tot / n
+    return m, (tot2 / n - m * m) ** 0.5
+
+
+def test_strategy_turn_moments():
+    """run_turn's mean and sd of a marked melee turn (Crimson x2 with Vicious, Blade x2 off-hand), a Disengage turn
+    (Hellfire x2 + Firestoker, All In) and a standing turn (straight rolls) against a seeded Monte Carlo of the same
+    attacks (mean within 4 standard errors, sd within 5%)."""
+    import strategy as G
+    P = _thx_profile()
+    start = G.TurnStart(True, "mark", False)
+    cases = [(G.Plan("melee"), [(14, (6, 4, 4, 6), 15, "adv")] * 2 + [(14, (4, 4, 4, 6), 8, "adv")] * 2),
+             (G.Plan("leave"), [(11, (6, 4, 6), 18, "adv")] * 2 + [(9, (6, 4, 6), 16, "adv")]),
+             (G.Plan("stand"), [(11, (6, 4, 6), 18, "straight")] * 2 + [(9, (6, 4, 6), 16, "straight")] * 2)]
+    fails = []
+    n = 60000
+    for plan, atks in cases:
+        m, sd = G.turn_numbers(P, plan, start)
+        mm, msd = _mc_turn(atks, n, 7)
+        if abs(m - mm) > 4 * msd / n ** 0.5 or abs(sd - msd) > 0.05 * msd:
+            fails.append(f"{plan.mode}: model {m:.2f} sd {sd:.2f}, Monte Carlo {mm:.2f} sd {msd:.2f}")
+    assert not fails, fails
+
+
+def test_strategy_sneak_once():
+    """Sneak Attack once a turn: four attacks that miss only on a natural 1 add 2d6 once (hand formula), and none at
+    a straight roll (no ally in the boss fight)."""
+    import strategy as G
+    w = G.Weapon("x", 40, (6,), 0)
+    P = G.replace(_thx_profile(crit_from=21), melee_main=w, melee_off=w, mark_die=0)
+    m, _ = G.turn_numbers(P, G.Plan("melee"), G.TurnStart(True, "", False))
+    p = 1 - (1 / 20) ** 2
+    want = 4 * p * 3.5 + (1 - (1 - p) ** 4) * 7
+    m2, _ = G.turn_numbers(G.replace(P, adv=False), G.Plan("melee"), G.TurnStart(True, "", False))
+    assert abs(m - want) < 1e-9 and abs(m2 - 4 * 0.95 * 3.5) < 1e-9, (m, want, m2)
+
+
+def test_strategy_ranking():
+    """The fight search on the thx numbers over a short fight: melee beats stepping away, which beats standing and
+    shooting at Disadvantage; Action Surge is used once and the superiority dice planned never exceed the four there
+    are; the riposte adds roughly one boss miss in reach a round."""
+    import strategy as G
+    old = G.ROUNDS
+    G.ROUNDS = 4
+    try:
+        P = _thx_profile(boss_first=0.15)
+        res = G.rank(P, ["melee", "evade", "stand"])
+        no_rip = G.rank(G.replace(P, riposte=None), ["melee"])
+    finally:
+        G.ROUNDS = old
+    order = [r["family"] for r in res]
+    fails = []
+    if order != ["melee", "evade", "stand"]:
+        fails.append(f"order {order} {[round(r['total'], 1) for r in res]}")
+    for r in res:
+        if sum(x["plan"].surge for x in r["path"]) != 1:
+            fails.append(f"{r['family']}: Action Surge {[x['plan'].surge for x in r['path']]}")
+        if sum(x["plan"].n_precision + x["plan"].n_maneuver for x in r["path"]) > 4:
+            fails.append(f"{r['family']}: dice {[(x['plan'].n_precision, x['plan'].n_maneuver) for x in r['path']]}")
+    gap = res[0]["total"] - no_rip[0]["total"]
+    if not 0.5 * 4 * 0.6 * 20 < gap < 1.5 * 4 * 0.6 * 30:
+        fails.append(f"riposte share {gap}")
+    assert not fails, fails
+
+
+def test_strategy_harness_rounds():
+    """The emitted round plan: Hunter's Mark before the attacks, Dread Ambusher first, a manoeuvre falling back to the
+    plain attack, Action Surge attacks needing the surge, Disengage steps in every round of an evade family."""
+    import strategy as G
+
+    def A(spell, group, target="@boss", why=None, **kw):
+        return dict(spell=spell, group=group, target=target, why=why, **kw)
+
+    def ev(hide):
+        return [A("Shout_Disengage_CunningAction", "bonus", "@self", when_adjacent=True), A("@move", "free")]
+    path = [{"plan": G.Plan("free", mark=True, dread=True, surge=True, n_maneuver=1, maneuver="MenacingAttack")},
+            {"plan": G.Plan("melee", n_precision=1)}]
+    r = G.harness_rounds(path, A, ev, evade_every_round=True)
+    spells = [a["spell"] for a in r[0]]
+    fails = []
+    if spells[:2] != ["Shout_Disengage_CunningAction", "@move"] or \
+            spells.index("Target_HuntersMark") > spells.index("Projectile_DreadAmbusher"):
+        fails.append(f"round 1 order {spells}")
+    men = [a for a in r[0] if a["spell"] == "Projectile_MenacingAttack"]
+    if not men or men[0]["alt"]["spell"] != "Projectile_MainHandAttack":
+        fails.append(f"manoeuvre alt {men}")
+    if [a.get("requires") for a in r[0] if a["spell"].endswith("MainHandAttack")][-2:] != ["surge", "surge"]:
+        fails.append("surge attacks")
+    s2 = [a["spell"] for a in r[1]]
+    if s2[:1] != ["Shout_PrecisionAttack"] or s2.count("Target_MainHandAttack") != 2:
+        fails.append(f"round 2 {s2}")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
-            test_buff_spells, test_riposte, test_wrath_storm]
+            test_buff_spells, test_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
+            test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds]
 
 
 # ============================================================================================ local-only tests
@@ -2187,6 +2343,45 @@ def mutations():
             return []
         except AssertionError as e:
             return [str(e)]
+
+    def m_strategy_crit_dice():
+        import strategy as G
+        old = G.landed
+        G.landed = lambda dice, flat, crit: old(dice, flat, False)          # crits no longer double the dice
+        try:
+            return _ci_red(test_strategy_turn_moments)
+        finally:
+            G.landed = old
+    out.append(("strategy: critical hits do not double the dice", m_strategy_crit_dice))
+
+    def m_strategy_threatened():
+        import strategy as G
+        old = G.build_attacks
+
+        def bad(P, plan, state):
+            return [G.replace(a, mode="adv") for a in old(P, plan, state)]  # standing in reach keeps Advantage
+        G.build_attacks = bad
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_ranking)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: no Disadvantage when shooting with the boss in reach", m_strategy_threatened))
+
+    def m_strategy_sneak_every_hit():
+        import strategy as G
+        old = G.run_turn
+
+        def bad(P, plan, start):
+            P2 = G.replace(P, melee_off=G.replace(P.melee_off, dice=P.melee_off.dice + P.sneak_dice))
+            return old(P2, plan, start)                                      # off-hand hits add Sneak Attack again
+        G.run_turn = bad
+        try:
+            return _ci_red(test_strategy_sneak_once)
+        finally:
+            G.run_turn = old
+    out.append(("strategy: Sneak Attack on more than one hit a turn", m_strategy_sneak_every_hit))
 
     def m_party_greedy():
         old = party._local
