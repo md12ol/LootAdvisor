@@ -534,7 +534,6 @@ def _output(path=OUT):
 
 
 def _items():
-    import gamedata  # noqa: F401  (tests/gamedata.py: independent readers)
     out = {}
     for g in ("weapons", "armour", "accessories"):
         with open(os.path.join(LA, "data", "items_all", g + ".jsonl"), encoding="utf-8") as f:
@@ -751,7 +750,6 @@ def check_local_optimum(out, sample=None, seed=7, always=()):
     with the candidate lists and the model. A candidate that clashes with another slot replaces that slot's item too
     (two-handed weapon for weapon + shield). An item obtainable now must not improve it at all (the search runs again
     after the owned pass); an earlier-act item may by up to 3% (sets rule: keep it only if it is clearly better)."""
-    import model
     import search
     W = _world()
     fails, n = [], 0
@@ -1477,7 +1475,6 @@ def mutations():
     """-> [(description, test function, expect 'red')]. Each mutation is undone after its check."""
     import mech
     import model
-    import odata
     import search
     out = []
 
