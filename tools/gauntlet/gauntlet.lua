@@ -1173,9 +1173,13 @@ local function forceEnemy(d, E, tries)
   end
   for _, it in pairs(G.equipped(d)) do pcall(Osi.Unequip, d, it) end
   local cur = abilities(d)
+  local abil = {}
   for _, n in ipairs(ABIL) do
     local dd = 10 - (cur[n] or 10)
-    if dd ~= 0 then pcall(Osi.AddBoosts, d, string.format("Ability(%s,%d)", n, dd), CAUSE, d) end
+    if dd ~= 0 then
+      abil[#abil + 1] = string.format("Ability(%s,%d)", n, dd)
+      pcall(Osi.AddBoosts, d, abil[#abil], CAUSE, d)
+    end
   end
   wait(300, function()
     local e = ent(d)
@@ -1185,7 +1189,7 @@ local function forceEnemy(d, E, tries)
       string.format("RollBonus(Attack,%d)", E.atk - prof), string.format("DamageBonus(%d)", E.dmg - 1),
       string.format("SpellSaveDC(%d)", E.dc - (8 + prof)), string.format("IncreaseMaxHP(%d)", E.hp) }
     G.enemyBoosts = G.enemyBoosts or {}
-    local given = {}
+    local given = abil
     for _, x in ipairs(b) do
       if not x:match("%(%-?0%)$") and not x:match(",0%)$") then
         pcall(Osi.AddBoosts, d, x, CAUSE, d)
@@ -1224,7 +1228,10 @@ function G.reuseBoss(d, p, E)
   if try(Osi.IsDead, d) ~= 0 then return nil end
   G.bossFaction = G.bossFaction or {}
   G.bossFaction[uuid(d)] = G.bossFaction[uuid(d)] or try(Osi.GetFaction, d)
-  pcall(Osi.RemoveBoosts, d, "", 0, CAUSE, d)
+  -- the last run's boosts, each by its own text: RemoveBoosts with an empty boost text removes nothing, so a second
+  -- Start in the same session gave the boss every absolute boost twice (max HP 10024, attack +14, damage +16)
+  for _, x in ipairs((G.enemyBoosts or {})[uuid(d)] or {}) do pcall(Osi.RemoveBoosts, d, x, 0, CAUSE, d) end
+  if G.enemyBoosts then G.enemyBoosts[uuid(d)] = nil end
   pcall(Osi.TeleportToPosition, d, p[1], p[2], p[3], "", 0, 0, 0, 0, 1)
   G.enemyForced = G.enemyForced or {}
   G.enemyForced[uuid(d)] = nil
@@ -1438,6 +1445,10 @@ function G.setupCheck(F, spec, phase, extra)
       if id:find(G.CAMPAIGN_PASSIVE) then cmp("campaign passive " .. id .. " (not the build's)", false, true) end
     end
     local keep = setStatuses(spec)
+    -- what the planned consumables gave in this setup (Elixir of the Colossus: ALCH_ELIXIR_ENLARGE) is the set's too
+    for _, r in ipairs(((G.results.prep or {}).items) or {}) do
+      if r.got == "used" then for _, st in ipairs(r.statuses or {}) do keep[st] = true end end
+    end
     for st in pairs(G.statusSet(u)) do
       if not keep[st] and not G.technicalStatus(st) and G.campaignStatus(st) then
         cmp("campaign status " .. st .. " (not the set's)", false, true)
@@ -1519,6 +1530,10 @@ function G.setupCheck(F, spec, phase, extra)
       local have = G.boostList(d)
       for _, x in ipairs((G.enemyBoosts or {})[uuid(d)] or {}) do
         cmp("enemy " .. i .. " boost " .. x, true, G.hasBoost(have, x))
+        -- given once: a boost read with its text counts by that text (one read without it cannot be told apart)
+        local n = 0
+        for _, b in ipairs(have or {}) do if normBoost(b) == normBoost(x) then n = n + 1 end end
+        if n > 1 then cmp("enemy " .. i .. " boost " .. x .. " given once", 1, n) end
       end
     end
     for m in pairs(extra.parked or {}) do

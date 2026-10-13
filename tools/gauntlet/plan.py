@@ -95,6 +95,14 @@ def maneuver_picks(per_level):
     return out or None
 
 
+def plan_maneuvers(plans, pid, ba_build):
+    """The Battle Master picks a side's character has: its test plan's respec picks, or with no test plan (--plain)
+    the build's own Builds.lua level picks (ba_build: its Build Advisor entry, {"levels": [(class, picks), ...]})."""
+    if pid:
+        return maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level"))
+    return maneuver_picks([{"picks": picks} for _c, picks in (ba_build or {}).get("levels") or []])
+
+
 def grants(G, seq, subs, feats_taken, styles, maneuvers=None):
     """What the build's class levels give: passives, spells, resources; plus the passives of every class table (to
     remove the ones the test character has from its own class). maneuvers: the Battle Master picks as passive names
@@ -1031,7 +1039,7 @@ def main(argv=None):
         for side in [x for x in ("a", "b") if x in p]:
             pid = p[side].get("respec")
             r = PA.tuned_respec(W, model, RS.tune, plans, pid) if pid else None
-            mv = maneuver_picks(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
+            mv = plan_maneuvers(plans, pid, W.D.ba.get(p["build"]))
             known = known_spell_names(((plans.get(pid) or {}).get("respec") or {}).get("per_level")) if pid else None
             row["specs"][side] = spec_for(W, model, mech, G, p["char"], p["build"], p["act"], p[side], stats, templates,
                                           respec=r, maneuvers=mv,

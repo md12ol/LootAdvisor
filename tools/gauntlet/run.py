@@ -6,7 +6,7 @@
     python tools/gauntlet/run.py --turns results.jsonl [--md turns.md]      # what the character did, turn by turn
 
 The method (one boss fight of 16 rounds, fixed repeats, one statistic, the model's boss scenario part by part):
-- every run goes through the F9 test popup's Start (engine.run): the script sets the popup to Automatic as its first
+- every run goes through the F11 test popup's Start (engine.run): the script sets the popup to Automatic as its first
   step after loading the harness, then each run is the popup's setup, setup check and fight, with the same record;
 - a side runs until it has --repeats valid runs (default 4; the valid ones already in --results count), at most
   twice that many tries; a side whose first run failed for a reason every run would meet is not repeated;

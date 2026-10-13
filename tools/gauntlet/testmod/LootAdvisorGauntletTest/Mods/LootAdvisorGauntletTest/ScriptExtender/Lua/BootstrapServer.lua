@@ -2,7 +2,7 @@
 -- by tools/gauntlet/testmod.py). Inert in every save the test file does not name: on each load it reads the test
 -- file and nothing else. Only when the gate accepts the save (the file is there and enabled, its character is in the
 -- party, the party is in its arena's level) does it run the gauntlet harness and the test popup's server side, then
--- tell the client to load the F9 window.
+-- tell the client to load the F11 window.
 --
 -- The harness files are packed under Harness/ and run with Ext.Utils.LoadString, as tools/gauntlet/engine.py load
 -- runs them, so their globals (GAUNTLET, GAUNTLET_TEST) are the ones the dev eval hook and engine.py talk to.
@@ -76,7 +76,7 @@ function M.arm(level)
     return
   end
   M.armed = true
-  Ext.Utils.Print("[gauntlet test] armed: " .. tostring(why) .. " (F9 opens the popup)")
+  Ext.Utils.Print("[gauntlet test] armed: " .. tostring(why) .. " (F11 opens the popup)")
   M.tellClient()
 end
 

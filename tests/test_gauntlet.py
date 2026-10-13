@@ -2805,6 +2805,13 @@ def grants_tests(P):
                            {"picks": ["Manoeuvres: Goading Attack (5th superiority die)"]}])
     check("grants: manoeuvre picks read from a test plan, notes in brackets dropped",
           mv == ["TripAttack", "Riposte", "GoadingAttack"], str(mv))
+    ba = {"levels": [("Ranger", ["Ranger"]), ("Fighter", ["Battle Master",
+                                                             "Manoeuvres: Precision Attack, Menacing Attack, Trip Attack"])]}
+    plain = P.plan_maneuvers({}, None, ba)
+    check("grants: a plain plan (no test plan) takes the manoeuvres of the build's own Builds.lua picks",
+          plain == ["PrecisionAttack", "MenacingAttack", "TripAttack"], str(plain))
+    tuned = P.plan_maneuvers({"t": {"respec": {"per_level": [{"picks": ["Manoeuvres: Riposte"]}]}}}, "t", ba)
+    check("grants: a test plan's own manoeuvres win over the build's", tuned == ["Riposte"], str(tuned))
 
 
 def tuned_respec_tests(PA):
@@ -3341,9 +3348,11 @@ def campaign_tests(L):
         if id == "ASTARION_HAPPY" then return { Boosts = "RollBonus(SavingThrow,1);RollBonus(Attack,1)" } end
         if id == "SET_STATUS" then return { Boosts = "RollBonus(Attack,2)" } end
         if id == "WET" then return { Boosts = "" } end
+        if id == "ALCH_ELIXIR_ENLARGE" then return { Boosts = "WeaponDamage(1d4,Piercing)" } end
       end
       Ext.Entity.Get = function()
-        return { StatusContainer = { Statuses = { a = "ASTARION_HAPPY", b = "SET_STATUS", c = "WET" } },
+        return { StatusContainer = { Statuses = { a = "ASTARION_HAPPY", b = "SET_STATUS", c = "WET",
+          d = T_drunk and "ALCH_ELIXIR_ENLARGE" or nil } },
           PassiveContainer = { Passives = { { Passive = { PassiveId = "TAD_PeaceBreaker" } },
             { Passive = { PassiveId = "Sharpshooter_AllIn" } } } } }
       end
@@ -3354,7 +3363,9 @@ def campaign_tests(L):
       T_camp = G.campaignEffects("c1", { item_statuses = { { status = "SET_STATUS", item = "x" } } })
       T_rs, T_rp = removedS, removedP
       T_back = G.restoreCampaign == nil and #added == 0
-      G.results = { prep = { campaign = T_camp, bare = {} } }
+      T_drunk = true   -- the setup used the planned elixir after the campaign list was taken
+      G.results = { prep = { campaign = T_camp, bare = {}, items = { { want = "Elixir", got = "used",
+        stats = "ALCH_Solution_Elixir_Enlarge", statuses = { "ALCH_ELIXIR_ENLARGE" } } } } }
       local sc = G.setupCheck({ char = "c1" }, { item_statuses = { { status = "SET_STATUS" } } }, "start", nil)
       T_fields = {}
       for _, m in ipairs(sc.mismatches) do T_fields[#T_fields + 1] = m.field end
@@ -3372,6 +3383,8 @@ def campaign_tests(L):
     check("campaign: one still on fails the setup check, named",
           any("campaign passive TAD_PeaceBreaker" in x for x in f) and
           any("campaign status ASTARION_HAPPY" in x for x in f) and not any("campaign status SET_STATUS" in x for x in f), str(f))
+    check("campaign: the status a planned consumable gave in the setup (the elixir) is the set's, not flagged",
+          not any("campaign status ALCH_ELIXIR_ENLARGE" in x for x in f), str(f))
 
 
 def popup_tests(L):
@@ -3534,12 +3547,12 @@ def boss_reuse_tests(L):
     its own faction back and is never deleted; it is no intruder in the arena."""
     L.execute(r"""
       local G = GAUNTLET
-      local removed, moved, added, factions, deleted = 0, nil, {}, {}, {}
+      local removed, moved, added, factions, deleted = {}, nil, {}, {}, {}
       local saved = {}
       for _, k in ipairs({ "RemoveBoosts", "TeleportToPosition", "AddBoosts", "IsDead", "GetFaction", "SetFaction",
                            "RequestDelete", "RequestDeleteTemporary", "GetMaxHitpoints" }) do saved[k] = Osi[k] end
       local oldGet = Ext.Entity.Get
-      Osi.RemoveBoosts = function(d, _, _, cause) if cause == "Gauntlet" then removed = removed + 1 end end
+      Osi.RemoveBoosts = function(d, b, _, cause) if cause == "Gauntlet" then removed[#removed + 1] = b end end
       Osi.TeleportToPosition = function(d, x, y, z) moved = { x, z } end
       Osi.AddBoosts = function(d, b) added[#added + 1] = b end
       Osi.IsDead = function() return 0 end
@@ -3552,10 +3565,16 @@ def boss_reuse_tests(L):
         return { Stats = { Abilities = { 0, 16, 11, 14, 12, 12, 14 }, ProficiencyBonus = 2 }, Resistances = { AC = 10,
           Resistances = {} }, Replicate = function() end }
       end
-      G.bossFaction = nil
-      T_reuse = G.reuseBoss("boss1", { 5, 0, 7 }, { ac = 19, save = 5, atk = 9, dmg = 12, dc = 17, hp = 5000 })
-      T_removed, T_moved, T_added = removed, moved, added
+      G.bossFaction, G.enemyBoosts = nil, nil
+      local E = { ac = 19, save = 5, atk = 9, dmg = 12, dc = 17, hp = 5000 }
+      T_reuse = G.reuseBoss("boss1", { 5, 0, 7 }, E)
+      T_removed1, T_moved, T_added = #removed, moved, added
       T_given = G.enemyBoosts and G.enemyBoosts.boss1
+      local first = {}
+      for i, x in ipairs(T_given or {}) do first[i] = x end
+      -- a second Start in the same session: the first Start's boosts come off, each by its text
+      G.reuseBoss("boss1", { 5, 0, 7 }, E)
+      T_first, T_removed = first, removed
       G.reset()
       G._finish({ req = { label = "t" }, manual = true, boss = "boss1", enemies = { "boss1", "spawned2" },
         started = 1, state = "fight", cooldown = {}, plan = {}, S = {} }, "aborted")
@@ -3565,14 +3584,17 @@ def boss_reuse_tests(L):
       Ext.Entity.Get = oldGet
     """)
     g = L.globals()
-    check("boss reuse: the save's boss is used, the gauntlet's old boosts removed, moved to the enemy spot",
-          g.T_reuse is not None and g.T_removed >= 1 and lst(g.T_moved) == [5, 7], str(lst(g.T_moved)))
+    check("boss reuse: the save's boss is used and moved to the enemy spot (a first Start has no boosts to take off)",
+          g.T_reuse is not None and g.T_removed1 == 0 and lst(g.T_moved) == [5, 7], str(lst(g.T_moved)))
+    check("boss reuse: a second Start takes the first Start's boosts off by their text (an empty text removes none)",
+          lst(g.T_removed) == lst(g.T_first) and len(lst(g.T_first)) > 0 and "" not in lst(g.T_removed),
+          f"{lst(g.T_removed)} / {lst(g.T_first)}")
     added = lst(g.T_added) or []
     check("boss reuse: its stats are forced again on every Start (AC and attack boosts given again)",
           any(x.startswith("AC(") for x in added) and any(x.startswith("RollBonus(Attack") for x in added),
           str(added))
     check("boss reuse: the boosts given are remembered for the setup check", g.T_given is not None and
-          len(lst(g.T_given)) == sum(1 for x in added if not x.startswith("Ability(")), str(lst(g.T_given)))
+          lst(g.T_first) == added[:len(lst(g.T_first))] and len(lst(g.T_first)) * 2 == len(added), str(lst(g.T_given)))
     check("boss reuse: back in its own faction at the end, never deleted",
           lst(g.T_factions) == ["HOUSE_OF_HOPE"] and "boss1" not in (lst(g.T_deleted) or []) and
           "spawned2" in (lst(g.T_deleted) or []), f"{lst(g.T_factions)} {lst(g.T_deleted)}")
@@ -3602,7 +3624,7 @@ Osi = { DB_Players = { Get = function() return TM.players end } }
 def testmod_tests():
     """The test mod's server bootstrap is inert in every save the test file does not name: no file -> nothing read
     but the file and nothing printed; a file whose character is not in the party, or an arena in another level ->
-    the harness is never run; the test save -> the harness runs from the pak and the client is told to load F9."""
+    the harness is never run; the test save -> the harness runs from the pak and the client is told to load F11."""
     try:
         import lupa
     except ImportError:
@@ -3649,6 +3671,11 @@ def testmod_tests():
     check("test mod: the test save -> harness and popup run from the pak, the client is told to load the window",
           g.TM.loadstrings == 2 and g.GAUNTLET_TESTMOD.armed is True and lst(g.TM.broadcast) == ["GauntletTestArm"],
           f"{g.TM.loadstrings} {lst(g.TM.prints)}")
+    with open(os.path.join(G_DIR, "gauntlet_ui.lua"), encoding="utf-8") as f:
+        key = re.search(r'U\.HOTKEY = U\.HOTKEY or "(\w+)"', f.read())
+    # F8 quickload, F9 photo mode, F10 hides the HUD (the game's own keys); F6 / F7 Loot and Build Advisor
+    check("test mod: the popup's hotkey is none the game or the two mods use",
+          key and key.group(1) not in ("F6", "F7", "F8", "F9", "F10"), key and key.group(1))
 
 
 def no_leak_tests():
@@ -3821,6 +3848,14 @@ def engine_popup_tests():
         check("engine: a refused Start is an invalid run with the reason", raised and "refused" in raised, str(raised))
         p = E.arm.__defaults__
         check("engine: arm takes the save's boss", p is not None and "boss" in E.arm.__code__.co_varnames)
+        check("engine: every eval first points the harness globals at the test mod's copy (Script Extender keeps "
+              "each mod's globals apart)", "Mods.LootAdvisorGauntletTest" in E.TESTMOD_GLOBALS["server"] and
+              "GAUNTLET_TEST" in E.TESTMOD_GLOBALS["server"] and "GAUNTLET_UI" in E.TESTMOD_GLOBALS["client"])
+        calls.clear()
+        E.ev = lambda code, timeout=10.0, side="server": calls.append(code) or "true"
+        r = E.load()
+        check("engine: load keeps the test mod's packed harness in a save it armed (no second copy)",
+              "test mod" in r and len(calls) == 1, f"{r} {len(calls)}")
     finally:
         E.ev, E.write_se, E.LOCK, E.RUNS = old
         shutil.rmtree(d, ignore_errors=True)
