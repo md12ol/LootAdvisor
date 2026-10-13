@@ -65,6 +65,9 @@ model as the research sets. It needs the Rebuild outputs and writes only to `too
 python tools/optimizer/run.py --jobs 8      # all origins, builds, acts (--only gale[:build[:act]] for one)
 python tests/test_optimizer.py              # checks its output against the game data
 ```
+Mechanics not yet confirmed in the game are switches (`SWITCHES` in `tools/optimizer/model.py`); the run reports
+each set with every switch flipped. `offhand_shot_with_main` (off by default) counts the off-hand hand crossbow's
+shot that the main-hand shot fires along with it.
 The **gauntlet** (`tools/gauntlet/`) measures gear sets in the running game: it takes a character levelled to the
 build (a test save per build; `--respec emulated` rebuilds the sheet with boosts instead), spawns the items and
 enemies, fights scripted rounds and records damage and survival. It changes the loaded save, so use a test save and
@@ -205,7 +208,18 @@ Battle Master whose every attack has Advantage keeps the superiority dice for Ri
 weapon attacks in a free bonus action, Great Weapon Master's bonus attack follows a critical hit, a caster spends its
 lower slots on spells worth more than its cantrip and holds a damage zone when its ticks beat a nuke. An item action
 replaces planned actions only when it is worth more than they are, and Destructive Wrath goes to the item spell it
-adds most to.
+adds most to. A ranged attack with the boss in melee reach (Threatened) or within 3 m has Disadvantage, so a ranged
+Rogue whose model finds it worth more steps away in such a turn: Disengage (Cunning Action), then a move more than 3 m
+from the boss and out of its reach (`leave_spots` in `arenas.json`, else a spot found by path), then the attacks with
+the character's own Advantage. Hide is planned only where the game allows it (not while Threatened, not in the boss's
+sight in a lit room). A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark; the
+off-hand shots are optional, since a main-hand attack with the Dual Wielding Attacks toggle on fires the off-hand shot
+itself for a bonus action (and is refused with none left). The harness sets the toggle before each main-hand attack:
+on only while a bonus action is free beyond the turn's later planned ones (Hunter's Mark, Disengage comes first), so
+with Fast Hands the action's attack and its Extra Attack fire two shots each; it pays that bonus action when the
+off-hand half's damage row comes (a scripted cast skips the engine's cost checks). A run request with `player_cast: true` (or `G.PLAYER_CAST` in `gauntlet.lua`,
+off by default until checked in the game) casts like a player instead: the request keeps the engine's cast and target
+checks and carries `FromClient`, so the engine pays the costs and checks range and line of sight.
 
 ## Build and install
 The pak builder is shared by all mods and lives in the sibling repository

@@ -164,6 +164,37 @@ def test_d20_maths():
     assert not fails, fails[:5]
 
 
+def test_roll_mix():
+    """Advantage and Disadvantage at once cancel to a straight roll; with chances of each (independent) the hit and
+    crit chances are the mix of the four cases, each enumerated over the d20s here."""
+    M = _mech()
+    fails = []
+
+    def enum_crit(thr, mode):
+        rolls = list(itertools.product(range(1, 21), repeat=1 if mode == 0 else 2))
+        pick = (lambda r: r[0]) if mode == 0 else max if mode == 1 else min
+        return sum(pick(r) >= thr for r in rolls) / len(rolls)
+
+    def enum_dis(bonus, ac):
+        rolls = list(itertools.product(range(1, 21), repeat=2))
+        return sum((min(r) == 20) or (min(r) != 1 and min(r) + bonus >= ac) for r in rolls) / len(rolls)
+    for a, d in ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 15 / 16), (0.5, 0.25), (0.3, 0.9)):
+        an, dn = M.roll_mix(a, d)
+        w = {"adv": a * (1 - d), "dis": d * (1 - a), "straight": a * d + (1 - a) * (1 - d)}
+        if abs(an - w["adv"]) > 1e-12 or abs(dn - w["dis"]) > 1e-12:
+            fails.append(f"roll_mix({a},{d}) = {an},{dn}")
+        for bonus, ac in ((5, 15), (11, 19), (-1, 25)):
+            want = w["adv"] * _enum_hit(bonus, ac, 1) + w["dis"] * enum_dis(bonus, ac) + \
+                w["straight"] * _enum_hit(bonus, ac, 0)
+            if abs(M.p_hit_mix(bonus, ac, an, dn) - want) > 1e-9:
+                fails.append(f"p_hit_mix({bonus},{ac},{a},{d}) {M.p_hit_mix(bonus, ac, an, dn)} != {want}")
+        for thr in (19, 20):
+            want = w["adv"] * enum_crit(thr, 1) + w["dis"] * enum_crit(thr, 2) + w["straight"] * enum_crit(thr, 0)
+            if abs(M.p_crit(thr, an, dn) - want) > 1e-9:
+                fails.append(f"p_crit({thr},{a},{d}) {M.p_crit(thr, an, dn)} != {want}")
+    assert not fails, fails[:5]
+
+
 def test_stack_average():
     """Stacks over a 4-round fight, closed forms worked out by hand from the status rules (add N turns a round,
     attacks see the mean of before / after, 1 turn runs out each round)."""
@@ -552,7 +583,7 @@ def test_wrath_storm():
     assert not fails, fails
 
 
-CI_TESTS = [test_condition_reader, test_d20_maths, test_stack_average, test_die_gains, test_float_averages,
+CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
             test_buff_spells, test_riposte, test_wrath_storm]
 
@@ -855,6 +886,7 @@ def check_switches(out=None):
         ("darkurge", "throw_zerk5_thief4", 3, "enraged_throw_each_ba", -1),   # one Enraged Throw instead of two
         ("gale", "tempestevoker", 3, "dw_chain_all", -1),        # only the main Chain Lightning target maximised
         ("shadowheart", "lightquick", 3, "rotd_char_level", -1),  # Radiance of the Dawn + Cleric level 9 (< 12)
+        ("astarion", "thx", 3, "offhand_shot_with_main", 1),     # the off-hand crossbow fires with each main shot
     ]
     outsets = {(s["char"], s["build"], s["act"]): s for s in (out or {}).get("sets", [])
                if s.get("ownership", "party") == "party" and s["id"].endswith(".opt")}
@@ -873,6 +905,11 @@ def check_switches(out=None):
             # off-hand shots per round (Fast Hands: 2 bonus actions) x hit chance (>= 5%) x DEX modifier (+5 at 20)
             if not (0.05 * 1 * 5 * 0.5 <= a - b <= 2 * 0.95 * 5 + 1e-6):
                 fails.append(f"thx TWF switch changes offence by {a - b:.1f} (expected 0.1-9.5)")
+        if k == "offhand_shot_with_main":
+            # one off-hand shot per main-hand attack (Extra Attack 2, Action Surge a few times) x hit chance x a
+            # hand crossbow shot's damage (1d6 + DEX + riders, under 60)
+            if not (0 < b - a <= 2.5 * 0.95 * 60):
+                fails.append(f"thx CastOffhand switch changes offence by {b - a:.1f} (expected 0-142)")
         if k == "rotd_char_level":
             # (12 - 9) more damage per target, <= 4 targets, a few uses per fight -> 0 < diff < 3 * 4 * 1
             if not (0 < a - b <= 12):
@@ -1397,10 +1434,10 @@ def check_jobs_parallel(_out=None, only=PARALLEL_SUBSET):
 
 def check_plan_gaps(out=None):
     """The plan gaps in the boss fight (expectations from the game data and the gauntlet's rules): a Gloom Stalker
-    with a melee off-hand weapon attacks with it in a free bonus action once the boss stands in reach (not in the
-    day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight spends the
-    level 1-2 slots too, holds Wall of Fire when its ticks beat one nuke and answers the boss's hits with Wrath of the
-    Storm; a Battle Master whose every attack has
+    with a melee off-hand weapon, standing, attacks with it in a free bonus action once the boss stands in reach
+    (not in the day's fights: a ranged build keeps its distance); Gale (Tempest Evoker) with every slot of one fight
+    spends the level 1-2 slots too, holds Wall of Fire when its ticks beat one nuke and answers the boss's hits with
+    Wrath of the Storm; a Battle Master whose every attack has
     Advantage (Risky Ring) plans no Trip and ripostes instead. The day's numbers are the same before and after."""
     import model
     W = _world()
@@ -1410,15 +1447,16 @@ def check_plan_gaps(out=None):
     gale = {"MainHand": "MAG_TheChromatic_Staff"}
     risky = {"MainHand": names["Balduran's Giantslayer"], "Ring1": names["Risky Ring"]}
 
-    def ev(cid, bid, lo, boss):
+    def ev(cid, bid, lo, boss, tactic=None):
         if boss:
             with model.scenario("boss"):
-                r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
+                r = model._evaluate(W, cid, bid, 3, lo, None, True, None) if not tactic else                     model._evaluate_tactic(W, cid, bid, 3, lo, None, True, None, None, tactic)
         else:
             r = model._evaluate(W, cid, bid, 3, lo, None, True, None)
         return {e["name"]: e for e in r.plan_events}, r.dpr
     day_before = ev("astarion", "gloomassassin", ast, False)[1]
-    a_boss, _ = ev("astarion", "gloomassassin", ast, True)
+    # standing in the boss's reach (leaving spends the bonus action the off-hand attack would take)
+    a_boss, _ = ev("astarion", "gloomassassin", ast, True, "stand")
     a_day, day_after = ev("astarion", "gloomassassin", ast, False)
     n += 3
     if not (a_boss.get("off-hand attack") or {}).get("n"):
@@ -1449,6 +1487,79 @@ def check_plan_gaps(out=None):
     return fails, n
 
 
+def check_boss_tactics(out=None):
+    """The boss fight's reach rules (expectations from the game's rules, not the code), on Astarion thx Act 3 set 1
+    (Risky Ring's Advantage on every attack, a Thief with two bonus actions, Hunter's Mark, dual hand crossbows):
+    standing, every ranged roll has Disadvantage in the 15 of 16 turns the boss is in reach, which cancels the ring's
+    Advantage there (net Advantage 1/16 of the rolls), and Sneak Attack, with no ally, needs that net Advantage, so it
+    stays under the dice on each turn with an advantaged roll; leaving (Disengage and a move out of reach in those
+    turns; no Hide, which the lit arena in the boss's sight does not allow) takes one bonus action there, leaving
+    2 - 1/16 (Hunter's Mark) - 15/16 off-hand shots a round, and no roll has Disadvantage; the evaluation keeps the
+    better of the two, which here is leaving (three shots with Advantage and Sneak Attack beat four straight ones),
+    also with the off-hand-shot switch on (each main-hand shot fires the off-hand crossbow for free). The elixir's 1d4 (Elixir of the Colossus) doubles on a critical
+    hit; Hunter's Mark's 1d6 from round 2 on every hit, twice on a critical one. In a day's fights no Disadvantage, and
+    the day is the same before and after the boss block."""
+    import model
+    W = _world()
+    fails, n = [], 0
+    ref = next((s_ for s_ in W.research_sets("astarion", "thx", 3) if s_.get("id") == "astarion.thx.a3.1"), None)
+    if not ref:
+        return ["astarion.thx.a3.1 not found"], 1
+    lo = {k: v["sid"] for k, v in (ref.get("items") or {}).items() if v and v.get("sid") and v["sid"] in W.items}
+
+    def tac(t, sw=None):
+        with model.scenario("boss"):
+            return model._evaluate_tactic(W, "astarion", "thx", 3, lo, sw, True, None, None, t)
+    day0 = model._evaluate(W, "astarion", "thx", 3, lo, None, True, None)
+    stand, evade = tac("stand"), tac("evade")
+    with model.scenario("boss"):
+        best = model._evaluate(W, "astarion", "thx", 3, lo, None, True, None)
+        on = model._evaluate(W, "astarion", "thx", 3, lo, {"offhand_shot_with_main": True}, True, None)
+    day1 = model._evaluate(W, "astarion", "thx", 3, lo, None, True, None)
+    ps, pe = stand.parts, evade.parts
+    n += 4
+    if abs(ps["dis_any_rate"] - 15 / 16) > 1e-3 or abs(ps["adv_rate"] - 1 / 16) > 1e-3:
+        fails.append(f"stand: Disadvantage {ps['dis_any_rate']}, net Advantage {ps['adv_rate']}, want 15/16, 1/16")
+    sad = 7.0                                        # Rogue 4: 2d6
+    bound = sad * 2 * (1 - (1 - ps["adv_rate"]) ** ps["attacks"])
+    if stand.sneak > bound + 1e-6:
+        fails.append(f"stand: Sneak Attack {stand.sneak:.2f} above {bound:.2f} (needs net Advantage, no ally)")
+    if pe["dis_any_rate"] > 1e-9 or pe["adv_rate"] < 1 - 1e-9:
+        fails.append(f"evade: Disadvantage {pe['dis_any_rate']}, Advantage {pe['adv_rate']}")
+    off = {e["name"]: e for e in evade.plan_events}
+    if abs((off.get("off-hand shot") or {}).get("n", -1) - (2 - 1 / 16 - 15 / 16)) > 1e-3 or \
+            "evade" not in off or off["evade"].get("hide"):
+        fails.append(f"evade: off-hand shots {(off.get('off-hand shot') or {}).get('n')}, evade {off.get('evade')}")
+    n += 2
+    if abs(best.dpr - max(stand.dpr, evade.dpr)) > 1e-9 or best.tactic != "evade":
+        fails.append(f"tactic: {best.dpr:.2f} kept of stand {stand.dpr:.2f} / evade {evade.dpr:.2f}")
+    on_ev = {e["name"]: e for e in on.plan_events}
+    att = (on_ev.get("attack") or {}).get("n")
+    if on.tactic != "evade" or abs((on_ev.get("off-hand shot with the main hand") or {}).get("n", -1) - (att or 0)) > 1e-9 \
+            or "off-hand shot with the main hand" in {e["name"] for e in best.plan_events}:
+        fails.append(f"switch: tactic {on.tactic}, main-hand off-hand shots {on_ev.get('off-hand shot with the main hand')}")
+    n += 2
+    st = model.State(W, "astarion", "thx", 3, lo, None)
+    evs, _sp = model.make_weapon_events(st)
+    main = next(e for e in evs if e.get("name") == "attack")
+    m = model.event_mods(st, main, model.all_extra_boosts(st, []), model.lmv_names(st))
+    elixir = (W.items.get(lo.get("Elixir") or "") or {}).get("name") or ""
+    if "Colossus" in elixir and abs(m["sheet_dice"] - 2.5) > 1e-9:
+        fails.append(f"crit dice: the elixir's 1d4 on a critical hit {m['sheet_dice']}, want 2.5 ({elixir})")
+    elif "Colossus" not in elixir:
+        fails.append(f"crit dice: set 1 has no Elixir of the Colossus ({elixir})")
+    rest = stand.dpr - sum(e["dmg"] for e in stand.plan_events) - stand.extra - stand.sneak - stand.tgt["dot"]
+    want = 15 / 16 * 3.5 * (ps["hits"] + ps["crits"])
+    if abs(rest - want) > 0.1:
+        fails.append(f"Hunter's Mark {rest:.2f}, want {want:.2f} (1d6 a hit, twice on a critical one)")
+    n += 2
+    if (day0.parts or {}).get("dis_any_rate"):
+        fails.append(f"day: Disadvantage {day0.parts}")
+    if (day0.dpr, day0.score) != (day1.dpr, day1.score):
+        fails.append(f"day changed by the boss block: {day0.dpr} -> {day1.dpr}")
+    return fails, n
+
+
 # a weapon + shield set that could not become two-handed, and a chest picked around gloves the owned pass removed
 LOCAL_OPT_ALWAYS = ("wyll.lockadin.a2.opt", "gale.tempestevoker.a3.opt.free")
 
@@ -1465,6 +1576,8 @@ LOCAL_CHECKS = [("coverage", check_coverage), ("set rules vs game data", check_s
                 ("test plans list the toggles the model assumes", check_plan_toggles),
                 ("boss scenario: one target, one fight, half-damage attacks", check_scenario),
                 ("plan gaps in the boss fight (off-hand, buffs, slots, Wall of Fire, Riposte, Wrath of the Storm)", check_plan_gaps),
+                ("boss fight reach: Disadvantage, evading, Sneak Attack alone, crit dice, CastOffhand switch",
+                 check_boss_tactics),
                 ("respec tuning (re-scored, point-buy rules)", lambda o: check_respec(o, sample=40)),
                 ("test plans", check_test_plans), ("party assignment of unique items", check_party),
                 ("--jobs 1 and --jobs 2 give the same outputs", check_jobs_parallel)]
@@ -1929,6 +2042,69 @@ def mutations():
         finally:
             model.SCENARIOS["boss"]["melee_contact"] = old
     out.append(("plan gaps: a ranged build never in reach of the boss", m_contact))
+
+    def m_boss(patch):
+        def run():
+            undo = patch()
+            try:
+                return check_boss_tactics()[0]
+            finally:
+                undo()
+        return run
+
+    def p_no_dis():
+        old = set(model.RANGED_DIS_TYPES)
+        model.RANGED_DIS_TYPES.clear()
+        return lambda: model.RANGED_DIS_TYPES.update(old)
+    out.append(("boss reach: no Disadvantage for ranged attacks", m_boss(p_no_dis)))
+
+    def p_no_evade():
+        old = model.State.can_evade
+        model.State.can_evade = lambda self: False
+        return lambda: setattr(model.State, "can_evade", old)
+    out.append(("boss reach: evading never weighed", m_boss(p_no_evade)))
+
+    def p_hide():
+        old = model.HIDE_LEGAL
+        model.HIDE_LEGAL = True
+        return lambda: setattr(model, "HIDE_LEGAL", old)
+    out.append(("boss reach: Hide planned in the boss's sight in a lit room", m_boss(p_hide)))
+
+    def p_allies():
+        old = model.SCENARIOS["boss"]["allies"]
+        model.SCENARIOS["boss"]["allies"] = True
+        return lambda: model.SCENARIOS["boss"].__setitem__("allies", old)
+    out.append(("boss reach: Sneak Attack as if an ally stood by", m_boss(p_allies)))
+
+    def p_sheet_dice():
+        old = model.event_mods
+
+        def em(*a, **k):
+            m = old(*a, **k)
+            m["sheet_dice"] = 0.0
+            return m
+        model.event_mods = em
+        return lambda: setattr(model, "event_mods", old)
+    out.append(("crit dice: the sheet's weapon dice not doubled", m_boss(p_sheet_dice)))
+
+    def p_switch():
+        old = model.make_weapon_events
+
+        def mk(st):
+            evs, sp = old(st)
+            return [e for e in evs if e.get("name") != "off-hand shot with the main hand"], sp
+        model.make_weapon_events = mk
+        return lambda: setattr(model, "make_weapon_events", old)
+    out.append(("CastOffhand switch ignored", m_boss(p_switch)))
+
+    def m_mix():
+        old = mech.roll_mix
+        mech.roll_mix = lambda a, d: (max(0.0, a - d), max(0.0, d - a))
+        try:
+            return _ci(test_roll_mix)
+        finally:
+            mech.roll_mix = old
+    out.append(("Advantage and Disadvantage subtracted, not cancelled per roll", m_mix))
 
     def m_slots():
         old = model.SCENARIOS["boss"]["slot_share"]

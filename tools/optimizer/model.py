@@ -66,13 +66,28 @@ NUKE_ROUNDS = 0.6                               # at most this share of the roun
 # conditions) at the gauntlet's default half damage (gauntlet.lua G.ENEMY_DAMAGE_SCALE); the enemy stands at 99% of its
 # hit points at each of our turns (gauntlet.lua G.BOSS_HP_PCT): "target hurt" effects on, "below half" off; it walks
 # up to the character in round 1 and stays in reach (melee_contact: a ranged build's off-hand melee attack); one fight
-# spends every spell slot (slot_share, nuke_rounds). Used through scenario().
+# spends every spell slot (slot_share, nuke_rounds). Used through scenario(). With an enemy in its reach a ranged
+# attack has Disadvantage (RANGED_DIS_TYPES), unless the plan steps away first (TACTICS). No one else fights: a status
+# nothing in the loadout applies never occurs (other_status) and Sneak Attack needs the roll's own Advantage (allies).
 SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
                          stealth=True, attacks_only=False, dmg_scale=1.0, target_hp_pct=None, melee_contact=0.0,
-                         slot_share=(2 / 3, 0.5), nuke_rounds=0.6),
+                         slot_share=(2 / 3, 0.5), nuke_rounds=0.6, other_status=0.1, allies=True),
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
                           attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
-                          slot_share=(1.0, 1.0), nuke_rounds=1.0)}
+                          slot_share=(1.0, 1.0), nuke_rounds=1.0, other_status=0.0, allies=False)}
+ALLIES = {"on": True}                           # the scenario in force has allies (model.scenario swaps it)
+# Ranged attacks made with an enemy within melee reach roll with Disadvantage, from two rules: the attacker is Threatened
+# (FLANKED) and the target is within 3 m (seen in game: from round 2 of a boss fight no hit carried the Advantage flag
+# and Sneak Attack stopped). Only leaving cancels both. Thrown weapons are left out (not checked in game).
+RANGED_DIS_TYPES = {"RangedWeaponAttack", "RangedOffHandWeaponAttack", "RangedSpellAttack"}
+# The plan's answer to an enemy in reach (boss scenario), chosen per evaluation by the better damage: "stand" shoots
+# from where the character stands (Disadvantage); "evade" (Cunning Action, Rogue 2) spends a bonus action in each turn
+# the enemy is in reach on Disengage and a move more than 3 m away and out of its reach, then shoots from there: no
+# Disadvantage, the character's own Advantage and Sneak Attack back. Hide (a second bonus action) is planned only where
+# the game allows it and it adds something: not while Threatened, and it fails at once in the boss's sight in a lit
+# room, which the boss arena is (HIDE_LEGAL); when legal, the first attack of the turn comes from hiding (Advantage).
+TACTICS = ("stand", "evade")
+HIDE_LEGAL = False
 # Share of the enemy attacks on a build that does not fight in melee made from within 2 m (Wrath of the Storm's
 # reach): a day's fights, model assumption; the boss walks up in round 1 and stays in reach (melee_contact).
 REACH_SHARE = {"day": 0.5, "boss": SCENARIOS["boss"]["melee_contact"]}
@@ -156,6 +171,12 @@ SWITCHES = {
     "hexcurse_eb": dict(default=True, text="Hexblade's Curse (+proficiency, crit 19) applies to Eldritch Blast"),
     "rotd_char_level": dict(default=True, text="Radiance of the Dawn adds the character level (not the Cleric level)"),
     "twf_offhand_xbow": dict(default=True, text="Two-Weapon Fighting adds DEX to off-hand hand crossbow shots"),
+    # The game fires the off-hand half of a main-hand attack (Dual Wielding Attacks toggle) for a bonus action
+    # (DualWieldingUseCosts; with none left it refuses the attack), the same shot as the off-hand bonus attack, so the
+    # default count (one off-hand shot per free bonus action) is the player's; on = the half for free with every
+    # main-hand attack, as a script's cast that skips cost checks got it.
+    "offhand_shot_with_main": dict(default=False, text="each main-hand shot also fires the off-hand hand crossbow "
+                                                      "for free (CastOffhand without its bonus action)"),
 }
 
 # ----------------------------------------------------------------------------------------------- build plans
@@ -229,8 +250,9 @@ def rage_damage(barb):
 class State:
     """One evaluation: build at an act's level with a loadout."""
 
-    def __init__(self, W, cid, bid, act, loadout, switches, choice=None, respec=None):
+    def __init__(self, W, cid, bid, act, loadout, switches, choice=None, respec=None, tactic="stand"):
         self.W, self.cid, self.bid, self.act = W, cid, bid, act
+        self.tactic = tactic
         self.level = odata.ACT_LEVEL[act]
         self.sw = dict({k: v["default"] for k, v in SWITCHES.items()}, **(switches or {}))
         self.plan = PLANS.get(bid, dict(mode="melee"))
@@ -318,6 +340,10 @@ class State:
         self.first_strike = max(p_first, self.p_open) / ROUNDS
         self.surprised = self.p_open / ROUNDS       # round-1 attacks against Surprised enemies
         self.concentrating = self._concentration()
+        # share of the turns an enemy stands in reach (boss scenario: it walks up in round 1), and with it the share of
+        # the ranged attacks made with Disadvantage: none when the plan steps away first (TACTICS "evade")
+        self.contact = (1.0 if self.plan["mode"] == "melee" else mech.MELEE_CONTACT) if mech.MELEE_CONTACT > 0 else 0.0
+        self.ranged_dis = 0.0 if tactic == "evade" else self.contact
 
     def _stealth_open(self):
         """Chance the fight starts with this character hidden (stealth builds only, see STEALTH_DC)."""
@@ -357,6 +383,10 @@ class State:
         broke = self.exposure * mech.p_hit(E["atk"], self.sheet["ac"]) * mech.p_fail(10, con, adv)
         return conc_uptime(min(1.0, broke))
 
+
+    def can_evade(self):
+        """Cunning Action (Rogue 2: Disengage as a bonus action) on a ranged build with an enemy in reach."""
+        return self.plan["mode"] == "ranged" and self.classes.get("Rogue", 0) >= 2 and self.contact > 0
 
     def _styles_ok(self):
         return True
@@ -499,11 +529,15 @@ def event_mods(st, ev, boosts, names):
     """Sum the extra boosts that apply to one event. -> dict(hit, flat, dice, crit_red, crit_dice, adv, dc, rer,
     save_bonus...)."""
     m = dict(hit=0.0, flat=0.0, dice=0.0, crit_red=0.0, crit_dice=0.0, adv=[], dc=0.0, reroll=None, savage=False,
-             entity=0.0, minroll=0.0, autocrit=0.0)
+             entity=0.0, minroll=0.0, autocrit=0.0, sheet_dice=0.0)
     ctx = mech.Ctx(st, ev, "boost")
     weapon_like = ev.get("weapon") or ev.get("kind") == "throw"
     for (w, cond, name, args, src, scope, origin, counted) in boosts:
         if scope and scope != ev.get("slot"):
+            continue
+        if counted and weapon_like and name == "CharacterWeaponDamage" and args:
+            # the sheet row has its average; a critical hit doubles its dice too (an elixir's 1d4)
+            m["sheet_dice"] += w * (mech.cond_p(cond, ctx) if cond else 1.0) * mech.dice_part(args[0], names)
             continue
         if counted and weapon_like and name != "DamageBonus":
             continue                         # the sheet row already has it
@@ -660,6 +694,12 @@ def make_weapon_events(st):
         ba_used_per_round += SR_COVER / ROUNDS
         st.target_uptime["HEXBLADES_CURSE"] = SR_COVER * (ROUNDS - 1) / ROUNDS
     free_ba = max(0.0, bonus_actions - ba_used_per_round)
+    if st.tactic == "evade":
+        # in each turn the enemy stands in reach: Disengage, and Hide with a second bonus action where legal (TACTICS)
+        need = 2.0 if bonus_actions >= 2 and HIDE_LEGAL else 1.0
+        used = min(free_ba, st.contact * need)
+        free_ba -= used
+        special["evade"] = dict(turns=st.contact, hide=need >= 2, bonus=used)
     main = dict(base, n=(n_att + surge) * base.get("throw_penalty", 1.0), name="attack")
     evs.append(main)
     # bonus-action attacks
@@ -671,11 +711,15 @@ def make_weapon_events(st):
             dmg = orow["avg"]
             if not st.sw["twf_offhand_xbow"] and any(s.startswith("Two-Weapon") for s in st.styles):
                 dmg -= max(0, st.mods.get("DEX", 0))
-            evs.append(dict(base, slot="RangedOff", n=free_ba, name="off-hand shot", attack_type="RangedOffHandWeaponAttack",
-                            base_hit=orow["hit"], base_dmg=dmg, die=(ond, osides),
-                            base_dice=ond * (osides + 1) / 2 + sum(mech.dice_part(e) for e in (ow.get("extra_damage") or [])),
-                            dtypes={orow.get("dt") or "Piercing"}))
+            off = dict(base, slot="RangedOff", n=free_ba, name="off-hand shot", attack_type="RangedOffHandWeaponAttack",
+                       base_hit=orow["hit"], base_dmg=dmg, die=(ond, osides),
+                       base_dice=ond * (osides + 1) / 2 + sum(mech.dice_part(e) for e in (ow.get("extra_damage") or [])),
+                       dtypes={orow.get("dt") or "Piercing"})
+            evs.append(off)
             free_ba = 0.0
+            if st.sw["offhand_shot_with_main"]:
+                # the main-hand shot's CastOffhand: the off-hand crossbow fires with every main-hand attack
+                evs.append(dict(off, n=main["n"], name="off-hand shot with the main hand"))
     if plan.get("rage") == "frenzy" and st.classes.get("Barbarian", 0) >= 3 and st.raging:
         # Enraged Throw: bonus action, no cooldown in the stats (Throw_FrenziedThrow), Prone on a hit, +STR again
         per_turn = free_ba if st.sw["enraged_throw_each_ba"] else min(1.0, free_ba)
@@ -688,7 +732,7 @@ def make_weapon_events(st):
         # GWM: a bonus-action attack after a critical hit or a kill (n set per evaluation, see _evaluate)
         evs.append(dict(base, n=0.0, name="GWM bonus attack", gwm_ba=free_ba))
     if plan.get("dread") and st.classes.get("Ranger", 0) >= 3:
-        evs.append(dict(base, n=1.0 / ROUNDS, name="Dread Ambusher", rider_flat=4.5))
+        evs.append(dict(base, n=1.0 / ROUNDS, name="Dread Ambusher", rider_flat=4.5, rider_dice=4.5))
     if plan.get("superiority") and fighter >= 3:
         dice = 5 if fighter >= 7 else 4
         die = 5.5 if fighter >= 10 else 4.5
@@ -989,17 +1033,23 @@ def _dw_gain(st, ev):
 
 
 # ================================================================================================ evaluation
-def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
-    """Expected damage per round of one event + hit/crit rates for the triggers."""
+def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0, dis_extra=0.0):
+    """Expected damage per round of one event + hit/crit rates for the triggers. dis_extra: the chance of
+    Disadvantage (an enemy in reach of a ranged attack); with Advantage it cancels to a straight roll."""
     m = event_mods(st, ev, boosts, names)
     adv_list = list(m["adv"])
     if adv_extra:
         adv_list.append(adv_extra)
     adv = 1.0 - math.prod(1 - min(1.0, a) for a in adv_list) if adv_list else 0.0
+    a_net, d_net = mech.roll_mix(adv, dis_extra)
     n = ev.get("n", 0.0)
     # the Advantage the character's own gear and features give (not a Prone target): an Advantage the plan can rely on
     own = 1.0 - math.prod(1 - min(1.0, a) for a in m["adv"]) if m["adv"] else 0.0
-    out = dict(dmg=0.0, ph=0.0, pc=0.0, casts=n, hits=0.0, crits=0.0, dmg_instances=0.0, fail=0.0, adv_own=own)
+    # ph_adv / pc_adv: the chance a roll has net Advantage and hits / crits (Sneak Attack without allies)
+    out = dict(dmg=0.0, ph=0.0, pc=0.0, casts=n, hits=0.0, crits=0.0, dmg_instances=0.0, fail=0.0, adv_own=own,
+               adv_net=a_net if ev.get("attack_roll") else 0.0, dis_net=d_net if ev.get("attack_roll") else 0.0,
+               dis_any=min(1.0, dis_extra) if ev.get("attack_roll") else 0.0,
+               ph_adv=0.0, pc_adv=0.0)
     if ev["kind"] == "spell":
         sp = ev["sp"]
         spell = st.sheet.get("spell") or {"dc": 8 + st.prof, "atk": st.prof}
@@ -1010,9 +1060,11 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
         if sp["roll"] == "attack":
             bonus = (spell.get("atkM") if ev.get("attack_type") == "MeleeSpellAttack" else spell["atk"]) + m["hit"]
             thr = 20 - m["crit_red"]
-            ph = mech.p_hit(bonus, E["ac"], adv)
-            pc = mech.p_crit(thr, adv)
+            ph = mech.p_hit_mix(bonus, E["ac"], a_net, d_net)
+            pc = mech.p_crit(thr, a_net, d_net)
             pc = pc + max(0.0, ph - pc) * m["autocrit"]
+            pha, pca = mech.p_hit(bonus, E["ac"], 1.0), mech.p_crit(thr, 1.0)
+            pca = pca + max(0.0, pha - pca) * m["autocrit"]
             per = 0.0
             dice = 0.0
             for e, _t in sp["dmg"]:
@@ -1021,7 +1073,7 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
             per += m["flat"] + ev.get("rider_dice", 0.0)
             dice += m["dice"] + ev.get("rider_dice", 0.0)
             dmg = (ph * per + pc * dice) * tg
-            out.update(ph=ph, pc=pc)
+            out.update(ph=ph, pc=pc, ph_adv=a_net * pha, pc_adv=a_net * pca)
             instances = ph * tg * len(sp["dmg"])
             out["hits"] = n * ph * tg
             out["crits"] = n * pc * tg
@@ -1047,7 +1099,7 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
     # weapon / throw
     bonus = ev["base_hit"] + m["hit"]
     flat = ev["base_dmg"] + m["flat"] + m["entity"] + ev.get("rider_flat", 0.0)
-    dice = ev["base_dice"] + m["dice"] + ev.get("rider_dice", 0.0)
+    dice = ev["base_dice"] + m["dice"] + m["sheet_dice"] + ev.get("rider_dice", 0.0)
     thr = 20 - m["crit_red"]
     nd, sides = ev.get("die", (0, 0))
     if ev.get("melee") and nd and (m["reroll"] or m["savage"]):
@@ -1062,17 +1114,20 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0):
         mt = event_mods(st, ev, boosts, names) if tog else m
         b2 = ev["base_hit"] + mt["hit"]
         f2 = ev["base_dmg"] + mt["flat"] + mt["entity"] + ev.get("rider_flat", 0.0) + (flat - (ev["base_dmg"] + m["flat"] + m["entity"] + ev.get("rider_flat", 0.0)))
-        ph = mech.p_hit(b2, E["ac"], adv)
-        pc = mech.p_crit(thr, adv)
+        ph = mech.p_hit_mix(b2, E["ac"], a_net, d_net)
+        pc = mech.p_crit(thr, a_net, d_net)
         pc = pc + max(0.0, ph - pc) * mt["autocrit"]
+        pha, pca = mech.p_hit(b2, E["ac"], 1.0), mech.p_crit(thr, 1.0)
+        pca = pca + max(0.0, pha - pca) * mt["autocrit"]
         crit_extra = dice + mt["crit_dice"] * ((sides + 1) / 2 if sides else 0)
         val = ph * f2 + pc * crit_extra
         if best is None or val > best[0]:
-            best = (val, ph, pc, tog)
+            best = (val, ph, pc, tog, a_net * pha, a_net * pca)
     st._toggle = {}
-    val, ph, pc, tog = best
+    val, ph, pc, tog, ph_adv, pc_adv = best
     val += ev.get("any_dmg", 0.0)            # hit or miss (a thrown weapon's explosion)
-    out.update(dmg=n * val, ph=ph, pc=pc, hits=n * ph, crits=n * pc, dmg_instances=n * ph, toggle=tog)
+    out.update(dmg=n * val, ph=ph, pc=pc, hits=n * ph, crits=n * pc, dmg_instances=n * ph, toggle=tog, ph_adv=ph_adv,
+               pc_adv=pc_adv)
     return out
 
 
@@ -1122,6 +1177,9 @@ def run_triggers(st, evs, results, names, E):
                 continue
             per_hit = res["dmg"] / res["hits"] if res.get("hits") else 0.0
             ev2 = dict(ev, _item_slot=slot, crit_given_hit=(res["pc"] / res["ph"]) if res.get("ph") else 0.05,
+                       # HasAdvantage(): the roll's net Advantage, given a hit for an OnDamage trigger
+                       adv=(res.get("ph_adv", 0.0) / res["ph"]) if res.get("ph") and "OnDamage" in ctxs
+                       else res.get("adv_net", 0.0),
                        hit_flag=1.0 if "OnDamage" in ctxs else (res.get("ph") or 1.0),
                        kill_p=min(0.95, per_hit / ENEMY_HP[st.act]))
             c = mech.Ctx(st, ev2, "trigger")
@@ -1332,7 +1390,7 @@ def scenario(name):
     names = ("ROUNDS", "FIGHTS", "SR_WINDOWS", "SR_COVER", "ENEMIES", "STEALTH_OPENERS", "INCOMING_ATTACKS_ONLY",
              "ENEMY_DMG_SCALE", "SLOT_SHARE", "NUKE_ROUNDS")
     keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
-    keep_mc, keep_reach = mech.MELEE_CONTACT, REACH["share"]
+    keep_mc, keep_reach, keep_other, keep_allies = mech.MELEE_CONTACT, REACH["share"], mech.OTHER_STATUS_P, ALLIES["on"]
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
@@ -1344,6 +1402,8 @@ def scenario(name):
     mech.MAX_TARGETS = s["enemies"] if name != "day" else None
     mech.TARGET_HP_PCT = s.get("target_hp_pct")
     mech.MELEE_CONTACT = s.get("melee_contact") or 0.0
+    mech.OTHER_STATUS_P = s["other_status"]
+    ALLIES["on"] = s["allies"]
     REACH["share"] = REACH_SHARE[name]
     for c in _caches():
         c.clear()
@@ -1355,6 +1415,8 @@ def scenario(name):
         mech.MAX_TARGETS = keep_tg
         mech.TARGET_HP_PCT = keep_pct
         mech.MELEE_CONTACT = keep_mc
+        mech.OTHER_STATUS_P = keep_other
+        ALLIES["on"] = keep_allies
         REACH["share"] = keep_reach
         for c, k in zip(_caches(), kept):
             c.clear()
@@ -1376,7 +1438,17 @@ def _options(W, sid):
 
 
 def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
-    st = State(W, cid, bid, act, loadout, switches, choice, respec)
+    """One evaluation; with an enemy in reach of a ranged build that can step away, the better of the TACTICS."""
+    r = _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec, "stand")
+    if r.st.can_evade():
+        r2 = _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec, "evade")
+        if r2.offence > r.offence:
+            return r2
+    return r
+
+
+def _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec, tactic):
+    st = State(W, cid, bid, act, loadout, switches, choice, respec, tactic)
     E = ENEMY[act]
     names = lmv_names(st)
     if st.plan["mode"] == "caster":
@@ -1387,6 +1459,10 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
     # the stealth opener is one attack of the fight: its share of this build's attack rolls
     n_rolls = sum(ev.get("n", 0.0) for ev in evs if ev.get("attack_roll") and ev["kind"] != "spell") or         sum(ev.get("n", 0.0) for ev in evs if ev.get("attack_roll")) or 1.0
     st.sneak_share = min(1.0, st.p_open / (ROUNDS * max(1.0, n_rolls)))
+    st.evade = special.get("evade")
+    if st.evade and st.evade["hide"]:
+        # the first attack of each turn spent evading is made from hiding
+        st.sneak_share = min(1.0, st.sneak_share + st.evade["turns"] / max(1.0, n_rolls))
     dyn = []
     tgt = dict(save_pen=0.0, atk_pen=0.0, prone=0.0, dot=0.0, control=0.0, adv=0.0)
     results = []
@@ -1407,7 +1483,8 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
                 adv_x = 1 - (1 - adv_x) * (1 - tgt["adv"])
             if st.sneak_share and ev.get("attack_roll"):
                 adv_x = 1 - (1 - adv_x) * (1 - st.sneak_share)      # attacking while hidden: Advantage
-            results.append(eval_event(st, ev, boosts, names, E, tgt["save_pen"], adv_x))
+            dis_x = st.ranged_dis if ev.get("attack_type") in RANGED_DIS_TYPES else 0.0
+            results.append(eval_event(st, ev, boosts, names, E, tgt["save_pen"], adv_x, dis_x))
         # an action item spell replaces an Attack action: keep it only when it beats those attacks
         displaced = 0.0
         main = next(((ev, r) for ev, r in zip(evs, results) if ev.get("name") == "attack" and ev.get("n")), None)
@@ -1448,7 +1525,9 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
     # per-round damage
     dmg = sum(r["dmg"] for r in results) + extra + tgt["dot"] - displaced
     hits = sum(r["hits"] for ev, r in zip(evs, results) if ev["kind"] != "spell")
-    # Sneak Attack (Rogue): once per turn on a finesse / ranged weapon hit with Advantage or an ally next to the target
+    crits = sum(r["crits"] for ev, r in zip(evs, results) if ev["kind"] != "spell")
+    # Sneak Attack (Rogue): once per turn on a finesse / ranged weapon hit with Advantage (and no Disadvantage) or an
+    # ally next to the target; its dice double on a critical hit
     rogue = st.classes.get("Rogue", 0)
     sa = 0.0
     if rogue and st.plan["mode"] != "caster":
@@ -1457,13 +1536,16 @@ def _evaluate(W, cid, bid, act, loadout, switches, detail, choice, respec=None):
                 (ev.get("ranged") or "Finesse" in ((W.items.get(st.loadout.get(ev["slot"]) or "") or {}).get("weapon")
                                                    or {}).get("properties", []))]
         if elig:
-            p_any = 1 - math.prod((1 - r["ph"]) ** ev["n"] for ev, r in elig)
-            pc_any = 1 - math.prod((1 - r["pc"]) ** ev["n"] for ev, r in elig)
-            sa = 0.8 * (p_any * sad + pc_any * sad * 0.5)
+            # with allies: Advantage or an ally in 0.8 of the turns (model rule); alone: the rolls' own net Advantage
+            hk, ck, share = ("ph", "pc", 0.8) if ALLIES["on"] else ("ph_adv", "pc_adv", 1.0)
+            p_any = 1 - math.prod((1 - r[hk]) ** ev["n"] for ev, r in elig)
+            h_ = sum(r[hk] * ev["n"] for ev, r in elig)
+            crit_given_hit = sum(r[ck] * ev["n"] for ev, r in elig) / h_ if h_ else 0.0
+            sa = share * p_any * sad * (1 + crit_given_hit)
             dmg += sa
     # marks / smites / superiority
     if special.get("mark"):
-        dmg += special["mark"] * hits
+        dmg += special["mark"] * (hits + crits)          # a critical hit doubles the mark's die
     if special.get("superiority"):
         dmg += special["superiority"] * min(1.0, hits)
     if st.plan.get("smite") and st.classes.get("Paladin", 0) >= 2:
@@ -1788,11 +1870,13 @@ def auto_save(W, iid):
 
 def attack_parts(evs, results, dmg, sa):
     """Per round, what the gauntlet compares with the game part by part: attack rolls, landed hits (critical ones
-    included), critical hits, their rates, all damage per landed hit and Sneak Attack's damage. Save spells and
-    automatic damage make no attack roll and are left out of the counts, not of the damage."""
-    att = hits = crits = 0.0
+    included), critical hits, their rates, the share of rolls with net Advantage / Disadvantage (both at once cancel)
+    and with any Disadvantage (an enemy in reach of a ranged attack), all damage per landed
+    hit (with and without Sneak Attack) and Sneak Attack's damage. Save spells, automatic damage and an item spell the
+    plan does not use make no attack roll and are left out of the counts, not of the damage."""
+    att = hits = crits = adv = dis = dis_any = 0.0
     for ev, r in zip(evs, results):
-        if not r.get("ph"):
+        if not r.get("ph") or ev.get("dropped"):
             continue
         tg = 1
         if ev.get("kind") == "spell":
@@ -1803,9 +1887,15 @@ def attack_parts(evs, results, dmg, sa):
         att += (ev.get("n") or 0.0) * tg
         hits += r.get("hits") or 0.0
         crits += r.get("crits") or 0.0
+        adv += (ev.get("n") or 0.0) * tg * (r.get("adv_net") or 0.0)
+        dis += (ev.get("n") or 0.0) * tg * (r.get("dis_net") or 0.0)
+        dis_any += (ev.get("n") or 0.0) * tg * (r.get("dis_any") or 0.0)
     return {"attacks": round(att, 3), "hits": round(hits, 3), "crits": round(crits, 3),
             "hit_rate": round(hits / att, 4) if att else None, "crit_rate": round(crits / att, 4) if att else None,
-            "dmg_per_hit": round(dmg / hits, 2) if hits else None, "sneak": round(sa, 2)}
+            "adv_rate": round(adv / att, 4) if att else None, "dis_rate": round(dis / att, 4) if att else None,
+            "dis_any_rate": round(dis_any / att, 4) if att else None,
+            "dmg_per_hit": round(dmg / hits, 2) if hits else None,
+            "dmg_per_hit_no_sneak": round((dmg - sa) / hits, 2) if hits else None, "sneak": round(sa, 2)}
 
 
 class Result:
@@ -1831,6 +1921,13 @@ class Result:
                                  turns=ev.get("turns"), gain=ev.get("gain_per_cast"))
                             for ev, r in zip(evs, results)] if detail else None
         self.parts = attack_parts(evs, results, dmg, sa) if detail else None
+        self.tactic = st.tactic
+        ev_ = getattr(st, "evade", None)
+        if detail and ev_:
+            # the plan's steps in each turn the enemy stands in reach (plan.py emits them)
+            self.plan_events.append(dict(name="evade", n=round(ev_["turns"], 4), slot=None, spell=None, kind="tactic",
+                                         cost="bonus", dropped=False, dmg=0.0, toggle=False, adv=0.0, turns=None,
+                                         gain=None, hide=ev_["hide"]))
 
     def raw_value(self):
         return self.offence * (1.0 - self.lost) * math.sqrt(sat(self.R))

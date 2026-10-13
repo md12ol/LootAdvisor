@@ -155,6 +155,15 @@ local function spellCosts(spell)
   local st = try(Ext.Stats.Get, spell)
   return parseCosts(st and try(function() return st.UseCosts end))
 end
+-- What the off-hand half of a main-hand attack costs (DualWieldingUseCosts: the bonus action), or nil. The game takes
+-- it when the Dual Wielding Attacks toggle fires that half; a script's cast that skips cost checks does not.
+function G.dualCosts(spell)
+  local st = try(Ext.Stats.Get, spell)
+  local c = st and try(function() return st.DualWieldingUseCosts end)
+  if not c or c == "" then return nil end
+  local out = parseCosts(c)
+  return #out > 0 and out or nil
+end
 local function canPay(u, costs)
   for _, c in ipairs(costs) do
     if resAmount(u, c.kind, c.level) < c.n then return false, c.kind .. (c.level and (" L" .. c.level) or "") end
@@ -1848,6 +1857,13 @@ end
 -- (run.py --no-real-rolls), keeps the casts that never roll, for comparison with older runs.
 G.REAL_ROLLS = true
 G.ROLL_OPTION = "IgnoreSpellRolls"
+-- The player path (off by default until checked in game; a request's player_cast = true turns it on for a run): the
+-- character's requests also lose the options that skip the engine's checks and carry FromClient, as the requests of a
+-- player's click do, so the engine checks and pays costs (the off-hand half's bonus action too), range and line of
+-- sight. Off: the request keeps them and the harness pays the costs itself.
+G.PLAYER_CAST = false
+G.PLAYER_STRIP = { IgnoreCastChecks = true, IgnoreTargetChecks = true }
+G.PLAYER_ADD = "FromClient"
 G.realCasters = G.realCasters or {}
 -- The cast options as names: a list or set from Lua, or the engine's text form "CastOptions(A,B)".
 function G.castOptionNames(v)
@@ -1869,10 +1885,12 @@ function G.rollRequests(list, casters)
     local cu = r and try(function() return r.Caster.Uuid.EntityUuid end)
     local c = cu and casters[cu]
     if c then
-      local keep, had = {}, false
+      local keep, had, from = {}, false, false
       for _, f in ipairs(G.castOptionNames(try(function() return r.CastOptions end))) do
-        if f == G.ROLL_OPTION then had = true else keep[#keep + 1] = f end
+        if f == G.ROLL_OPTION or (c.player and G.PLAYER_STRIP[f]) then had = true else keep[#keep + 1] = f end
+        if f == G.PLAYER_ADD then from = true end
       end
+      if c.player and not from then keep[#keep + 1] = G.PLAYER_ADD; had = true end
       if had and pcall(function() r.CastOptions = keep end) then
         n = n + 1
         local sp = try(function() return r.Spell.Prototype end) or "?"
@@ -1904,7 +1922,7 @@ end
 function G.addRealCaster(F, u)
   u = uuid(u)
   if not u or F.manual or not F.realRolls or (F.realCasters or {})[u] then return end
-  local c = { edits = {} }
+  local c = { edits = {}, player = F.playerCast or nil }
   F.realCasters = F.realCasters or {}
   F.realCasters[u], G.realCasters[u] = c, c
 end
@@ -2219,6 +2237,77 @@ function G.moveSettled(F, t)
   return true
 end
 
+-- Leaving the boss: more than 3 m from it (a ranged attack on a target that close has Disadvantage) and out of its
+-- reach (Threatened), with slack.
+G.LEAVE_M = 4.5
+-- The spot a move step goes to, nearest the character: "@leave_spot" = a spot G.LEAVE_M or more from the boss: the
+-- arena's surveyed "leave_spots", else one of 12 around the boss at G.LEAVE_M the character can walk to (G.route) within
+-- its movement; "@hide_spot" = the arena's "hide_spots" (surveyed in game as out of the boss's sight) outside its
+-- reach. A spot is [x, y, z] or {at = [x, y, z]}; a plain {x, y, z} target is used as given. nil when there is none.
+function G.moveTarget(F, to)
+  if type(to) == "table" then return { to[1], to[2], to[3] } end
+  local A = F.A or {}
+  local list, need
+  if to == "@hide_spot" then list, need = A.hide_spots or {}, G.REACH
+  elseif to == "@leave_spot" then list, need = A.leave_spots or {}, G.LEAVE_M
+  else return nil end
+  local b = resolveTarget(F, "@boss")
+  local bx, by, bz
+  if b then bx, by, bz = xyz(b) end
+  local x0, y0, z0 = xyz(F.char)
+  if to == "@leave_spot" and #list == 0 and bx and x0 then
+    local budget = resAmount(F.char, "Movement") + 0.5
+    list = {}
+    for k = 0, 11 do
+      local a = 2 * math.pi * k / 12
+      local g = { bx + G.LEAVE_M * math.cos(a), by, bz + G.LEAVE_M * math.sin(a) }
+      local pts = G.route(F.char, g[1], g[2], g[3])
+      local poly = pts and G.cutAt({ x0, y0, z0 }, pts, g[1], g[2], g[3], 0.6, budget)
+      if poly then list[#list + 1] = { poly[#poly][1], poly[#poly][2], poly[#poly][3] } end
+    end
+  end
+  local best, bd
+  for _, s in ipairs(list) do
+    local p = s.at or s
+    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7
+    local d = x0 and math.sqrt((p[1] - x0) ^ 2 + (p[3] - z0) ^ 2) or 0
+    if clear and (not bd or d < bd) then best, bd = { p[1], p[2], p[3] }, d end
+  end
+  return best
+end
+-- A move step (a.move_to): walks there with the turn's movement (the shared F.moving wait, which charges the Movement
+-- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails and counts as
+-- an action not done, so a run without surveyed hide spots shows it.
+function G.moveStep(F, a, R, rec0)
+  if rec0 then
+    local m = rec0.move or {}
+    if m.result == "there" then
+      rec0.result = "done"
+      R.done[a.done_key or "move"] = true
+    else
+      rec0.result, rec0.optional = "failed: move " .. tostring(m.result), false
+    end
+    return
+  end
+  local rec = { spell = a.spell, target = a.target, why = a.why, group = a.group, optional = a.optional }
+  R.actions[#R.actions + 1] = rec
+  local p = G.moveTarget(F, a.move_to)
+  if not p then
+    rec.result, rec.optional = "failed: no spot for " .. tostring(a.move_to) .. " in the arena", false
+    return
+  end
+  local x, y, z = xyz(F.char)
+  local spot = { x = p[1], y = p[2], z = p[3] }
+  rec.move = { x = spot.x, z = spot.z, to = a.move_to }
+  if not (x and pcall(Osi.CharacterMoveToPosition, F.char, spot.x, spot.y, spot.z, "Run", "LA_gauntlet_move")) then
+    rec.result, rec.optional = "failed: the engine refused the move", false
+    return
+  end
+  F.moving = { a = a, R = R, rec = rec, spot = spot, t0 = now(), p0 = { x, y, z }, last = { x, y, z }, lastT = now(),
+    mv0 = resAmount(F.char, "Movement") }
+  rec.result = "moving"
+end
+
 -- one scripted action: {spell, target, group ("action" | "bonus" | "free"), cost (override; "free" = granted, e.g.
 -- an Extra Attack), requires ("action" / "surge": only after that succeeded this round), alt (fallback action),
 -- done_key (what R.done records instead of the group), ms}. A cast that the engine accepts is left PENDING in
@@ -2236,6 +2325,16 @@ local function doAction(F, a, R, rec0)
       result = "not needed: no " .. a.when_status .. " this turn" }
     return
   end
+  -- a step of the evade tactic, taken only while the boss stands in melee reach of the character
+  if a.when_adjacent then
+    local b = resolveTarget(F, "@boss")
+    if not b or not dist(F.char, b) or dist(F.char, b) > G.REACH then
+      R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
+        result = "not needed: the boss is not in reach" }
+      return
+    end
+  end
+  if a.move_to then return G.moveStep(F, a, R, rec0) end
   local tgt = resolveTarget(F, a.target or "@boss")
   local rec = rec0
   if not rec then
@@ -2247,6 +2346,10 @@ local function doAction(F, a, R, rec0)
     if a.alt then rec.result = reason .. " -> alt"; return doAction(F, a.alt, R) end
   end
   if not tgt then return fallback("no target") end
+  -- Hide needs the character not Threatened (its RequirementConditions), which a script's cast does not check
+  if tostring(a.spell):find("^Shout_Hide") and try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then
+    return fallback("not allowed: Threatened (FLANKED)")
+  end
   local okp, why = G.afford(F, a)
   if not okp then return fallback(why) end
   local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
@@ -2273,7 +2376,13 @@ local function doAction(F, a, R, rec0)
     before[i] = resAmount(F.char, c.kind, c.level)
     res[#res + 1] = { kind = c.kind, level = c.level, before = before[i] }
   end
+  -- the off-hand half's cost, paid once its damage row shows it fired (G.settle)
+  local dual = G.dualCosts(a.spell)
+  if dual then rec.dual_toggle = G.dualToggle(F, a) end
+  local dualBefore = {}
+  for i, c in ipairs(dual or {}) do dualBefore[i] = resAmount(F.char, c.kind, c.level) end
   local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
+    dual = dual, dualBefore = dualBefore,
     target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, t0 = now(), fails0 = #(R.cast_fails or {}),
     reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
   local okc, err
@@ -2295,12 +2404,58 @@ local function doAction(F, a, R, rec0)
 end
 
 G.CAST_RETRIES, G.RETRY_ANY_REFUSAL = 2, false
+-- Bonus actions the rest of the turn's queue needs: its planned bonus actions that are not optional.
+function G.reservedBonus(F)
+  local n = 0
+  for i = (F.qi or 0) + 1, #(F.queue or {}) do
+    local q = F.queue[i]
+    if q.group == "bonus" and not q.optional then n = n + 1 end
+  end
+  return n
+end
+-- Dual Wielding Attacks, set before each main-hand attack (checked in game with two hand crossbows): toggled on, the
+-- attack fires the off-hand shot with it and takes a bonus action, and with no bonus action left the game refuses
+-- the whole attack; toggled off, one shot and the bonus action kept. On only when a bonus action is free beyond the
+-- ones the turn's later planned bonus actions need (Hunter's Mark) and the plan does not say dual = false.
+-- -> the toggle set
+function G.dualToggle(F, a)
+  local on = a.dual ~= false and resAmount(F.char, "BonusActionPoint") - G.reservedBonus(F) >= 1
+  local ranged = tostring(a.spell):find("^Projectile_") ~= nil
+  local e = ent(F.char)
+  pcall(function()
+    if ranged then e.DualWielding.RangedToggledOn = on else e.DualWielding.MeleeToggledOn = on end
+    e:Replicate("DualWielding")
+  end)
+  return on
+end
+-- The off-hand half's damage row comes about 0.4 s after the main hand's.
+G.OFFHAND_MS = 900
+-- Did the pending cast's off-hand half fire: a damage row of cause Offhand from the character since the cast.
+function G.offhandFired(P, dmg)
+  for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
+    local d = dmg[i]
+    if (d.source == P.who or d.owner == P.who) and tostring(d.cause or ""):find("Offhand", 1, true) then return true end
+  end
+  return false
+end
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
 -- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
 function G.settle(F, R, t)
   local P = F.pending
   if not P then return true end
   local ev = G.castEvidence(P, R.casts, G.dmg, function(k, lv) return resAmount(F.char, k, lv) end)
+  if ev and P.dual and not P.dualDone then
+    -- a main-hand attack that can fire the off-hand half: wait up to OFFHAND_MS after the confirmation for its row
+    P.tConf = P.tConf or t
+    if G.offhandFired(P, G.dmg) then
+      pay(F.char, P.dual, P.dualBefore)
+      P.dualDone, P.rec.offhand_half = true, "paid"
+    elseif t - P.tConf < G.OFFHAND_MS then
+      return false
+    else
+      P.dualDone, P.rec.offhand_half = true, "none"
+    end
+  end
   if ev then
     F.pending = nil
     pay(F.char, P.costs, P.before)
@@ -3238,7 +3393,7 @@ local function finish(F, why)
     lane = F.lane and F.lane.id, lanes_run = F.lane and F.lane.run, first_lane = F.lane and F.lane.first,
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = false, run_id = F.req.run_id,
     test_mode = F.popup and (F.player and "manual" or "automatic") or nil,
-    real_rolls = F.realRolls == true,
+    real_rolls = F.realRolls == true, player_cast = F.playerCast == true,
     respec = spec.respec or "planned", spec_id = { build = spec.build, set = spec.set_id, act = spec.act,
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
     hits = G.hits, log = G.log, valid = G.results.valid, invalid = G.results.invalid }
@@ -3295,6 +3450,7 @@ function G.run(req)
   if G.LANES and G.LANES.on and not req.lane then return "busy" end
   local F = { req = req, manual = req.mode == "manual", cooldown = {}, started = math.floor(now() / 1000),
     state = "prep", plan = {}, S = G.SCENARIOS[req.scenario or "boss"], realRolls = G.realRollsFor(req),
+    playerCast = (req.player_cast == nil and G.PLAYER_CAST or req.player_cast == true) and (req.mode ~= "manual"),
     popup = req.popup == true, player = req.mode ~= "manual" and req.play == "manual" }
   G.F = F
   G.reset()
