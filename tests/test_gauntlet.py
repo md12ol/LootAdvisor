@@ -581,6 +581,15 @@ def watchdog_tests(L):
     check("Action Surge: not done before its status gives the extra action, done once it is on",
           g.T_s1 is False and g.T_d1 is False and g.T_s2 is True and g.T_d2 is True,
           str((g.T_s1, g.T_d1, g.T_s2, g.T_d2)))
+    # a record is written whatever the probes hold: values Stringify refuses (an Entity) kept as text
+    L.execute(r"""
+      local f = function() end
+      local v = GAUNTLET.jsonSafe({ a = 1, s = "x", b = { c = f, d = true }, e = { 1, 2 } })
+      T_js = { type(v.a), type(v.s), type(v.b.c), type(v.b.d), #v.e }
+    """)
+    js = list(g.T_js.values())
+    check("record: jsonSafe keeps numbers, strings, booleans, tables and writes anything else as text",
+          js == ["number", "string", "string", "boolean", 2], str(js))
     # the combat's first turn: the first request waits longer (in game one sent 200 ms after it started was refused)
     L.execute(r"""
       local G = GAUNTLET
@@ -3128,6 +3137,28 @@ def real_roll_tests(L):
           and g.T_res is True, f"{g.T_start} {g.T_end}")
     check("rolls: every run record says whether the run rolled", g.T_rec is True and g.T_rec2 is False and
           g.T_start2 is False, f"{g.T_rec} {g.T_rec2}")
+    # a record Stringify refuses even as a JSON-safe copy: a minimal record is written and the run still ends
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local stringify, save, mark = Ext.Json.Stringify, Ext.IO.SaveFile, G.mark
+      local written, marks = nil, {}
+      Ext.Json.Stringify = function(t) if t.spec_id then error("NaN") end return "min" end
+      Ext.IO.SaveFile = function(path, text) if path:find("run_") then written = text end end
+      G.mark = function(kind) marks[#marks + 1] = kind end
+      local F = { char = "c1", enemies = { "e1" }, req = { scenario = "boss", label = "x" }, plan = {}, S = {},
+                  started = 1, cooldown = {}, tRun = 0, realRolls = G.realRollsFor({ mode = "scripted" }) }
+      G.F = F
+      G.goFight(F)
+      G._finish(F, "aborted")
+      T_written, T_over = written, table.concat(marks, " "):find("over") ~= nil
+      Ext.Json.Stringify, Ext.IO.SaveFile, G.mark = stringify, save, mark
+      G.F = nil
+      G.fighting = false
+    """)
+    g = L.globals()
+    check("record: refused even as a JSON-safe copy -> a minimal record written, the run still marked over",
+          g.T_written == "min" and g.T_over is True, f"{g.T_written} {g.T_over}")
     # a summon joining a scripted run rolls too and gets the run's reaction policy
     L.execute(r"""
       local G = GAUNTLET
@@ -5397,6 +5428,8 @@ def arena_camera_tests(L):
       T_far, T_near = far[1][1], near[1][1]
       local order = {}
       local oldNotify, oldSave, oldStart = G.notify, Ext.IO.SaveFile, G.startFight
+      local oldActive = Osi.MakePlayerActive
+      Osi.MakePlayerActive = function(u) order[#order + 1] = "select " .. tostring(u) end
       G.notify = function(m)
         if m.kind == "camera" then
           order[#order + 1] = "camera " .. tostring(m.char)
@@ -5416,7 +5449,7 @@ def arena_camera_tests(L):
       G.F = F
       G.release(F)
       T_cam2 = G.results.camera
-      G.notify, Ext.IO.SaveFile, G.startFight = oldNotify, oldSave, oldStart
+      G.notify, Ext.IO.SaveFile, G.startFight, Osi.MakePlayerActive = oldNotify, oldSave, oldStart, oldActive
       G.F = nil
     """)
     g = L.globals()
@@ -5424,7 +5457,8 @@ def arena_camera_tests(L):
           abs(g.T_far - 10.0) < 1e-9 and abs(g.T_near - 1.6) < 1e-9, f"{g.T_far} {g.T_near}")
     order = [g.T_order[i + 1] for i in range(len(g.T_order))]
     check("camera: onto the character before the fight-started marker, the client's answer recorded",
-          order == ["camera c1", "marker"] and g.T_cam.ok is True and g.T_cam.dist == 0.4, str(order))
+          order[:3] == ["select c1", "camera c1", "marker"] and g.T_cam.ok is True and g.T_cam.dist == 0.4,
+          str(order))
     check("camera: no answer from the client -> the start goes on, recorded",
           g.T_cam2 is not None and g.T_cam2.ok is False and "no answer" in str(g.T_cam2.why), str(g.T_cam2))
 
@@ -6150,6 +6184,11 @@ MUTATIONS = [
      "    if try(Osi.HasActiveStatus, F.char, G.SURGE_STATUS) == 1 or t - P.tEff >= G.PLAYER_END_MS then",
      "    if true then"),
     ("strategy spec: the item rule keeps its item spells", PL, '    plan["item_actions"] = []\n', ""),
+    ("record: the JSON-safe copy's Stringify unprotected", GL,
+     "    okj, text = pcall(Ext.Json.Stringify, G.jsonSafe(rec))\n",
+     "    okj, text = true, Ext.Json.Stringify(G.jsonSafe(rec))\n"),
+    ("record: a value Stringify refuses kept as it is", GL, "  if t ~= \"table\" then return tostring(v) end",
+     "  if t ~= \"table\" then return v end"),
     ("impact wait: the step loop never waits for the last attack to land", GL,
      "    if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end\n", ""),
     ("impact wait: the attack's damage row not waited for", GL, "  if not first then return true end\n", ""),
@@ -6494,6 +6533,8 @@ MUTATIONS = [
     ("camera: the marker written before the camera", GL,
      "  G.cameraOn(F, function(cam)\n    G.results.camera = cam\n    G.startFight(F)\n  end)",
      "  G.startFight(F)\n  G.cameraOn(F, function(cam) G.results.camera = cam end)"),
+    ("camera: the character not selected first (the camera follows the selected one)", GL,
+     "  local okA = pcall(Osi.MakePlayerActive, F.char)\n", "  local okA = false\n"),
     ("camera: no answer waits for ever", GL, "    if F.camera or polls * G.POLL_MS >= G.CAMERA_WAIT_MS then",
      "    if F.camera or polls > 1e9 then"),
     ("rounds: a cut round compared as a full round", RN, "            if cut:\n                row.update(game=own,",
