@@ -180,8 +180,11 @@ the base spell, then the cantrip; an item spell is used only when it can be paid
 only when the game shows it (a cast event, damage to its target, or its cost spent); otherwise it is logged as failed
 and its fallback runs. A run is recorded as invalid, with the causes, when it ends early (the character's turn never
 came after the recovery attempt, the combat ended, the prep timed out, ...), a round passes without a confirmed action,
-or the character casts something outside its plan. Such a run ends as soon as it is known to be invalid: a setup
-mismatch before round 1, a round without a confirmed action or with a refused cast after that round. The run ends as
+a planned step is not carried out (the evade move finds no spot, a Disengage is refused; an optional step, a fallback
+to its alternative and a step not needed that turn do not count), a reaction fires against the plan's answer for that
+turn, or the character casts something outside its plan. Such a run ends as soon as it is known to be invalid: a setup
+mismatch before round 1, a round without a confirmed action, with a refused cast or with a planned step not done after
+that round. The run ends as
 the last round's turn is released; damage taken is counted per enemy turn fought (one before round 1 included). The
 enemies are reset to 99% of their hit points at each of the character's turns, so effects that need a hurt target
 work while "below half" and kill effects do not. Before the fight every field of the setup is read back from the game
@@ -212,7 +215,11 @@ adds most to. A ranged attack with the boss in melee reach (Threatened) or withi
 Rogue whose model finds it worth more steps away in such a turn: Disengage (Cunning Action), then a move more than 3 m
 from the boss and out of its reach (`leave_spots` in `arenas.json`, else a spot found by path), then the attacks with
 the character's own Advantage. Hide is planned only where the game allows it (not while Threatened, not in the boss's
-sight in a lit room). A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark; the
+sight in a lit room). Sneak Attack has one charge, and it comes back as the character's turn ends: one spent on a
+reaction in the boss's turn (a riposte) is missing in the character's next turn. The plan sets Sneak Attack's
+reactions per turn (`reactions_enemy_turn`: on for every riposte hit, only for a critical one, or never), the answer
+the model finds worth more; the harness switches them as the character's turn starts and as it ends. `run.py
+--report` compares the character's own turn and its reactions in the boss's turn apart, on both sides. A Thief's second bonus action fires an off-hand shot in round 1 beside Hunter's Mark; the
 off-hand shots are optional, since a main-hand attack with the Dual Wielding Attacks toggle on fires the off-hand shot
 itself for a bonus action (and is refused with none left). The harness sets the toggle before each main-hand attack:
 on only while a bonus action is free beyond the turn's later planned ones (Hunter's Mark, Disengage comes first), so

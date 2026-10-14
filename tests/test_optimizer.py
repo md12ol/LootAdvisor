@@ -543,8 +543,9 @@ def test_riposte():
 def test_item_riposte():
     """A weapon's riposte (Blade of the First Blood's, counted as the strategy search counts it): found through the
     passives of the hand the weapon is in, not the other hand's; per round min(1 - Battle Master ripostes, enemy
-    attacks x reach x miss chance), reach 1 for a melee build and the scenario's share otherwise; the melee main hand's
-    attack with the mark on its hits and critical hits (hand formula)."""
+    attacks x reach x miss chance), reach 1 for a melee build and the scenario's share otherwise, less the enemy turn
+    after the last round in the boss fight (the gauntlet ends as the character's 16th turn ends; a day keeps it); the
+    melee main hand's attack with the mark on its hits and critical hits (hand formula)."""
     import model
     S = {"Blade": {"PassivesOffHand": " Off_P", "PassivesMainHand": " Main_P"},
          "Off_P": {"Boosts": "UnlockInterrupt(Interrupt_R)"},
@@ -580,13 +581,20 @@ def test_item_riposte():
                                               {"enemy_attacks": 3.0, "enemy_ph": 0.2}, [], {}, {}, tgt)
             none = model.item_riposte_event(st_("melee"), [], [], {"mark": 3.0},
                                             {"enemy_attacks": 1.0, "enemy_ph": 0.6}, [], {}, {}, tgt)
+        day_ev = None
+        with model.scenario("day"):
+            day_ev, _ = model.item_riposte_event(st_("melee"), [], [], spec, {"enemy_attacks": 1.0, "enemy_ph": 0.6},
+                                                 [], {}, {}, tgt)
     finally:
         model.eval_event = old
-    if abs(ev["n"] - 0.4) > 1e-9 or abs(r["dmg"] - (0.4 * 20 + 3.0 * 0.4)) > 1e-9:
+    played = 15 / 16                                      # 16 enemy turns in reach, the last one not played
+    if abs(ev["n"] - 0.4 * played) > 1e-9 or abs(r["dmg"] - 0.4 * played * (20 + 3.0)) > 1e-9:
         fails.append(f"melee n {ev['n']} dmg {r['dmg']}")
     share = model.SCENARIOS["boss"]["melee_contact"]      # the boss fight's reach share (REACH_SHARE["boss"])
-    if abs(evr["n"] - 0.4 * share) > 1e-9:
-        fails.append(f"ranged n {evr['n']} want {0.4 * share}")
+    if abs(evr["n"] - 0.4 * (share - 1 / 16)) > 1e-9:
+        fails.append(f"ranged n {evr['n']} want {0.4 * (share - 1 / 16)}")
+    if abs(day_ev["n"] - 0.4) > 1e-9:
+        fails.append(f"day n {day_ev['n']} (every enemy turn played)")
     if abs(evc["n"] - 0.75) > 1e-9:
         fails.append(f"reaction cap {evc['n']}")
     if none is not None or ev["kind"] != "reaction" or ev["spell_id"] != "Interrupt_R":
@@ -596,7 +604,8 @@ def test_item_riposte():
 
 def test_wrath_storm():
     """Wrath of the Storm: casts per round min(1, enemy attacks x the share in reach x their hit chance), the share
-    15/16 in the boss fight, REACH_SHARE["day"] in a day's fights and 1 for a melee build; the save DC on Wisdom with
+    15/16 in the boss fight less its last enemy turn (not played), REACH_SHARE["day"] in a day's fights and 1 for a
+    melee build; the save DC on Wisdom with
     the gear's DC bonus kept; the better of the two interrupts' spells; none without the passive (hand formulas,
     stats written here)."""
     import model
@@ -621,7 +630,7 @@ def test_wrath_storm():
     per = pf * 13.5 + (1 - pf) * 6.75                         # Thunder 3d8 beats Lightning 2d8
     with model.scenario("boss"):
         ev, r = model.wrath_event(st, E, [], {}, tgt, dur)
-    want = 15 / 16 * 0.5 * per
+    want = (15 / 16 - 1 / 16) * 0.5 * per                   # the enemy turn after the last round is not played
     if abs(r["dmg"] - want) > 1e-9 or ev["spell_id"] != "T_T" or ev["kind"] != "reaction":
         fails.append(f"boss {ev['spell_id']} {r['dmg']} want T_T {want}")
     ev, r = model.wrath_event(st, E, [], {}, tgt, dur)
@@ -678,14 +687,15 @@ def test_strategy_attack_odds():
 
 
 def _mc_turn(attacks, n, seed):
-    """Monte Carlo of one turn: (bonus, dice, flat, mode) against AC 19; Sneak Attack 2d6 on the first hit with
-    Advantage; crits (19-20) roll every die twice."""
+    """Monte Carlo of one turn: (bonus, dice, flat, mode[, sneak flat]) against AC 19; Sneak Attack 2d6 on the first
+    hit with Advantage, plus the attack's sneak flat (its weapon's on-damage passive set off again); crits (19-20) roll
+    every die twice."""
     import random
     rnd = random.Random(seed)
     tot = tot2 = 0.0
     for _ in range(n):
         d, sa = 0, False
-        for bonus, dice, flat, mode in attacks:
+        for bonus, dice, flat, mode, *more in attacks:
             r1, r2 = rnd.randint(1, 20), rnd.randint(1, 20)
             nat = max(r1, r2) if mode == "adv" else min(r1, r2) if mode == "dis" else r1
             if nat == 1 or (nat < 19 and nat + bonus < 19):
@@ -694,7 +704,7 @@ def _mc_turn(attacks, n, seed):
             dd = flat + sum(rnd.randint(1, s) for s in dice for _ in range(k))
             if mode == "adv" and not sa:
                 sa = True
-                dd += sum(rnd.randint(1, 6) for _ in range(2 * k))
+                dd += sum(rnd.randint(1, 6) for _ in range(2 * k)) + (more[0] if more else 0)
             d += dd
         tot += d
         tot2 += d * d
@@ -703,13 +713,14 @@ def _mc_turn(attacks, n, seed):
 
 
 def test_strategy_turn_moments():
-    """run_turn's mean and sd of a marked melee turn (Crimson x2 with Vicious, Blade x2 off-hand), a Disengage turn
+    """run_turn's mean and sd of a marked melee turn (Crimson x2 with Vicious, set off again by its Sneak Attack, Blade
+    x2 off-hand), a Disengage turn
     (Hellfire x2 + Firestoker, All In) and a standing turn (straight rolls) against a seeded Monte Carlo of the same
     attacks (mean within 4 standard errors, sd within 5%)."""
     import strategy as G
     P = _thx_profile()
     start = G.TurnStart(True, "mark", False)
-    cases = [(G.Plan("melee"), [(14, (6, 4, 4, 6), 15, "adv")] * 2 + [(14, (4, 4, 4, 6), 8, "adv")] * 2),
+    cases = [(G.Plan("melee"), [(14, (6, 4, 4, 6), 15, "adv", 7)] * 2 + [(14, (4, 4, 4, 6), 8, "adv")] * 2),
              (G.Plan("leave"), [(11, (6, 4, 6), 18, "adv")] * 2 + [(9, (6, 4, 6), 16, "adv")]),
              (G.Plan("stand"), [(11, (6, 4, 6), 18, "straight")] * 2 + [(9, (6, 4, 6), 16, "straight")] * 2)]
     fails = []
@@ -733,6 +744,157 @@ def test_strategy_sneak_once():
     want = 4 * p * 3.5 + (1 - (1 - p) ** 4) * 7
     m2, _ = G.turn_numbers(G.replace(P, adv=False), G.Plan("melee"), G.TurnStart(True, "", False))
     assert abs(m - want) < 1e-9 and abs(m2 - 4 * 0.95 * 3.5) < 1e-9, (m, want, m2)
+
+
+def test_strategy_sneak_charge():
+    """Sneak Attack's one charge: a turn that starts without it lands none; in the boss's turn the riposte takes it per
+    policy (always: every hit, crit: critical hits only, never), adding 2d6 and Vicious again, and a hit puts True
+    Strike on the boss; the boss's own hit or a riposte miss keep it (hand formulas: boss +9 vs AC 22 hits 40%, the
+    riposte +14 with Advantage vs AC 19 misses 4%, crits 19%)."""
+    import strategy as G
+    P = _thx_profile(riposte_ts=True)
+    fails = []
+    no_charge, _ = G.turn_numbers(P, G.Plan("melee"), G.TurnStart(True, "", False, sneak=False))
+    no_dice, _ = G.turn_numbers(G.replace(P, sneak_dice=()), G.Plan("melee"), G.TurnStart(True, "", False))
+    if abs(no_charge - no_dice) > 1e-9:
+        fails.append(f"no charge {no_charge} vs no Sneak Attack {no_dice}")
+    # marked riposte: dice (6, 4, 4) + mark 6, flat 8 + Vicious 7; Sneak Attack 2d6 + Vicious 7 more
+    want = {"always": {(False, 41.0, False), (True, 60.0, False)}, "never": {(False, 27.0, True), (True, 39.0, True)},
+            "crit": {(False, 27.0, True), (True, 60.0, False)}}
+    for pol, rows_want in want.items():
+        rows = G.boss_turn(G.replace(P, riposte_sneak=pol), "mark", True, False, False)
+        if abs(sum(r[0] for r in rows) - 1) > 1e-12:
+            fails.append(f"{pol}: probabilities {sum(r[0] for r in rows)}")
+        rip = [r for r in rows if r[1] > 0]
+        got = {(abs(r[0] - 0.6 * 0.19) < 1e-12, round(r[1] / r[0], 6), r[5]) for r in rip}
+        if got != rows_want or not all(r[6] for r in rip) or len(rip) != 2:
+            fails.append(f"{pol}: riposte rows {got} want {rows_want}")
+        if not all(r[5] and not r[6] for r in rows if r[1] == 0):
+            fails.append(f"{pol}: a boss hit or a riposte miss spent the charge or gave True Strike")
+    far = G.boss_turn(P, "", False, False, False, reach=False)
+    if far != [(1.0, 0.0, 0.0, "", True, True, False)]:
+        fails.append(f"round 1 walk-up {far}")
+    assert not fails, fails
+
+
+def test_strategy_true_strike():
+    """True Strike from a riposte hit: both rolls of the next turn's first attack action (the first main-hand shot and
+    the off-hand half) roll without Sharpshooter's -5, its +10 kept; the turn's mean rises by the non-critical hit
+    chance gained times the shot's non-critical damage (hand formula, no Sneak Attack, no mark)."""
+    import strategy as G
+    P = G.replace(_thx_profile(), sneak_dice=(), mark_die=0)
+    start = G.TurnStart(True, "", False)
+    ts = G.replace(start, ts=True)
+    atk = G.build_attacks(P, G.Plan("leave"), ts)
+    flags = [(a.label, a.true_strike, a.sharpshooter) for a in atk]
+    fails = []
+    if flags != [("plain", True, True), ("plain", False, True), ("off-hand", True, True)]:
+        fails.append(f"flags {flags}")
+    base, _ = G.turn_numbers(P, G.Plan("leave"), start)
+    up, _ = G.turn_numbers(P, G.Plan("leave"), ts)
+
+    def hit(bonus):                      # non-critical hit with Advantage against AC 19, 19-20 crit
+        need = 19 - bonus
+        return 1 - (max(1, need - 1) ** 2) / 400 - 0.19
+    want = (hit(16) - hit(11)) * (6 + 8 + 10) + (hit(14) - hit(9)) * (6 + 6 + 10)
+    if abs((up - base) - want) > 1e-9:
+        fails.append(f"gain {up - base} want {want}")
+    assert not fails, fails
+
+
+def test_strategy_policy():
+    """The reaction policy: each family is searched under always / crit / never and keeps the best (its totals are the
+    plain searches'); the plan's answers for the enemies' turns follow it; the fight ends as the 16th turn ends (no
+    boss turn after it: the last turn's value is that turn's own)."""
+    import strategy as G
+    old = G.ROUNDS
+    G.ROUNDS = 3
+    fails = []
+    try:
+        P = _thx_profile(boss_first=0.15, riposte_ts=True)
+        S, tot, sd, totals = G.best_search(P, "evade")
+        if set(totals) != set(G.SNEAK_POLICIES):
+            fails.append(f"policies searched {sorted(totals)}")
+        if abs(tot - max(totals.values())) > 1e-9 or abs(totals[S.P.riposte_sneak] - tot) > 1e-9:
+            fails.append(f"best {S.P.riposte_sneak} {tot} of {totals}")
+        for pol in G.SNEAK_POLICIES:
+            t2, _ = G.Search(G.replace(P, riposte_sneak=pol), "evade").total()
+            if pol not in totals or abs(t2 - totals[pol]) > 1e-9:
+                fails.append(f"{pol}: {totals.get(pol)} vs search {t2}")
+        last = G.State(rnd=3, adjacent=True, dice=0, surge=False, conc="mark", gaping=False, pierce_m=False,
+                       pierce_r=False, dread=False, boss_after=False)
+        v, _, plan = G.Search(P, "evade").value(last)
+        own, _ = G.turn_numbers(P, plan, G.TurnStart(True, "mark", False))
+        if abs(v - own) > 1e-9:
+            fails.append(f"last turn {v} vs its own turn {own}")
+        if G.Search(P, "evade").start_state().boss_after is not True or G.Search(P, "evade").last:
+            fails.append("the boss's turn after the last one")
+    finally:
+        G.ROUNDS = old
+    m = {pol: G.enemy_turn_reactions(pol) for pol in G.SNEAK_POLICIES}
+    if m != {"always": {"Interrupt_SneakAttack": "auto", "Interrupt_SneakAttack_Critical": "auto"},
+             "crit": {"Interrupt_SneakAttack": "never", "Interrupt_SneakAttack_Critical": "auto"},
+             "never": {"Interrupt_SneakAttack": "never", "Interrupt_SneakAttack_Critical": "never"}}:
+        fails.append(f"answers {m}")
+    assert not fails, fails
+
+
+def test_reaction_sneak():
+    """The model's Sneak Attack on a riposte with the charge shared: per round the riposte's spends x the next turn's
+    Sneak Attack lost, its own gain (dice, doubled on a critical hit, plus the weapon's on-damage passive set off
+    again), the better policy chosen by value (hand formulas, stats written here)."""
+    import model
+    S = {"Vic": {"StatsFunctorContext": "OnDamage", "StatsFunctors": "DealDamage(7, Piercing,Magical)",
+                 "Conditions": "AttackedWithPassiveSourceWeapon() and HasAdvantage()"}}
+    st = type("St", (), {})()
+    st.W = type("W", (), {"stats": S, "items": {}})()
+    st.loadout, st.unknown, st.class_passives = {"MainHand": "Crimson"}, set(), []
+    st.mechs = {"MainHand": type("M", (), {"triggers": [{"ctx": "OnDamage", "functors": "DealDamage(7, Piercing,Magical)",
+                                                          "cond": "AttackedWithPassiveSourceWeapon() and HasAdvantage()",
+                                                          "props": "", "hand": "m"}]})()}
+    ev = {"name": "item riposte", "n": 0.5, "slot": "MainHand", "ranged": True}
+    sneak = {"sad": 7.0, "hk": "ph_adv", "ck": "pc_adv", "share": 1.0}
+    fails = []
+    rider = model.sneak_rider(st, ev, {})
+    if abs(rider - 7.0) > 1e-9:
+        fails.append(f"rider {rider}")
+    old = model.SNEAK_REACTION["policy"]
+    try:
+        for sa_own, pol_want in ((8.5, "always"), (16.0, "crit"), (30.0, "never")):
+            r = {"dmg": 10.0, "ph_adv": 0.96, "pc_adv": 0.19}
+            lost, pol = model.reaction_sneak(st, (ev, r), sneak, sa_own, {})
+            hit, crit = 0.96 - 0.19, 0.19
+            sp_h, sp_c = pol_want == "always", pol_want in ("always", "crit")
+            spends = 0.5 * (hit * sp_h + crit * sp_c)
+            gain = 0.5 * (hit * sp_h * 14.0 + crit * sp_c * 21.0)
+            if pol != pol_want or abs(lost - spends * sa_own) > 1e-9 or abs(r["dmg"] - 10.0 - gain) > 1e-9 or                     abs(r["sneak"] - 0.5 * (hit * sp_h + 2 * crit * sp_c) * 7.0) > 1e-9:
+                fails.append(f"{sa_own}: {pol} lost {lost} dmg {r['dmg']} want {pol_want} {spends * sa_own} {10 + gain}")
+        model.SNEAK_REACTION["policy"] = "never"
+        r = {"dmg": 10.0, "ph_adv": 0.96, "pc_adv": 0.19}
+        lost, pol = model.reaction_sneak(st, (ev, r), sneak, 8.5, {})
+        if pol != "never" or lost != 0.0 or r["dmg"] != 10.0:
+            fails.append(f"fixed never: {pol} {lost} {r['dmg']}")
+    finally:
+        model.SNEAK_REACTION["policy"] = old
+    assert not fails, fails
+
+
+def test_attack_parts_split():
+    """attack_parts: the own turn's rolls and damage apart from the reactions' (react_*); a riposte's True Strike gain
+    counts in the own turn, its Sneak Attack (dice) in the reactions; own_dpr = damage less the reactions'."""
+    import model
+    evs = [{"name": "attack", "n": 2.0, "kind": "weapon"}, {"name": "item riposte", "n": 0.5, "kind": "reaction"}]
+    res = [{"ph": 0.8, "pc": 0.2, "hits": 1.6, "crits": 0.4, "adv_net": 1.0, "dmg": 50.0},
+           {"ph": 0.9, "pc": 0.2, "hits": 0.45, "crits": 0.1, "dmg": 20.0 + 3.0 - 4.0, "ts_gain": 3.0, "ts_hits": 0.1,
+            "sneak_lost": 4.0, "sneak": 2.5}]
+    p = model.attack_parts(evs, res, 50.0 + 19.0 + 6.0, 6.0)
+    want = {"split": True, "attacks": 2.0, "hits": 1.7, "crits": 0.4, "react_attacks": 0.5, "react_hits": 0.45,
+            "react_crits": 0.1, "react_dmg": 20.0, "react_sneak": 2.5, "own_dpr": 55.0, "sneak": 6.0}
+    bad = {k: (p.get(k), v) for k, v in want.items() if p.get(k) != v and not (isinstance(v, float) and
+                                                                          abs(p.get(k) - v) < 1e-9)}
+    if abs(p["dmg_per_hit"] - round(55.0 / 1.7, 2)) > 1e-9:
+        bad["dmg_per_hit"] = p["dmg_per_hit"]
+    assert not bad, bad
 
 
 def test_strategy_ranking():
@@ -798,7 +960,8 @@ def test_strategy_harness_rounds():
 CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
             test_buff_spells, test_riposte, test_item_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
-            test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds]
+            test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
+            test_strategy_true_strike, test_strategy_policy, test_reaction_sneak, test_attack_parts_split]
 
 
 # ============================================================================================ local-only tests
@@ -2494,6 +2657,95 @@ def mutations():
         finally:
             G.harness_rounds = old
     out.append(("strategy: a manoeuvre's die in its use cost", m_strategy_hit_cost))
+
+    def m_strategy_charge_kept():
+        import strategy as G
+        old = G.boss_turn
+        G.boss_turn = lambda *a, **k: [r[:5] + (True,) + r[6:] for r in old(*a, **k)]   # the riposte never takes it
+        try:
+            return _ci_red(test_strategy_sneak_charge)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy: Sneak Attack on the riposte leaves the next turn's charge", m_strategy_charge_kept))
+
+    def m_strategy_no_ts():
+        import strategy as G
+        old = G.build_attacks
+        G.build_attacks = lambda P, plan, state: [G.replace(a, true_strike=False) for a in old(P, plan, state)]
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_true_strike)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: True Strike from the riposte ignored", m_strategy_no_ts))
+
+    def m_strategy_one_policy():
+        import strategy as G
+        old = G.sneak_policies
+        G.sneak_policies = lambda P: ("always",)                       # the game's default only
+        try:
+            return _ci_red(test_strategy_policy)
+        finally:
+            G.sneak_policies = old
+    out.append(("strategy: only the game's default reaction policy searched", m_strategy_one_policy))
+
+    def m_strategy_last_boss_turn():
+        import strategy as G
+        old = G.Search.__init__
+        G.Search.__init__ = lambda self, P, fam, last_boss_turn=True: old(self, P, fam, last_boss_turn)
+        try:
+            return _ci_red(test_strategy_policy)
+        finally:
+            G.Search.__init__ = old
+    out.append(("strategy: a boss turn after the fight's last one", m_strategy_last_boss_turn))
+
+    def m_model_sneak_not_shared():
+        import model
+        old = model.reaction_sneak
+
+        def bad(*a, **k):
+            lost, pol = old(*a, **k)
+            return 0.0, pol                                            # the next turn keeps its Sneak Attack
+        model.reaction_sneak = bad
+        try:
+            return _ci_red(test_reaction_sneak)
+        finally:
+            model.reaction_sneak = old
+    out.append(("model: Sneak Attack on the riposte does not cost the next turn's", m_model_sneak_not_shared))
+
+    def m_model_no_rider():
+        import model
+        old = model.sneak_rider
+        model.sneak_rider = lambda st, ev, names: 0.0                  # Vicious not set off by Sneak Attack
+        try:
+            return _ci_red(test_reaction_sneak)
+        finally:
+            model.sneak_rider = old
+    out.append(("model: Sneak Attack does not set off the weapon's on-damage passive", m_model_no_rider))
+
+    def m_model_last_turn():
+        import model
+        old = model.reach_turns
+        model.reach_turns = lambda reach: reach                        # the enemy turn after the last round played
+        try:
+            return _ci_red(test_item_riposte) + _ci_red(test_wrath_storm)
+        finally:
+            model.reach_turns = old
+    out.append(("model: the boss fight's enemy turn after the last round counted", m_model_last_turn))
+
+    def m_model_parts_merged():
+        import model
+        old = model.attack_parts
+
+        def bad(evs, results, dmg, sa):
+            return old([dict(e, kind="weapon") if e.get("kind") == "reaction" else e for e in evs], results, dmg, sa)
+        model.attack_parts = bad                                       # reactions counted with the own turn
+        try:
+            return _ci_red(test_attack_parts_split)
+        finally:
+            model.attack_parts = old
+    out.append(("model: reactions counted with the own turn's rolls", m_model_parts_merged))
 
     def m_party_greedy():
         old = party._local

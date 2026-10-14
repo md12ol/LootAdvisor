@@ -345,6 +345,16 @@ def reaction_policy(build_interrupts, set_interrupts):
     return {k: "auto" for k in list(build_interrupts) + list(set_interrupts) + COMMON_REACTIONS}
 
 
+def enemy_turn_policy(boss):
+    """The plan's Sneak Attack answers for the enemies' turns ({"reactions_enemy_turn": ...}), from the reaction policy
+    the model's boss fight chose (model.reaction_sneak, the strategy search's names), or {} when it chose none."""
+    policy = getattr(boss, "sneak_policy", None)
+    if not policy:
+        return {}
+    import strategy as SG
+    return {"reactions_enemy_turn": SG.enemy_turn_reactions(policy)}
+
+
 def known_spell_names(per_level):
     """The spell names a respec's per-level picks name ("Spells: Misty Step, Scorching Ray"), lower case; None when
     the picks name none (then the build's plan is trusted)."""
@@ -543,7 +553,7 @@ def evade_steps(hide):
     out = [A("Shout_Disengage_CunningAction", "bonus", "@self", "evade: Disengage (Cunning Action)", when_adjacent=True,
              done_key="disengage"),
            A(MOVE, "free", to, "evade: move out of the boss's reach", move_to=to, requires="disengage",
-             done_key="left", optional=True)]
+             done_key="left")]
     if hide:
         out.append(A("Shout_Hide_BonusAction", "bonus", "@self", "evade: Hide (Cunning Action)", requires="left",
                      done_key="hidden", optional=True))
@@ -1061,6 +1071,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
         "plan": dict(with_hit_costs(core, stats), item_actions=acts, item_skipped=skipped,
                      hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats),
                      reactions=reaction_policy(build_interrupts, set_interrupts), reactions_default="never",
+                     **enemy_turn_policy(boss),
                      forecast=forecast(core, slots, g["resources"] + item_res, stats)),
         "expect": {"ac": st.sheet["ac"], "hp": st.sheet["hp"], "attacks": st.sheet.get("attacks"),
                    "spell": st.sheet.get("spell"), "dpr": round(pred.dpr, 1), "offence": round(pred.offence, 1),
@@ -1073,9 +1084,12 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
 def boss_expect(boss):
     """The model's numbers for the fight the gauntlet runs (its boss scenario), the ones run.py --report compares with:
     damage per round, damage taken per round, rounds survived, and per round the attack rolls, hits, crits, their
-    rates, damage per landed hit and Sneak Attack (model.attack_parts)."""
+    rates, damage per landed hit and Sneak Attack, own turn and reactions apart (model.attack_parts), and the reaction
+    policy for Sneak Attack in the enemies' turns the model chose."""
     out = {"dpr": round(boss.dpr, 2), "taken": round(boss.dur["incoming"], 3), "R": round(boss.R, 2)}
     out.update(getattr(boss, "parts", None) or {})
+    if getattr(boss, "sneak_policy", None):
+        out["sneak_policy"] = boss.sneak_policy
     return out
 
 

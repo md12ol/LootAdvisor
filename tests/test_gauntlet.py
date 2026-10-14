@@ -177,7 +177,7 @@ def lua_tests():
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
-              impact_wait_tests):
+              impact_wait_tests, phase_reaction_tests, step_validity_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -881,6 +881,133 @@ def plan_gap_lua_tests(L):
           g.T_y1 == "Atk,Off" and "worth less" in str(g.T_y1r) and g.T_y2 == "Atk,Strong", f"{g.T_y1} {g.T_y2}")
     check("item rule: a core bonus action that does not yield keeps the bonus action", g.T_y3 == "Atk,HM", str(g.T_y3))
     evade_lua_tests(L)
+
+
+def phase_reaction_tests(L):
+    """Reactions by whose turn it is (plan.reactions_enemy_turn): the enemies' turn's answers applied as the character
+    asks to end its turn, the own turn's (plan.reactions) as its turn starts, read back; only interrupts the character
+    has; nothing without such answers or in a manual run; each reaction of the character logged with the answer in
+    force, and one that fired against "never" (or a phase whose answers did not stick) makes the run invalid."""
+    L.execute(r"""
+      local store = { Interrupt_SneakAttack = { "Enabled" }, Interrupt_SneakAttack_Critical = { "Enabled" } }
+      local prefs
+      prefs = setmetatable({}, {
+        __index = function(_, k) local f = store[k]; return f and ("InterruptInteractionTypes(" .. table.concat(f, ",") .. ")") end,
+        __newindex = function(_, k, v) store[k] = v end,
+        __pairs = function() local k; return function() k = next(store, k); if k then return k, prefs[k] end end end })
+      local ent = { InterruptPreferences = { Preferences = prefs }, Replicate = function() end }
+      local eg = Ext.Entity.Get
+      Ext.Entity.Get = function(u) if u == "c1" then return ent end end
+      local G = GAUNTLET
+      local plan = { reactions = { Interrupt_SneakAttack = "auto", Interrupt_SneakAttack_Critical = "auto" },
+        reactions_enemy_turn = { Interrupt_SneakAttack = "never", Interrupt_SneakAttack_Critical = "auto",
+                                 Interrupt_NotMine = "auto" } }
+      local F = { char = "c1", plan = plan }
+      T_enemy = G.reactionsPhase(F, "enemy")
+      T_enemy_store = { store.Interrupt_SneakAttack and table.concat(store.Interrupt_SneakAttack, ","),
+                        store.Interrupt_SneakAttack_Critical and table.concat(store.Interrupt_SneakAttack_Critical, ","),
+                        store.Interrupt_NotMine == nil }
+      -- a reaction in the enemies' turn is logged with the answer in force
+      local gf, gfight, grounds = G.F, G.fighting, G.rounds
+      G.F, G.fighting = F, true
+      local R = { r = 3, reactions_seen = {} }
+      G.rounds = { R }
+      G._onReaction("c1", "Interrupt_SneakAttack")
+      G._onReaction("b1", "Interrupt_AttackOfOpportunity")
+      T_row, T_other = R.reactions_seen[1], R.reactions_seen[2]
+      T_own = G.reactionsPhase(F, "own")
+      T_own_store = table.concat(store.Interrupt_SneakAttack, ",")
+      G._onReaction("c1", "Interrupt_SneakAttack")
+      T_row2 = R.reactions_seen[3]
+      T_none = G.reactionsPhase({ char = "c1", plan = { reactions = plan.reactions } }, "enemy")
+      T_manual = G.reactionsPhase({ char = "c1", plan = plan, manual = true }, "enemy")
+      T_j_bad = G.judge({ { r = 3, done = { action = true }, actions = {}, reactions_seen = { T_row } } }, "rounds done", {},
+        { me = "c1" })
+      T_j_ok = G.judge({ { r = 3, done = { action = true }, actions = {}, reactions_seen = { T_row2, T_other } } },
+        "rounds done", {}, { me = "c1" })
+      T_j_set = G.judge({ { r = 2, done = { action = true }, actions = {}, reaction_phases = { { phase = "enemy",
+        verified = false } } } }, "rounds done", {}, { me = "c1" })
+      -- answers that do not stick
+      ent.InterruptPreferences.Preferences = setmetatable({}, { __newindex = function() end, __pairs = prefs and
+        getmetatable(prefs).__pairs })
+      T_unset = G.reactionsPhase(F, "enemy")
+      G.F, G.fighting, G.rounds = gf, gfight, grounds
+      Ext.Entity.Get = eg
+    """)
+    g = L.globals()
+    check("phase reactions: the enemies' turn's answers applied and read back (Sneak Attack off, its critical one on)",
+          g.T_enemy is not None and g.T_enemy.verified is True and g.T_enemy.phase == "enemy" and
+          lst(g.T_enemy_store) == ["", "Enabled", True], str(g.T_enemy_store and lst(g.T_enemy_store)))
+    check("phase reactions: an interrupt the character does not have is left alone",
+          g.T_enemy.policy["Interrupt_NotMine"] is None)
+    check("phase reactions: the own turn's answers back as its turn starts", g.T_own.phase == "own" and
+          g.T_own_store == "Enabled" and g.T_own.policy["Interrupt_SneakAttack"] == "auto", str(g.T_own_store))
+    check("phase reactions: none without enemy-turn answers or in a manual run", g.T_none is None and g.T_manual is None)
+    check("phase reactions: the character's reaction logged with the phase and its answer; another creature's without",
+          g.T_row.phase == "enemy" and g.T_row.policy == "never" and g.T_other.phase is None and
+          g.T_row2.policy == "auto", f"{g.T_row.phase} {g.T_row.policy} {g.T_other.phase}")
+    jb = lst(g.T_j_bad.causes)
+    check("phase reactions: a reaction against the turn's answer makes the run invalid, one along it does not",
+          g.T_j_bad.valid is False and any("against the plan's answer" in c for c in jb) and g.T_j_ok.valid is True,
+          str(jb) + str(lst(g.T_j_ok.causes)))
+    check("phase reactions: answers that did not stick are reported and make the run invalid",
+          g.T_unset.verified is False and g.T_j_set.valid is False and
+          any("not set" in c for c in lst(g.T_j_set.causes)), str(lst(g.T_j_set.causes)))
+
+
+def step_validity_tests(L):
+    """A planned step that is not carried out makes the run invalid (and ends a fail-fast run after its round): the
+    evade move with no spot, a step skipped because the step it needs failed; an optional step, a fallback to the
+    step's alt and a step not needed (the boss out of reach, and the move that needs that Disengage) do not."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local function R(actions) return { r = 2, done = { action = true }, actions = actions } end
+      T_move = G.judge({ R({ { spell = "@move", why = "evade: move", result = "failed: no spot for @leave_spot in the arena",
+        optional = false } }) }, "rounds done", {}, { me = "c1" })
+      T_skip = G.judge({ R({ { spell = "@move", why = "evade: move", result = "skipped: no disengage this round" } }) },
+        "rounds done", {}, { me = "c1" })
+      T_fine = G.judge({ R({ { spell = "Projectile_OffhandAttack", result = "no resource BonusActionPoint", optional = true },
+        { spell = "Projectile_MenacingAttack", result = "cannot afford -> alt" },
+        { spell = "Shout_Disengage_CunningAction", result = "not needed: the boss is not in reach", optional = true },
+        { spell = "Projectile_MainHandAttack", result = "done" } }) }, "rounds done", {}, { me = "c1" })
+      T_player = G.judge({ R({ { spell = "X", result = "failed" } }) }, "rounds done", {}, { me = "c1", player = true })
+      local ff = G.FAIL_FAST
+      G.FAIL_FAST = true
+      T_fault = G.roundFault({ S = {} }, R({ { spell = "@move", why = "evade: move", result = "failed: move stuck",
+        optional = false } }))
+      G.FAIL_FAST = ff
+      -- a move whose Disengage was not needed is not needed either
+      local P = { c1 = { 0, 0, 0 }, b1 = { 10, 0, 0 } }
+      local gp, dead = Osi.GetPosition, Osi.IsDead
+      Osi.GetPosition = function(u) local p = P[u]; if p then return p[1], p[2], p[3] end end
+      Osi.IsDead = function() return 0 end
+      local F = { char = "c1", enemies = { "b1" }, cooldown = {}, afford = function() return true end, plan = {}, S = {}, A = {} }
+      local R1 = { r = 1, done = {}, actions = {}, casts = {} }
+      G._doAction(F, { spell = "Shout_Disengage_CunningAction", group = "bonus", target = "@self", when_adjacent = true,
+        done_key = "disengage" }, R1)
+      G._doAction(F, { spell = "@move", group = "free", target = "@leave_spot", move_to = "@leave_spot",
+        requires = "disengage", done_key = "left" }, R1)
+      T_nn = R1.actions[2]
+      R1.done.action = true
+      T_j_nn = G.judge({ R1 }, "rounds done", {}, { me = "c1" })
+      Osi.GetPosition, Osi.IsDead = gp, dead
+    """)
+    g = L.globals()
+    cm = lst(g.T_move.causes)
+    check("validity: the evade move with no spot makes the run invalid, with the round, the step and why",
+          g.T_move.valid is False and any("round 2: planned step not done: @move (evade: move): failed: no spot" in c
+                                          for c in cm), str(cm))
+    check("validity: a required step skipped because its prerequisite failed makes the run invalid",
+          g.T_skip.valid is False, str(lst(g.T_skip.causes)))
+    check("validity: an optional step, a fallback to its alt and a step not needed leave the run valid",
+          g.T_fine.valid is True, str(lst(g.T_fine.causes)))
+    check("validity: a person's turn (player) is not judged by planned steps", g.T_player.valid is True,
+          str(lst(g.T_player.causes)))
+    check("validity: fail fast ends the run after a round with a planned step not done",
+          "planned step not done" in str(g.T_fault), str(g.T_fault))
+    check("validity: the move after a Disengage that was not needed is not needed either (optional, no cause)",
+          g.T_nn.optional is True and "not needed" in str(g.T_nn.result) and g.T_j_nn.valid is True,
+          f"{g.T_nn.result} {lst(g.T_j_nn.causes)}")
 
 
 def evade_lua_tests(L):
@@ -3360,6 +3487,8 @@ def evade_plan_tests(P):
           leave[0]["spell"] == "Shout_Disengage_CunningAction" and lmv.get("move_to") == "@leave_spot" and
           lmv.get("requires") == "disengage" and not any(a["spell"] == "Shout_Hide_BonusAction" for a in leave),
           str([a["spell"] for a in leave]))
+    check("evade: the move is a required step (a move that cannot happen makes the run invalid)",
+          not lmv.get("optional"), str(lmv))
     check("evade: Disengage first, only while the boss is in reach, a real bonus-action cast",
           dis["spell"] == "Shout_Disengage_CunningAction" and dis.get("when_adjacent") and dis["group"] == "bonus" and
           dis.get("done_key") == "disengage", str(dis))
@@ -3606,6 +3735,7 @@ def py_tests():
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
               lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R),
+              lambda: split_report_tests(R), phase_call_tests,
               lambda: surge_plan_tests(P), arena_note_tests):
         try:
             t()
@@ -4735,21 +4865,40 @@ def roll_tests(L):
           s.net_adv == 2 and s.sneak_dmg == 6, f"{s.n} {s.landed} {s.dmg}")
 
 
-def _roll_rec(rounds, i=0, side="a", run_id="r", dealt=None, sneak=None):
-    """A run record with per-roll counts: rounds = [(rolls, landed, crits, landed damage list)]."""
-    out = []
+def _roll_rec(rounds, i=0, side="a", run_id="r", dealt=None, sneak=None, react=None):
+    """A run record with per-roll counts: rounds = [(rolls, landed, crits, landed damage list)], each roll's damage
+    row from the character "c1" in its own turn (times 1000 apart, the turn released after them); react = {round:
+    [(damage, sneak row or 0, critical)]}: riposte rolls in the enemy's turn after that round (a Sneak Attack row 60 ms
+    after the roll's, with its reaction logged, and a 7 Passive row after each)."""
+    out, dmg, hits = [], [], []
     for r, (n, landed, crits, dl) in enumerate(rounds):
-        per = [{"hit": True, "dmg": d, "sneak": (sneak if (sneak and r == 0 and j == 0) else None)}
+        t0 = 1000000 * (r + 1)
+        per = [{"hit": True, "dmg": d, "t": t0 + 1000 * j, "sneak": (sneak if (sneak and r == 0 and j == 0) else None)}
                for j, d in enumerate(dl)]
-        per += [{"hit": False, "dmg": 0}] * (n - landed)
-        out.append({"r": r + 1, "done": {"action": True}, "actions": [],
+        per += [{"hit": False, "dmg": 0, "t": t0 + 1000 * (landed + j)} for j in range(n - landed)]
+        for p_ in per:
+            dmg.append({"r": r + 1, "t": p_["t"], "source": "c1", "target": "b1", "amount": p_["dmg"],
+                        "cause": "Attack"})
+        seen = []
+        for k, (d, sn, cr) in enumerate((react or {}).get(r + 1, [])):
+            t = t0 + 600000 + 5000 * k
+            dmg.append({"r": r + 1, "t": t, "source": "c1", "target": "b1", "amount": d, "cause": "Attack"})
+            hits.append({"r": r + 1, "t": t - 100, "source": "c1", "hit": d > 0, "crit": cr, "miss": d == 0})
+            if sn:
+                seen.append({"who": "c1", "interrupt": "Interrupt_SneakAttack", "t": t - 30})
+                dmg.append({"r": r + 1, "t": t + 60, "source": "c1", "target": "b1", "amount": sn, "cause": "Attack"})
+            if d:
+                dmg.append({"r": r + 1, "t": t + 62, "source": "c1", "target": "b1", "amount": 7, "cause": "Passive"})
+        out.append({"r": r + 1, "done": {"action": True}, "actions": [], "tm": {"turn": t0 - 10, "released": t0 + 500000},
+                    "reactions_seen": seen,
                     "rolls": {"n": n, "landed": landed, "crit": crits, "miss": n - landed, "dmg": sum(dl),
                               "sneak_dmg": sneak if (sneak and r == 0) else 0, "known": landed, "net_adv": 0,
                               "dis": 0, "per_roll": per}})
-    dealt = dealt or [sum(x[3]) for x in rounds]
+    dealt = dealt or [sum(x[3]) + sum(d + sn + (7 if d else 0) for d, sn, _c in (react or {}).get(k + 1, []))
+                      for k, x in enumerate(rounds)]
     return {"mode": "scripted", "pair": i, "side": side, "scenario": "boss", "real_rolls": True, "valid": True,
             "invalid": [], "test_mode": "automatic", "run_id": run_id, "spec_id": {}, "req": {"pair": i, "side": side},
-            "rounds": out,
+            "rounds": out, "dmg": dmg, "hits": hits,
             "results": {"ended": "rounds done", "summary": {"dealt": dealt, "dpr": sum(dealt) / len(dealt),
                                                             "rounds": len(dealt)},
                         "hit_riders": {"sneak_attack": {"turns": len(dealt), "adv_turns": 1, "rider": 1,
@@ -4789,28 +4938,28 @@ def roll_report_tests(R):
           abs(p["dmg_per_hit_no_sneak"] - (400 - 6) / 16) < 1e-9 and p["sneak"] == 6 / 4, str(p))
     # +-10% would flag, the interval does not: 7 of 10 against 85% (ratio 0.82)
     small = R.pooled([R.game_parts(_roll_rec([(5, 4, 0, [20, 20, 20, 20]), (5, 3, 0, [20, 21, 19])]))])
-    rows = {r_[0]: r_ for r_ in R.compare_parts(small, {"hit_rate": 0.85, "dmg_per_hit": 20.0})}
+    rows = {r_[0]: r_ for r_ in R.compare_parts(small, {"split": True, "hit_rate": 0.85, "dmg_per_hit": 20.0})}
     check("report: a hit rate 18% below the model but inside its 95% interval (7 of 10) is not flagged; the band "
           "says out", rows["hit_rate"][5] == "" and rows["hit_rate"][7] == "out" and rows["hit_rate"][6][0] < 0.85
           < rows["hit_rate"][6][1], str(rows["hit_rate"]))
     # the reverse: 900 of 1000 against 85% (ratio 1.06, inside +-10%) lies outside the interval
     big = R.pooled([R.game_parts(_roll_rec([(100, 90, 5, [20] * 90)] * 10))])
-    rows = {r_[0]: r_ for r_ in R.compare_parts(big, {"hit_rate": 0.85, "crit_rate": 0.05})}
+    rows = {r_[0]: r_ for r_ in R.compare_parts(big, {"split": True, "hit_rate": 0.85, "crit_rate": 0.05})}
     check("report: a hit rate 6% above the model but outside its 95% interval (900 of 1000) is flagged; the band says in",
           rows["hit_rate"][5] == "OUTSIDE" and rows["hit_rate"][7] == "in", str(rows["hit_rate"]))
     check("report: a part the model gives inside the interval unflagged; a part it lacks (Advantage) shown, not compared",
           rows["crit_rate"][5] == "" and rows["adv_rate"][3] is None and rows["adv_rate"][5] == "" and
           rows["adv_rate"][2] is not None)
     check("report: damage per landed roll with an interval from the rolls' damage (all 20: zero width, 21 outside)",
-          R.compare_parts(big, {"dmg_per_hit": 21.0})[7][5] == "OUTSIDE" and
-          R.compare_parts(big, {"dmg_per_hit": 20.0})[7][5] == "")
+          R.compare_parts(big, {"split": True, "dmg_per_hit": 21.0})[7][5] == "OUTSIDE" and
+          R.compare_parts(big, {"split": True, "dmg_per_hit": 20.0})[7][5] == "")
     old = R.pooled([R.game_parts(_v2_rec(0, "a", 100.0, hit=40, crit=5, miss=15))])
     check("report: a record from before rolls were counted falls back to its per-action outcomes",
           old["attacks"] == 60 / 16 and old["hit_rate"] == 0.75 and old["_ci"].get("attacks") is None)
     d = tempfile.mkdtemp(prefix="gauntlet_rolls_")
     try:
-        boss = {"dpr": 100.0, "attacks": 6.0, "hits": 4.0, "crits": 1.0, "hit_rate": 0.66, "crit_rate": 0.17,
-                "dmg_per_hit": 25.0, "sneak": 7.2, "adv_rate": 0.9}
+        boss = {"split": True, "dpr": 100.0, "attacks": 6.0, "hits": 4.0, "crits": 1.0, "hit_rate": 0.66,
+                "crit_rate": 0.17, "dmg_per_hit": 25.0, "sneak": 7.2, "adv_rate": 0.9}
         pairs = [{"char": "astarion", "build": "b", "act": 3, "single": True,
                   "specs": {"a": {"set": "S", "act": 3, "expect": {"boss": boss}}}}]
         sp, res = os.path.join(d, "specs.json"), os.path.join(d, "res.jsonl")
@@ -4824,13 +4973,49 @@ def roll_report_tests(R):
         text = buf.getvalue()
         rows = {r_[0]: r_ for r_ in out["sides"][(0, "a")]["rows"]}
         check("report: the table shows the game's 95% interval and the model's +-10% band beside the flag",
-              "Game 95%" in text and "Model +-10%" in text and "| attack rolls per round | 6.00 |" in text, text[:900])
+              "Game 95%" in text and "Model +-10%" in text and "| own turn: attack rolls per round | 6.00 |" in text,
+              text[:900])
         check("report: Sneak Attack as triggers / turns with net Advantage / turns",
               "Sneak Attack: 1 trigger(s) / 1 turn(s) with net Advantage / 4 turn(s)" in text, text[-400:])
         check("report: Sneak Attack damage per round compared (1.5 against 7.2: outside)",
               rows["sneak"][5] == "OUTSIDE", str(rows["sneak"]))
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def split_report_tests(R):
+    """--report splits the character's own turn from its reactions in the enemies' turns, on the game's side as on
+    the model's: riposte rolls (a Sneak Attack row 60 ms after the roll's is that roll's, its passive rider is damage
+    but no roll) counted per round apart, their damage taken out of the own turn's; a model from before the split
+    (no "split") or a record with no turn end times is not compared part by part."""
+    rec = _roll_rec([(3, 3, 0, [25, 25, 25]), (3, 2, 1, [30, 20]), (3, 3, 0, [25, 25, 25]), (3, 3, 0, [20, 20, 20])],
+                    react={1: [(27, 7, False)], 3: [(40, 14, True)], 4: [(0, 0, False)]})
+    gp = R.game_parts(rec)
+    check("split: reactions counted apart (3 rolls, 2 landed, 1 critical) with their damage and Sneak Attack",
+          gp["split"] and gp["react_n"] == 3 and gp["react_landed"] == 2 and gp["react_crit"] == 1 and
+          gp["react_dmg"] == 27 + 7 + 7 + 40 + 14 + 7 and gp["react_sneak"] == 21,
+          str({k: gp.get(k) for k in ("react_n", "react_landed", "react_crit", "react_dmg", "react_sneak")}))
+    check("split: the own turn's damage without the reactions', the total with them",
+          gp["own"] == 75 + 50 + 75 + 60 and gp["total"] == gp["own"] + gp["react_dmg"] and gp["attacks"] == 12,
+          str((gp["own"], gp["total"])))
+    p = R.pooled([gp])
+    check("split: per round values (own damage per landed roll over the own turn's damage only)",
+          abs(p["react_attacks"] - 3 / 4) < 1e-9 and abs(p["react_dmg"] - 102 / 4) < 1e-9 and
+          abs(p["dmg_per_hit"] - 260 / 11) < 1e-9 and abs(p["dpr"] - 362 / 4) < 1e-9 and
+          abs(p["own_dpr"] - 260 / 4) < 1e-9, str({k: p[k] for k in ("react_attacks", "dmg_per_hit", "dpr")}))
+    model = {"split": True, "react_attacks": 0.75, "react_dmg": 25.5, "attacks": 3.0, "own_dpr": 65.0, "dpr": 90.5}
+    rows = {r_[0]: r_ for r_ in R.compare_parts(p, model)}
+    check("split: own-turn and reaction parts compared with the model's split",
+          rows["react_attacks"][3] == 0.75 and rows["attacks"][3] == 3.0 and rows["own_dpr"][3] == 65.0,
+          str(rows["react_attacks"]))
+    old = {r_[0]: r_ for r_ in R.compare_parts(p, {"attacks": 3.0, "react_dmg": 25.5, "dpr": 90.5})}
+    check("split: a model from before the split is not compared part by part (damage per round still is)",
+          old["attacks"][3] is None and old["react_dmg"][3] is None and old["dpr"][3] == 90.5, str(old["attacks"]))
+    bare = dict(rec, rounds=[dict(r, tm={}) for r in rec["rounds"]])
+    gb = R.game_parts(bare)
+    nb = {r_[0]: r_ for r_ in R.compare_parts(R.pooled([gb]), model)}
+    check("split: a record with no turn end times is not split and not compared part by part",
+          gb["split"] is False and nb["attacks"][3] is None, str(gb.get("split")))
 
 
 def v2_stat_tests(R):
@@ -4989,6 +5174,25 @@ def no_outside_buff_tests():
     with open(os.path.join(G_DIR, "run.py"), encoding="utf-8") as fh:
         rsrc = fh.read()
     check("no outside buffs: run.py has no --haste", '"--haste"' not in rsrc)
+
+
+def phase_call_tests():
+    """The turn-dependent reaction answers are set where the turns change: the own turn's as the round starts, the
+    enemies' after the turn's last fault check and before the character asks to end its turn, and the enemies' at the
+    fight's start (they may act first)."""
+    with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
+        src = fh.read()
+    rs = src[src.index("local function roundStart(F)"):]
+    rs = rs[:rs.index("\nend\n")]
+    check("phase reactions: the own turn's answers set as each round starts", 'G.reactionsPhase(F, "own")' in rs)
+    en = src[src.index('elseif F.state == "ending"'):]
+    en = en[:en.index('elseif F.state == "ended"')]
+    i_ph, i_end = en.find('G.reactionsPhase(F, "enemy")'), en.find("G.endTurn(F.char)")
+    check("phase reactions: the enemies' answers set before the character asks to end its turn",
+          0 <= i_ph < i_end, f"{i_ph} {i_end}")
+    st = src[src.index("G.results.reactions = G.reactionsApply(F.plan"):]
+    check("phase reactions: the enemies' answers set at the fight's start",
+          st[:400].find('G.reactionsPhase(F, "enemy")') >= 0)
 
 
 # ============================================================================================ mutations
@@ -5635,6 +5839,39 @@ MUTATIONS = [
     ("popup: per action, not per roll", TL, "  if ro and (ro.n or 0) > 0 then", "  if false then"),
     ("no outside buffs: Bless back", "catalog.py", 'BUFFS = {"1": [], "2": [], "3": []}',
      'BUFFS = {"1": ["BLESS"], "2": ["BLESS"], "3": ["BLESS"]}'),
+    ("phase reactions: the enemies' turn answered like the own turn", GL,
+     'pol[k] = phase == "enemy" and (POLICY_FLAGS[p] and p or "never") or G.reactionPolicy(k, F.plan)',
+     "pol[k] = G.reactionPolicy(k, F.plan)"),
+    ("phase reactions: interrupts the character lacks written too", GL, "    if known[k] then\n", "    if true then\n"),
+    ("phase reactions: not read back", GL,
+     "  for k, flags in pairs(want) do if not sameFlags(back[k] or {}, flags) then ok = false end end\n"
+     "  F.reactionPhase", "  F.reactionPhase"),
+    ("phase reactions: never set as the turn ends", GL,
+     '    local ph = G.reactionsPhase(F, "enemy")\n    if ph and R then', "    local ph = nil\n    if ph and R then"),
+    ("phase reactions: never set back as the turn starts", GL, '  local ph = G.reactionsPhase(F, "own")\n',
+     "  local ph = nil\n"),
+    ("phase reactions: the answer in force not logged", GL, "phase = mine and P.phase or nil, policy = mine and P.policy[interrupt] or nil",
+     "phase = nil, policy = nil"),
+    ("phase reactions: a reaction against the answer ignored", GL, '      if x.policy == "never" and (not me0 or x.who == me0) then',
+     "      if false then"),
+    ("phase reactions: answers that did not stick ignored", GL, "      if ph.verified == false then", "      if false then"),
+    ("validity: a planned step not done ignored", GL,
+     '        if nd then causes[#causes + 1] = string.format("round %s: planned step not done: %s", tostring(R.r), nd) end',
+     ""),
+    ("validity: a fallback to the alt counted as a failure", GL,
+     'or tostring(a.result or ""):find("-> alt", 1, true) then return nil end', "then return nil end"),
+    ("validity: fail fast ignores a step not done", GL,
+     '    if nd then return string.format("round %d: planned step not done: %s", R.r, nd) end', ""),
+    ("validity: a step after one not needed counted as skipped", GL, "    if (R.not_needed or {})[a.requires] then",
+     "    if false then"),
+    ("evade: the move optional again", PL, '             done_key="left")]', '             done_key="left", optional=True)]'),
+    ("split: the reactions' damage left in the own turn's", RN, '        own -= react["react_dmg"]\n', ""),
+    ("split: a Sneak Attack row counted as a roll of its own", RN,
+     'if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:', "if False:"),
+    ("split: a model from before the split compared", RN, "        if key in SPLIT_PARTS and not split:\n            m = None\n",
+     ""),
+    ("split: rows in the character's own turn counted as reactions", RN,
+     "return r == 0 or (rel.get(r) is not None and (d.get(\"t\") or 0) > rel[r])", "return True"),
 ]
 
 
