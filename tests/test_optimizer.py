@@ -945,6 +945,48 @@ def test_strategy_boss_odds():
     assert not fails, fails
 
 
+def _own_spec(**enemy):
+    """The least spec profile_from_spec reads: four weapon rows at +14, the gauntlet's enemy (+9, the character's AC
+    22 unless given)."""
+    rows = [dict(slot=s, n=s, hit=14, dmg="1d6+8", sid="") for s in ("MainHand", "OffHand", "Ranged", "RangedOff")]
+    return {"expect": {"attacks": rows, "ac": enemy.pop("char_ac", 22)}, "items": [], "sheet": {"abilities": {},
+            "prof": 4}, "enemy": dict(atk=9, ac=19, **enemy)}
+
+
+def test_strategy_own_odds():
+    """The character's measured d20 (the pooled records' 1234 rolls at net Advantage: the higher die 1-4 in 34, 19-20
+    in 197): +14 vs AC 19 at Advantage misses 2.8% and lands a critical hit 16.0% (uniform 4% / 19%); a straight roll
+    takes one die's faces (2468 dice: 1-4 in 452, 19-20 in 202), Disadvantage the uniform d20. The own turn's rolls and
+    the riposte use them; a spec at +9 vs AC 22 gets them, another AC does not, and a spec's own_odds wins."""
+    import strategy as G
+    fails = []
+    A = G.OWN_ODDS.get((9, 22)) or ()
+    for mode, want in (("adv", (34 / 1234, 1003 / 1234, 197 / 1234)),
+                       ("straight", (452 / 2468, 1814 / 2468, 202 / 2468)), ("dis", G.attack_odds(14, 19, "dis", 19))):
+        got = G.attack_odds(14, 19, mode, 19, 0, A)
+        if max(abs(x - y) for x, y in zip(got, want)) > 1e-12:
+            fails.append(f"{mode}: {got} want {want}")
+    got = G.attack_odds(14, 19, "adv", 19, 0, A)
+    if (round(got[0] * 100, 1), round(got[2] * 100, 1)) != (2.8, 16.0):
+        fails.append(f"+14 vs 19 at Advantage: miss {got[0]} crit {got[2]}, want 2.8% / 16.0%")
+    for own, crit in ((None, 0.19), (A, 197 / 1234)):
+        P = _thx_profile(own_odds=own, boss_odds=G.BOSS_ODDS[(9, 22)])
+        rows = G.run_turn(P, G.Plan("melee"), G.TurnStart(True, "", False), parts=True).values()
+        att, crits = (sum(v[3][G.OWN_PARTS.index(k)] for v in rows) for k in ("attacks", "crits"))
+        if abs(crits / att - crit) > 1e-12:
+            fails.append(f"own turn, odds {bool(own)}: critical share {crits / att} want {crit}")
+        rows = G.boss_turn(P, "", True, False, False, parts=True)
+        att, crits = (sum(r[7][G.BOSS_PARTS.index(k)] for r in rows) for k in ("react_attacks", "react_crits"))
+        if abs(crits / att - crit) > 1e-12:
+            fails.append(f"riposte, odds {bool(own)}: critical share {crits / att} want {crit}")
+    for spec, want in ((_own_spec(), A), (_own_spec(char_ac=21), None),
+                       (dict(_own_spec(), own_odds={"adv": [1] * 20}), (("adv", (0.05,) * 20),))):
+        got = G.profile_from_spec(spec, {}).own_odds
+        if got != want:
+            fails.append(f"spec enemy {spec['enemy']} own_odds {spec.get('own_odds')}: {got} want {want}")
+    assert not fails, fails
+
+
 def test_strategy_gaping_ends():
     """Gaping Wound lasts the rest of its turn and the boss's turn (its +2 on the riposte), and is gone as the
     character's next turn starts (in game it ends then): the next turn's value is that turn without it."""
@@ -1337,7 +1379,7 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
             test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_boss_odds,
-            test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
+            test_strategy_own_odds, test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
             test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck, test_strategy_policy_table]
 
@@ -3120,6 +3162,73 @@ def mutations():
         finally:
             G.boss_attack = old
     out.append(("strategy: the boss's measured odds ignored", m_strategy_boss_odds_ignored))
+
+    def m_strategy_own_odds_ignored():
+        import strategy as G
+        old = G.attack_odds
+        G.attack_odds = lambda b, ac, mode, cf=20, die=0, naturals=None: old(b, ac, mode, cf, die)    # uniform always
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.attack_odds = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: the character's measured d20 ignored", m_strategy_own_odds_ignored))
+
+    def m_strategy_own_odds_riposte():
+        import strategy as G
+        old = G.boss_turn
+        G.boss_turn = lambda P, *a, **k: old(G.replace(P, own_odds=None), *a, **k)    # the riposte on a uniform d20
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy: the riposte rolls a uniform d20", m_strategy_own_odds_riposte))
+
+    def m_strategy_own_odds_turn():
+        import strategy as G
+        old = G.run_turn
+        G.run_turn = lambda P, *a, **k: old(G.replace(P, own_odds=None), *a, **k)    # the own turn on a uniform d20
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.run_turn = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: the own turn rolls a uniform d20", m_strategy_own_odds_turn))
+
+    def m_strategy_own_straight_uniform():
+        import strategy as G
+        old = G.OWN_ODDS
+        G.OWN_ODDS = {k: tuple(x for x in v if x[0] != "straight") for k, v in old.items()}
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.OWN_ODDS = old
+    out.append(("strategy: straight own rolls keep the uniform d20", m_strategy_own_straight_uniform))
+
+    def m_strategy_own_odds_any_ac():
+        import strategy as G
+        old = G.OWN_ODDS
+        class Any(dict):
+            def get(self, key, default=None):
+                return old[(9, 22)]                                  # every bonus and AC gets the table
+        G.OWN_ODDS = Any(old)
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.OWN_ODDS = old
+    out.append(("strategy: the measured d20 applied to any enemy", m_strategy_own_odds_any_ac))
+
+    def m_strategy_own_spec_ignored():
+        import strategy as G
+        old = G.profile_from_spec
+        G.profile_from_spec = lambda spec, stats: old({k: v for k, v in spec.items() if k != "own_odds"}, stats)
+        try:
+            return _ci_red(test_strategy_own_odds)
+        finally:
+            G.profile_from_spec = old
+    out.append(("strategy: a spec's own_odds ignored", m_strategy_own_spec_ignored))
 
     def m_strategy_gaping_next_turn():
         import strategy as G
