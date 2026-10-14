@@ -72,11 +72,11 @@ NUKE_ROUNDS = 0.6                               # at most this share of the roun
 SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
                          stealth=True, attacks_only=False, dmg_scale=1.0, target_hp_pct=None, melee_contact=0.0,
                          slot_share=(2 / 3, 0.5), nuke_rounds=0.6, other_status=0.1, allies=True,
-                         last_enemy_turn=True),
+                         last_enemy_turn=True, attacks_in_reach=False),
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
                           attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
                           slot_share=(1.0, 1.0), nuke_rounds=1.0, other_status=0.0, allies=False,
-                          last_enemy_turn=False)}
+                          last_enemy_turn=False, attacks_in_reach=True)}
 ALLIES = {"on": True}                           # the scenario in force has allies (model.scenario swaps it)
 # Ranged attacks made with an enemy within melee reach roll with Disadvantage, from two rules: the attacker is Threatened
 # (FLANKED) and the target is within 3 m (seen in game: from round 2 of a boss fight no hit carried the Advantage flag
@@ -96,8 +96,9 @@ REACH_SHARE = {"day": 0.5, "boss": SCENARIOS["boss"]["melee_contact"]}
 REACH = {"share": REACH_SHARE["day"]}           # the share in force (model.scenario swaps it)
 # Whether the enemies get a turn after the character's last one (model.scenario swaps it): the gauntlet's boss fight
 # ends as the character's 16th turn ends, so the reactions of the enemy's turns come in one turn fewer than the turns
-# the enemy spends in reach (reach_turns)
-ENEMY_TURNS = {"last": True}
+# the enemy spends in reach (reach_turns). reach_only: the enemy attacks only from within reach (the boss, which walks
+# up in round 1), so it attacks in those turns alone (durability)
+ENEMY_TURNS = {"last": True, "reach_only": False}
 # Sneak Attack's one charge (SneakAttack_Charge) comes back as the character's turn ends: seen in game, Sneak Attack
 # spent on a reaction in the enemy's turn is missing in the character's next turn, and spent in the character's turn
 # it is there again for the enemy's. The policy for Sneak Attack on a reaction in the enemy's turn (the gauntlet's
@@ -704,6 +705,7 @@ def make_weapon_events(st):
     if hm or hex_:
         ba_used_per_round += 1.0 / ROUNDS
         special["mark"] = (ROUNDS - 1) / ROUNDS * 3.5   # 1d6 per hit from round 2 on (concentration)
+        special["mark_die"] = 3.5                       # on in every enemy turn: cast in the character's first turn
     if plan.get("vow") and st.classes.get("Paladin", 0) >= 3 and "Vengeance" in (st.subs.get("Paladin") or ""):
         ba_used_per_round += SR_COVER / ROUNDS
         special["vow_adv"] = SR_COVER * (ROUNDS - 1) / ROUNDS
@@ -1223,6 +1225,8 @@ def run_triggers(st, evs, results, names, E):
                        # HasAdvantage(): the roll's net Advantage, given a hit for an OnDamage trigger
                        adv=(res.get("ph_adv", 0.0) / res["ph"]) if res.get("ph") and "OnDamage" in ctxs
                        else res.get("adv_net", 0.0),
+                       # HasDisadvantage(): the roll's net Disadvantage (Advantage with it cancels)
+                       dis=res.get("dis_net", 0.0),
                        hit_flag=1.0 if "OnDamage" in ctxs else (res.get("ph") or 1.0),
                        kill_p=min(0.95, per_hit / ENEMY_HP[st.act]))
             c = mech.Ctx(st, ev2, "trigger")
@@ -1434,7 +1438,7 @@ def scenario(name):
              "ENEMY_DMG_SCALE", "SLOT_SHARE", "NUKE_ROUNDS")
     keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
     keep_mc, keep_reach, keep_other, keep_allies = mech.MELEE_CONTACT, REACH["share"], mech.OTHER_STATUS_P, ALLIES["on"]
-    keep_last = ENEMY_TURNS["last"]
+    keep_last = dict(ENEMY_TURNS)
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
@@ -1449,7 +1453,7 @@ def scenario(name):
     mech.OTHER_STATUS_P = s["other_status"]
     ALLIES["on"] = s["allies"]
     REACH["share"] = REACH_SHARE[name]
-    ENEMY_TURNS["last"] = s["last_enemy_turn"]
+    ENEMY_TURNS.update(last=s["last_enemy_turn"], reach_only=s["attacks_in_reach"])
     for c in _caches():
         c.clear()
     try:
@@ -1463,7 +1467,7 @@ def scenario(name):
         mech.OTHER_STATUS_P = keep_other
         ALLIES["on"] = keep_allies
         REACH["share"] = keep_reach
-        ENEMY_TURNS["last"] = keep_last
+        ENEMY_TURNS.update(keep_last)
         for c, k in zip(_caches(), kept):
             c.clear()
             c.update(k)
@@ -1668,12 +1672,13 @@ def sneak_rider(st, ev, names):
     """Damage a Sneak Attack from this weapon event adds beyond its dice: the weapon's own on-damage passives that need
     an attack with the weapon (AttackedWithPassiveSourceWeapon) fire again on Sneak Attack's damage (seen in game:
     Crimson Mischief's Vicious, a second 7 after the Sneak Attack row on every riposte). Sneak Attack needs net
-    Advantage, so an Advantage condition holds."""
+    Advantage, so an Advantage condition holds (and a Disadvantage one fails, as far as the roll goes)."""
     out = 0.0
     for t, slot, _origin in triggers_of(st):
         if slot != ev.get("slot") or "OnDamage" not in t["ctx"] or "AttackedWithPassiveSourceWeapon" not in t["cond"]:
             continue
-        c = mech.Ctx(st, dict(ev, _item_slot=slot, crit_given_hit=0.0, adv=1.0, hit_flag=1.0, kill_p=0.0), "trigger")
+        c = mech.Ctx(st, dict(ev, _item_slot=slot, crit_given_hit=0.0, adv=1.0, dis=0.0, hit_flag=1.0, kill_p=0.0),
+                     "trigger")
         p = mech.cond_p(t["cond"], c)
         for cond, name, args in mech.functor_list(t["functors"]):
             if name == "DealDamage" and args and args[0].upper() not in ("SELF", "TARGET"):
@@ -1784,7 +1789,7 @@ def riposte_event(st, evs, results, special, dur):
     if not main:
         return None
     ev0, r0 = main
-    misses = ROUNDS * dur.get("enemy_attacks", 0.0) * (1 - dur.get("enemy_ph", 1.0))
+    misses = ROUNDS * reach_turns(1.0) * dur.get("enemy_attacks", 0.0) * (1 - dur.get("enemy_ph", 1.0))
     n = min(dice, misses) / ROUNDS
     per = r0["dmg"] / ev0["n"] + r0["ph"] * special.get("die", 0.0)
     return (dict(name="Riposte", spell_id="Target_Riposte", n=n, kind="reaction", cost="reaction"),
@@ -1811,9 +1816,9 @@ def item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt):
     """A weapon's riposte reaction (item_riposte): a melee main-hand attack when an enemy's melee attack within 2 m
     misses, counted as the strategy search counts it (optimizer strategy.py): the reaction once a round at most, on
     the enemy attacks made from within reach (every one for a melee build, REACH["share"] otherwise: the riposte comes
-    from the melee set whichever set the plan attacks with) that miss, with the melee main hand's damage and the mark,
-    no Sneak Attack (not known whether it is back on the enemy's turn). A Battle Master Riposte takes the reaction
-    first. -> (event, result) or None"""
+    from the melee set whichever set the plan attacks with) that miss, with the melee main hand's damage, the mark and
+    the weapon's on-damage passives; Sneak Attack is the caller's (reaction_sneak). A Battle Master Riposte takes the
+    reaction first. -> (event, result) or None"""
     ev = special.get("riposte_ev")
     if not ev:
         return None
@@ -1825,8 +1830,11 @@ def item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt):
     ev = dict(ev, n=n, spell_id=item_riposte(st), kind="reaction", cost="reaction")
     adv_x = 1 - (1 - max(tgt["prone"], st.target_prone)) * (1 - tgt["adv"])
     r = eval_event(st, dict(ev, kind="weapon"), boosts, names, E, tgt["save_pen"], adv_x, 0.0)
-    if special.get("mark"):
-        r["dmg"] += special["mark"] * (r["hits"] + r["crits"])
+    if special.get("mark_die"):
+        r["dmg"] += special["mark_die"] * (r["hits"] + r["crits"])
+    # the weapon's on-damage passives fire on the riposte's hit as on any other (Crimson Mischief's Vicious, seen in
+    # game); run_triggers ran before this event existed
+    r["dmg"] += run_triggers(st, [dict(ev, kind="weapon")], [r], names, E)[0]
     return ev, r
 
 
@@ -2017,7 +2025,10 @@ def durability(st, E, boosts, names, tgt, heal):
     ph = mech.p_hit(atk, ac, adv_enemy, dis)
     pc = mech.p_crit(20, adv_enemy) * (1 - crit_immune)
     per_hit = max(1.0, E["dmg"] * typed(mix["attack"]) - dr_for(mix["attack"]))
-    incoming_atk = n_att * (ph * per_hit + pc * E["dmg"] * 0.5 * typed(mix["attack"]))
+    # an enemy that attacks only from within reach attacks in the turns it has there (the boss: none in round 1 when
+    # the character acts first and stays out of reach, none after the character's last turn), as the reactions count
+    turns = reach_turns(1.0 if st.plan["mode"] == "melee" else REACH["share"]) if ENEMY_TURNS["reach_only"] else 1.0
+    incoming_atk = turns * n_att * (ph * per_hit + pc * E["dmg"] * 0.5 * typed(mix["attack"]))
     p_save_dmg *= (1 - cover)
     incoming_save = 0.35 * E["save_dmg"] * typed(mix["save"]) * (p_save_dmg + 0.5 * (1 - p_save_dmg))
     raw = incoming_atk + incoming_save + threat_dmg
