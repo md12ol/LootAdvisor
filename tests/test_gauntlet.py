@@ -556,6 +556,26 @@ def watchdog_tests(L):
           g.T_after == "done" and "bad request" in str(g.T_bad) and g.T_saved >= 1, str(g.T_bad))
     check("run start: prep that never finishes -> invalid run, not a hang",
           "prep timed out" in str(g.T_prep) and g.T_prep_valid is False, str(g.T_prep))
+    # the combat's first turn: the first request waits longer (in game one sent 200 ms after it started was refused)
+    L.execute(r"""
+      local G = GAUNTLET
+      local me = { TurnBased = { IsActiveCombatTurn = true } }
+      local get = Ext.Entity.Get
+      Ext.Entity.Get = function(u) if u == "c3" then return me end end
+      T_next = {}
+      for _, r0 in ipairs({ 0, 4 }) do
+        G.reset(); G.round = r0; G.t0 = 0
+        local F = { char = "c3", enemies = {}, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                    started = 1, state = "wait", deadline = 1e12 }
+        G.F = F
+        G.step(F, 1000)
+        T_next[#T_next + 1] = (F.next or 0) - 1000
+      end
+      Ext.Entity.Get = get
+    """)
+    nx = list(g.T_next.values())
+    check("first turn: the combat's first request waits FIRST_ACT_DELAY_MS, later turns ACT_DELAY_MS",
+          nx == [g.GAUNTLET.FIRST_ACT_DELAY_MS, g.GAUNTLET.ACT_DELAY_MS] and nx[0] >= 400, str(nx))
 
 
 def speed_tests(L):
@@ -5579,6 +5599,8 @@ MUTATIONS = [
     ("evade: a leave spot inside 3 m of the boss", GL,
      "    local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7",
      "    local clear = true"),
+    ("first turn: the combat's first request sent as early as any other", GL,
+     "t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t", "t + G.ACT_DELAY_MS, t"),
     ("impact wait: the step loop never waits for the last attack to land", GL,
      "    if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end\n", ""),
     ("impact wait: the attack's damage row not waited for", GL, "  if not first then return true end\n", ""),

@@ -4187,8 +4187,10 @@ end
 G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 20000, 1, 4000, 3, 90000
 G.COMBAT_LOST_MS = 3000
 -- pauses around the character's turn: after the turn starts (the engine refills the turn's resources) and after the
--- last action (the cast has ended: G.step waits for casting() first)
-G.ACT_DELAY_MS, G.END_DELAY_MS = 200, 100
+-- last action (the cast has ended: G.step waits for casting() first). The combat's first turn needs longer: in game a
+-- player-path request sent 200 ms after it started was refused (CastSpellFailed, 4 of 4), one sent 400 ms or later was
+-- cast (5 of 5); in later turns 100-200 ms was cast (6 of 6).
+G.ACT_DELAY_MS, G.FIRST_ACT_DELAY_MS, G.END_DELAY_MS = 200, 1000, 100
 -- Out of combat for COMBAT_LOST_MS while waiting for the turn? (IsInCombat 0; an unknown answer is no evidence.) The
 -- enemies' turn before round 1 is noted on the way (F.enemyFirst: its damage counts).
 function G.combatLost(F, t)
@@ -4432,7 +4434,8 @@ function G.step(F, t)
         return finish(F, string.format("round %d: %d summon attack(s) refused or never seen", last.r, last.summon_misses))
       end
       roundStart(F)
-      F.state, F.next, F.turnStart = (F.manual or F.player) and "player" or "act", t + G.ACT_DELAY_MS, t
+      F.state, F.next, F.turnStart = (F.manual or F.player) and "player" or "act",
+        t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t
     elseif not F.manual and G.combatLost(F, t) then
       -- the combat ended (an item spell ended it, the enemies are not hostile): no turn will come, nothing to wait for
       F.recoveries = (F.recoveries or 0) + 1
