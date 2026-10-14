@@ -645,10 +645,12 @@ def harness_rounds(path, A, evade_steps, evade_every_round=False):
             if sp == spell:
                 steps.append(plain)
                 continue
-            cost = "ActionPoint:1" if group == "action" else ""
+            # a manoeuvre's die is its HitCosts: spent only when the attack hits, so it is no use cost of the step
             if "manoeuvre" in why:
-                cost = ";".join(x for x in (cost, "SuperiorityDie:1") if x)
-            steps.append(A(sp, group, "@boss", why, alt=plain, **({"cost": cost} if cost else {}), **kw))
+                kw["hit_cost"] = "SuperiorityDie:1"
+            if group == "action":
+                kw["cost"] = "ActionPoint:1"
+            steps.append(A(sp, group, "@boss", why, alt=plain, **kw))
         rounds.append(steps)
     return rounds
 

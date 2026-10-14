@@ -1073,6 +1073,8 @@ def player_cast_tests(L):
         Zone_Thing = { SpellType = "Zone", UseCosts = "ActionPoint:1" },
         Target_NoType = { UseCosts = "ActionPoint:1" },
         Target_Odd = { SpellType = "Sideways", UseCosts = "ActionPoint:1" },
+        Target_MenacingAttack = { SpellType = "Target", UseCosts = "ActionPoint:1", HitCosts = "SuperiorityDie:1",
+          TargetRadius = "1.5" },
       }
       Ext.Stats.Get = function(s) return DATA[s] end
       local book = {}
@@ -1148,12 +1150,14 @@ def player_cast_tests(L):
         local F = { char = "c1", cooldown = {}, plan = {}, S = {}, playerCast = true, req = opts.req or {} }
         local costs = G._parseCosts(DATA[spell].UseCosts)
         local dual = G.dualCosts(spell)
+        local hit = G.hitCosts({ spell = spell })
         local all = {}
         for _, c in ipairs(costs) do all[#all + 1] = c end
         for _, c in ipairs(dual or {}) do all[#all + 1] = c end
+        for _, c in ipairs(hit) do all[#all + 1] = c end
         F.pending = { a = { spell = spell, group = "action", retried = opts.retried }, rec = rec, costs = costs,
           before = {}, res = {}, who = "c1", spell = spell, target = "b1", casts0 = 0, dmg0 = 0, t0 = 0, fails0 = 0,
-          using0 = 0, dual = dual, dualBefore = {}, toggled = toggled, player = true, range = opts.range,
+          using0 = 0, dual = dual, dualBefore = {}, hit = hit, hitBefore = {}, toggled = toggled, player = true, range = opts.range,
           snap0 = G.costSnapshot("c1", all), togglePrev = opts.prev, toggleField = opts.prev ~= nil and "RangedToggledOn" or nil }
         local R = { r = 3, done = {}, casts = {}, actions = { rec } }
         return F, R, rec
@@ -1207,6 +1211,35 @@ def player_cast_tests(L):
       G.settle(F5, R5, 100 + G.PLAYER_FAIL_MS)
       T_los = { rec5.fail_kind, R5.cast_faults and R5.cast_faults[1].kind }
       Osi.CanSee = function() return 1 end
+
+      -- hit costs (HitCosts): a manoeuvre's superiority die is spent only when the attack hits
+      local mh = G.hitCosts({ spell = "Target_MenacingAttack" })
+      T_hc = { #mh, mh[1] and mh[1].kind, #G.hitCosts({ spell = "Target_MenacingAttack", hit_cost = "" }),
+        #G.hitCosts({ spell = "Target_MainHandAttack" }), #G.hitCosts({ spell = "X", hit_cost = "SuperiorityDie:1" }) }
+      RES.ActionPoint, RES.SuperiorityDie = 1, 0
+      T_hc_afford = { G.afford({ char = "c1", cooldown = {} }, { spell = "Target_MenacingAttack", group = "action" }) }
+      local function man(spent, rows)
+        RES.ActionPoint, RES.BonusActionPoint, RES.SuperiorityDie = 1, 2, 4
+        local Fm, Rm, recm = pend("Target_MenacingAttack", false)
+        RES.ActionPoint, RES.SuperiorityDie = 0, 4 - spent
+        G.hits, G.dmg = rows, {}
+        Rm.casts[1] = { who = "c1", spell = "Target_MenacingAttack" }
+        G.settle(Fm, Rm, 1500)
+        return { recm.result, recm.hit_cost, Rm.cast_faults and Rm.cast_faults[1].why or "" }
+      end
+      local HIT = { { source = "c1", target = "b1", spell = "Target_MenacingAttack", hit = true } }
+      local CRIT = { { source = "c1", target = "b1", spell = "Target_MenacingAttack", hit = true, crit = true } }
+      local MISS = { { source = "c1", target = "b1", spell = "Target_MenacingAttack", miss = true } }
+      T_hc_miss, T_hc_hit, T_hc_crit = man(0, MISS), man(1, HIT), man(1, CRIT)
+      T_hc_hit0, T_hc_miss1 = man(0, HIT), man(1, MISS)
+      T_hc_unseen = { man(0, {}), man(1, {}) }
+      -- no hit-log row: the damage row decides (a miss is a 0 damage row)
+      T_hc_dmg = { G.castLanded({ who = "c1", target = "b1", spell = "Target_MenacingAttack" }, {},
+          { { source = "c1", target = "b1", cause = "Attack", amount = 0 } }),
+        G.castLanded({ who = "c1", target = "b1", spell = "Target_MenacingAttack" }, {},
+          { { source = "c1", target = "b1", cause = "Attack", amount = 7 } }) }
+      G.hits = {}
+      RES.SuperiorityDie = nil
 
       -- doAction: no bonus action -> untoggled; a spell with no SpellType is not cast
       G.dmg = {}
@@ -1301,6 +1334,23 @@ def player_cast_tests(L):
     check("player cast: a planned spell with no SpellType is not cast and fails the run",
           "player path" in str(dn[0]) and dn[1] == "request" and dn[2] is True, str(dn))
     check("player cast: the default path", g.T_default is True)
+    hc = seq(g.T_hc, 5)
+    check("hit costs: read from the spell's HitCosts, the plan's hit_cost first (empty = none)",
+          hc == [1, "SuperiorityDie", 0, 0, 1], str(hc))
+    ha = seq(g.T_hc_afford, 2)
+    check("hit costs: a manoeuvre with no superiority die left is not affordable",
+          ha[0] is False and "SuperiorityDie" in str(ha[1]), str(ha))
+    for name, want_ok, want_tag in (("T_hc_miss", True, "none"), ("T_hc_hit", True, "owed"), ("T_hc_crit", True, "owed"),
+                                    ("T_hc_hit0", False, "owed"), ("T_hc_miss1", False, "none")):
+        r_ = seq(getattr(g, name), 3)
+        ok_ = r_[0] == "done" and r_[1] == want_tag and ((r_[2] == "") if want_ok else "SuperiorityDie" in str(r_[2]))
+        check(f"hit costs: {name[5:]}: a die spent only on a hit, else a cost mismatch "
+              f"(want {'no fault' if want_ok else 'a fault'}, {want_tag})", ok_, str(r_))
+    un = [seq(x, 3) for x in lst(g.T_hc_unseen)]
+    check("hit costs: outcome not seen -> the die may or may not be spent",
+          all(u[0] == "done" and u[1] == "unseen" and u[2] == "" for u in un), str(un))
+    check("hit costs: with no hit-log row a 0 damage row is a miss, damage a hit",
+          seq(g.T_hc_dmg, 2) == [False, True], str(seq(g.T_hc_dmg, 2)))
     L.execute(r"""
       local G = GAUNTLET
       T_pc = { G.playerCastFor({ mode = "scripted" }), G.playerCastFor({ mode = "scripted", player_cast = false }),
@@ -3427,6 +3477,35 @@ def py_tests():
     gi = P.granted_interrupts(["Cls_P"], ["MAG_Helm"], st_i)
     check("reactions: the build's and the set's interrupts (also through an item's passive)",
           gi == ["Interrupt_DestructiveWrath", "Interrupt_Item_Shield", "Interrupt_Item_Riposte"], str(gi))
+    st_h = {"MAG_Blade": {"PassivesOffHand": " MAG_Off_P", "PassivesMainHand": " MAG_Main_P", "PassivesOnEquip": "X"},
+            "MAG_Off_P": {"Boosts": "UnlockInterrupt(Interrupt_Item_Riposte)"},
+            "MAG_Main_P": {"Boosts": "UnlockInterrupt(Interrupt_Item_MainOnly)"}}
+    gh = [P.granted_interrupts([], [("MAG_Blade", slot)], st_h) for slot in ("MeleeOffHand", "MeleeMainHand",
+                                                                            "RangedOffHand")]
+    gh.append(P.granted_interrupts([], ["MAG_Blade"], st_h))
+    check("reactions: a weapon's hand passives unlock interrupts only in that hand (Blade of the First Blood's riposte "
+          "in the off hand)", gh == [["Interrupt_Item_Riposte"], ["Interrupt_Item_MainOnly"], ["Interrupt_Item_Riposte"],
+                                     []], str(gh))
+    st_c = {"Target_MenacingAttack": {"UseCosts": "ActionPoint:1", "HitCosts": "SuperiorityDie:1"},
+            "Target_Smite_Divine": {"UseCosts": "ActionPoint:1", "HitCosts": "SpellSlotsGroup:1:1:1"},
+            "Target_MainHandAttack": {"UseCosts": "ActionPoint:1"}}
+    hplan = {"rounds": [[P.A("Target_MenacingAttack", "action", cost="ActionPoint:1;SuperiorityDie:1",
+                             alt=P.A("Target_Smite_Divine", "action", cost="SpellSlotsGroup:1:1:1;ActionPoint:1",
+                                     alt=P.A("Target_MainHandAttack", "action"))),
+                         P.A("Target_MenacingAttack", "free")]],
+             "steady": [P.A("Target_MenacingAttack", "action")]}
+    P.with_hit_costs(hplan, st_c)
+    m0, m1 = hplan["rounds"][0]
+    got_hc = [(m0["cost"], m0.get("hit_cost")), (m0["alt"]["cost"], m0["alt"].get("hit_cost")),
+              ("hit_cost" in m0["alt"]["alt"]), (m1["cost"], m1.get("hit_cost")), hplan["steady"][0].get("hit_cost")]
+    check("hit costs: plan steps carry the spell's HitCosts as hit_cost, and no use cost holds them",
+          got_hc == [("ActionPoint:1", "SuperiorityDie:1"), ("ActionPoint:1", "SpellSlotsGroup:1:1:1"), False,
+                     ("free", "SuperiorityDie:1"), "SuperiorityDie:1"], str(got_hc))
+    fplan = P.with_hit_costs({"rounds": [], "steady": [P.A("Target_MenacingAttack", "action", alt=P.A(
+        "Target_MainHandAttack", "action"))]}, st_c)
+    fc_h = [r[0] for r in P.forecast(fplan, {}, [{"kind": "SuperiorityDie", "level": 0, "n": 2}], st_c, n_rounds=4)]
+    check("hit costs: the forecast needs the die there to cast (every manoeuvre counted as a hit)",
+          fc_h == ["Target_MenacingAttack"] * 2 + ["Target_MainHandAttack"] * 2, str(fc_h))
     pol = P.reaction_policy(["Interrupt_DestructiveWrath"], ["Interrupt_Item_Shield"])
     check("reactions: plan answers = the build's and the set's reactions fire, nothing else listed",
           pol == {"Interrupt_DestructiveWrath": "auto", "Interrupt_Item_Shield": "auto",
@@ -5007,8 +5086,7 @@ MUTATIONS = [
      "costs)", "ok = True"),
     ("plan: set reactions dropped", PL, "list(build_interrupts) + list(set_interrupts) + COMMON_REACTIONS",
      "list(build_interrupts) + COMMON_REACTIONS"),
-    ("plan: item passives not scanned", PL, "            for p in _split(st_.get(\"PassivesOnEquip\")):\n"
-     "                scan(p, 1)", "            pass"),
+    ("plan: item passives not scanned", PL, 'scan(sid, ("PassivesOnEquip",) + ', "scan(sid, () + "),
     ("engine: no retry on a missed eval", EN, "if misses >= max_misses:", "if misses >= 1:"),
     ("engine: start never re-sent", EN, "elif not seen and not resent and polls >= 3:", "elif False:"),
     ("equip: no second ask", GL, "          pcall(Osi.Equip, u, e.it, 1, 0, 0)\n", ""),
@@ -5282,8 +5360,28 @@ MUTATIONS = [
     ("player cast: a spell it cannot send leaves the run valid", GL,
      '      G.castFault(R, a.spell, "request", "the player path cannot send it: " .. tostring(err))\n', ""),
     ("player cast: what was spent never checked", GL,
-     "    if P.player then G.checkSpent(F, R, P) else pay(F.char, P.costs, P.before) end",
-     "    if not P.player then pay(F.char, P.costs, P.before) end"),
+     "    if P.player then G.checkSpent(F, R, P) else\n", "    if P.player then else\n"),
+    ("hit costs: not read from the spell's data", GL,
+     "  return parseCosts(st and try(function() return st.HitCosts end))", "  return {}"),
+    ("hit costs: not needed to afford the step", GL,
+     "  local ok, why = canPay(F.char, addCosts(costs, G.hitCosts(a)))", "  local ok, why = canPay(F.char, costs)"),
+    ("hit costs: owed on a miss too", GL,
+     "    elseif landed == false then owed = addCosts(owed, G.noCosts(P.hit))",
+     "    elseif landed == false then owed = addCosts(owed, P.hit)"),
+    ("hit costs: a die spent on a miss passes", GL,
+     "    elseif landed == false then owed = addCosts(owed, G.noCosts(P.hit))", "    elseif landed == false then"),
+    ("hit costs: not owed after a hit", GL, "    if landed then owed = addCosts(owed, P.hit)",
+     "    if landed then maybe = addCosts(maybe, P.hit)"),
+    ("hit costs: a miss read as a hit", GL, "      return not h.miss\n", "      return true\n"),
+    ("hit costs: a 0 damage row read as a hit", GL, "      return (d.amount or 0) > 0\n", "      return true\n"),
+    ("hit costs: left in the plan's use cost", PL, "if x.strip() and _cost_kind(x.split(\":\")[0].strip()) not in kinds)",
+     "if x.strip())"),
+    ("hit costs: not in the forecast", PL, "                costs += parse_costs(a.get(\"hit_cost\"))\n", ""),
+    ("reactions: a weapon's hand passives ignored", PL,
+     "((HAND_PASSIVES[slot],) if slot in HAND_PASSIVES else ())", "()"),
+    ("reactions: the other hand's passives", PL,
+     '"MeleeOffHand": "PassivesOffHand", "RangedOffHand": "PassivesOffHand"}',
+     '"MeleeOffHand": "PassivesMainHand", "RangedOffHand": "PassivesMainHand"}'),
     ("player cast: checked before the cast's end", GL,
      '    if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end\n', ""),
     ("player cast: an attack that hit nothing may owe the off-hand half", GL,
