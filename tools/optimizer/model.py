@@ -2024,7 +2024,8 @@ def durability(st, E, boosts, names, tgt, heal):
     incoming = max(0.5 * raw, raw - heal)      # healing can at most halve the damage taken (model rule)
     R = (hp + temp) / incoming
     return dict(ac=ac, hp=hp, temp=temp, R=R, incoming=incoming, saves=save_b, dr=sum(dr.values()), dis=dis,
-                enemy_attacks=n_att, enemy_ph=ph,
+                enemy_attacks=n_att, enemy_ph=ph, enemy_hit=per_hit, enemy_crit=E["dmg"] * 0.5 * typed(mix["attack"]),
+                heal=heal,
                 lost=lost_turns, sv=sv, cover=cover, mult={t: v for t, v in mult.items() if v != 1.0},
                 threats=out_rows)
 

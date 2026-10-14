@@ -1085,11 +1085,36 @@ def boss_expect(boss):
     """The model's numbers for the fight the gauntlet runs (its boss scenario), the ones run.py --report compares with:
     damage per round, damage taken per round, rounds survived, and per round the attack rolls, hits, crits, their
     rates, damage per landed hit and Sneak Attack, own turn and reactions apart (model.attack_parts), and the reaction
-    policy for Sneak Attack in the enemies' turns the model chose."""
+    policy for Sneak Attack in the enemies' turns the model chose; the boss's damage per hit (taken_hit, taken_crit) and
+    the healing per round (taken_heal) the damage taken is made of."""
     out = {"dpr": round(boss.dpr, 2), "taken": round(boss.dur["incoming"], 3), "R": round(boss.R, 2)}
+    # what one boss hit does (and a critical hit's extra, the healing per round): a strategy's damage taken
+    for k, key in (("taken_hit", "enemy_hit"), ("taken_crit", "enemy_crit"), ("taken_heal", "heal")):
+        if boss.dur.get(key) is not None:
+            out[k] = round(boss.dur[key], 3)
     out.update(getattr(boss, "parts", None) or {})
     if getattr(boss, "sneak_policy", None):
         out["sneak_policy"] = boss.sneak_policy
+    return out
+
+
+def strategy_spec(spec, family, stats):
+    """The spec with the strategy family's best policy (the optimizer's strategy.py, imported from the optimizer
+    folder): its round plan, and its numbers in expect.boss (what the report compares with) and expect.strategy; what
+    follows from the round plan rebuilt from it: hit costs, riders, the forecast, the hotbar rows and the spells the
+    plan casts."""
+    import strategy as SG
+    P = SG.profile_from_spec(spec, stats)
+    out = SG.apply_to_spec(spec, P, family, A, evade_steps)
+    plan = with_hit_costs(out["plan"], stats)
+    plan["riders"] = plan_riders(plan["rounds"])
+    plan["forecast"] = forecast(plan, out["slots"], (out.get("resources") or []) + (out.get("item_resources") or []),
+                                stats)
+    plan["hotbar"] = hotbar_rows(plan, out.get("passives_add") or [], out.get("spells_add") or [],
+                                 plan.get("item_actions") or [], stats)
+    used = plan_spells(plan)
+    out["spells_plan"] = sorted({re.sub(r"_\d+$", "", x) for x in used})
+    out["spells_add"] = sorted(set(out.get("spells_add") or []) | used)
     return out
 
 
@@ -1134,10 +1159,7 @@ def main(argv=None):
                                           plan_toggles=(plans.get(pid) or {}).get("toggles") if pid else None,
                                           known=known)
             if a.strategy:
-                import strategy as SG
-                P = SG.profile_from_spec(row["specs"][side], stats)
-                row["specs"][side] = SG.apply_to_spec(row["specs"][side], P, a.strategy, A, evade_steps)
-                with_hit_costs(row["specs"][side]["plan"], stats)
+                row["specs"][side] = strategy_spec(row["specs"][side], a.strategy, stats)
         row.pop("a", None), row.pop("b", None)
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", " / ".join(sp["set"] for sp in row["specs"].values()))

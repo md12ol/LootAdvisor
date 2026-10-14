@@ -139,6 +139,9 @@ class Profile:
     conc_save: int = 8              # Constitution save bonus (concentration)
     conc_dc: int = 10               # the boss's hits (half damage in the gauntlet) stay below 20
     boss_first: float = 0.0         # P(the boss acts before the character in round 1)
+    taken_hit: float = None         # damage the character takes per boss hit, and a critical hit's extra (the model's
+    taken_crit: float = 0.0         # boss scenario: expect.boss taken_hit / taken_crit / taken_heal); None = not known
+    taken_heal: float = 0.0
 
 
 def _dice_flat(expr):
@@ -204,6 +207,7 @@ def profile_from_spec(spec, stats):
     if "DreadAmbusher" in passives:
         init += 3
     E = spec.get("enemy") or {}
+    gear = spec["expect"].get("boss_gear") or spec["expect"].get("boss") or {}
     boss_init = 0
     first = sum(1 for a in range(1, 21) for b in range(1, 21) if b + boss_init > a + init) / 400 + \
         sum(1 for a in range(1, 21) for b in range(1, 21) if b + boss_init == a + init) / 800
@@ -227,7 +231,9 @@ def profile_from_spec(spec, stats):
         pierce_ranged="Projectile_PiercingShot" in ((stats.get(items.get("RangedMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
         ensnare=cl.get("Ranger", 0) >= 1, riposte=riposte, riposte_ts=riposte_ts,
         boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)), boss_atk=int(E.get("atk", 9)),
-        char_ac=int(spec["expect"]["ac"]), conc_save=(con - 10) // 2 + save_bonus, boss_first=first)
+        char_ac=int(spec["expect"]["ac"]), conc_save=(con - 10) // 2 + save_bonus, boss_first=first,
+        taken_hit=gear.get("taken_hit"), taken_crit=gear.get("taken_crit") or 0.0,
+        taken_heal=gear.get("taken_heal") or 0.0)
 
 
 # ------------------------------------------------------------------------------------------------------- one turn
@@ -244,6 +250,7 @@ class Attack:
     ensnare: bool = False
     if_no_ensnare: bool = False     # fired with the bonus action an Ensnaring Strike that missed left over
     true_strike: bool = False       # a roll of the turn's first attack action after a riposte hit: no Sharpshooter -5
+    dis_any: bool = False           # Disadvantage on the roll, cancelled or not (a shot with the boss in reach)
 
 
 @dataclass(frozen=True)
@@ -284,7 +291,7 @@ def build_attacks(P, plan, state):
     off = P.melee_off if melee else P.ranged_off
     out = []
     if plan.dread:
-        out.append(Attack("Dread Ambusher", main, mode, extra_dice=(P.dread_die,)))
+        out.append(Attack("Dread Ambusher", main, mode, extra_dice=(P.dread_die,), dis_any=dis))
     n_main = P.attacks * (2 if plan.surge else 1)
     kinds = []
     if plan.pierce:
@@ -302,10 +309,10 @@ def build_attacks(P, plan, state):
             prec_left -= 1
     for i, (kind, man) in enumerate(kinds):
         out.append(Attack(kind if kind != "maneuver" else man, main, mode, maneuver=man, precision=i in prec,
-                          pierce=kind == "pierce", ensnare=kind == "ensnare"))
+                          pierce=kind == "pierce", ensnare=kind == "ensnare", dis_any=dis))
     ba = P.bonus_actions - (1 if plan.mark else 0) - (1 if plan.mode == "leave" else 0)
     for j in range(max(0, ba)):
-        out.append(Attack("off-hand", off, mode, if_no_ensnare=plan.ensnare and j == ba - 1))
+        out.append(Attack("off-hand", off, mode, if_no_ensnare=plan.ensnare and j == ba - 1, dis_any=dis))
     if getattr(state, "ts", False):
         # True Strike on the boss: both rolls of the first attack action (its main hand and the off-hand half the
         # bonus action pays) roll without Sharpshooter's -5
@@ -327,24 +334,30 @@ class TurnStart:
     ts: bool = False                # True Strike on the boss from a riposte hit in the boss's turn
 
 
-def run_turn(P, plan, start):
+# the own turn's parts (run_turn with parts): attack rolls, landed rolls (critical ones in), critical hits, rolls with
+# net Advantage, with net Disadvantage, with any Disadvantage, Sneak Attack's damage (its dice)
+OWN_PARTS = ("attacks", "hits", "crits", "adv", "dis", "dis_any", "sneak")
+
+
+def run_turn(P, plan, start, parts=False):
     """-> {(sneak_used, dice_hit, frightened, gaping_new, ensnare): (p, E[D;branch], E[D^2;branch])}; ensnare 0 none
-    or missed, 1 hit and restrained, 2 hit and saved."""
+    or missed, 1 hit and restrained, 2 hit and saved. parts: each value also carries E[X;branch] of OWN_PARTS."""
     q_fright = save_fails(P.boss_save, P.maneuver_dc)
     q_gape = save_fails(P.boss_save, P.maneuver_dc + 2)
     q_snare = save_fails(P.boss_save, P.spell_dc)
-    states = {(not start.sneak, 0, False, False, 0): (1.0, 0.0, 0.0)}
+    zero = (0.0,) * len(OWN_PARTS)
+    states = {(not start.sneak, 0, False, False, 0): (1.0, 0.0, 0.0, zero)}
     marked0 = plan.mark or start.conc == "mark"
     for a in build_attacks(P, plan, start):
         nxt = {}
 
-        def add(key, p, m1, m2):
-            q = nxt.get(key, (0.0, 0.0, 0.0))
-            nxt[key] = (q[0] + p, q[1] + m1, q[2] + m2)
-        for key, (p, m1, m2) in states.items():
+        def add(key, p, m1, m2, v):
+            q = nxt.get(key, (0.0, 0.0, 0.0, zero))
+            nxt[key] = (q[0] + p, q[1] + m1, q[2] + m2, tuple(x + y for x, y in zip(q[3], v)) if parts else zero)
+        for key, (p, m1, m2, v) in states.items():
             sa, k, fr, gnew, ens = key
             if a.if_no_ensnare and ens:
-                add(key, p, m1, m2)
+                add(key, p, m1, m2, v)
                 continue
             w = a.weapon
             pen, ssd = P.sharpshooter if (a.sharpshooter and P.sharpshooter) else (0, 0)
@@ -357,7 +370,13 @@ def run_turn(P, plan, start):
                 ((P.sup_die,) if a.maneuver else ())
             flat = w.flat + ssd + (w.adv_flat if a.mode == "adv" else 0) + \
                 (P.gaping if (start.gaping or gnew) else 0)
-            add(key, p * miss, m1 * miss, m2 * miss)
+            roll = (1.0, 0.0, 0.0, float(a.mode == "adv"), float(a.mode == "dis"), float(a.dis_any or a.mode == "dis"),
+                    0.0)
+
+            def scaled(f, extra):
+                # E[X;child] of the parts: the parent's share plus this roll's counts on the child's weight
+                return tuple(x * f + p * f * y for x, y in zip(v, extra)) if parts else zero
+            add(key, p * miss, m1 * miss, m2 * miss, scaled(miss, roll))
             sneak = P.sneak_dice and a.mode == "adv" and w.sneak and not sa
             for pr, is_crit in ((hit, False), (crit, True)):
                 if not pr:
@@ -367,6 +386,8 @@ def run_turn(P, plan, start):
                 # (Crimson Mischief's Vicious: a second 7 after the Sneak Attack row, seen on every riposte)
                 mu, s2 = landed(d, flat + (w.adv_flat if sneak else 0), is_crit)
                 base = (p * pr, pr * (m1 + p * mu), pr * (m2 + 2 * m1 * mu + p * s2))
+                sa_dice = dice_moments(P.sneak_dice, 2 if is_crit else 1)[0] if sneak else 0.0
+                vb = scaled(pr, roll[:1] + (1.0, float(is_crit)) + roll[3:6] + (sa_dice,))
                 k2 = k + (1 if a.maneuver else 0)
                 outs = [((sa or bool(sneak), k2, fr, gnew, ens), 1.0)]
                 if a.maneuver == "MenacingAttack":
@@ -380,9 +401,11 @@ def run_turn(P, plan, start):
                             ((sa or bool(sneak), k2, fr, gnew, 2), 1 - q_snare)]
                 for kk, f in outs:
                     if f:
-                        add(kk, base[0] * f, base[1] * f, base[2] * f)
+                        add(kk, base[0] * f, base[1] * f, base[2] * f, tuple(x * f for x in vb))
         states = nxt
-    return states
+    if parts:
+        return states
+    return {k: v[:3] for k, v in states.items()}
 
 
 def riposte_spends(P, crit):
@@ -390,12 +413,19 @@ def riposte_spends(P, crit):
     return P.riposte_sneak == "always" or (crit and P.riposte_sneak == "crit")
 
 
-def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True):
+# the boss turn's parts (boss_turn with parts): the riposte's attack rolls, landed rolls, critical hits, Sneak Attack's
+# damage (its dice), and the boss's attack rolls, landed hits (critical ones in) and critical hits on the character
+BOSS_PARTS = ("react_attacks", "react_hits", "react_crits", "react_sneak", "boss_attacks", "boss_hits", "boss_crits")
+
+
+def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=False):
     """The boss's turn after ours -> [(p, E[R], E[R^2], conc after, adjacent at our next turn, Sneak Attack's charge at
     our next turn, True Strike on the boss at our next turn)], R = our damage in it (the riposte, the Ensnaring Strike
     tick). reach False: the boss only walks up (round 1: it starts too far away to attack). Sneak Attack's charge is
-    always there in the boss's turn: it came back as ours ended."""
+    always there in the boss's turn: it came back as ours ended. parts: each row also carries E[X;row] of
+    BOSS_PARTS."""
     out = []
+    none = (0.0,) * len(BOSS_PARTS)
     branches = [(1.0, conc == "ensnare", 0.0, 0.0)]
     if conc == "ensnare":
         esc = 1 - save_fails(P.boss_save, P.spell_dc)
@@ -405,16 +435,18 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True):
         conc_b = conc if (conc != "ensnare" or held) else ""
         moves = not frightened and not held
         if not (ends_adjacent or moves):
-            out.append((pb, pb * dm, pb * d2, conc_b, False, True, False))
+            out.append((pb, pb * dm, pb * d2, conc_b, False, True, False) + ((none,) if parts else ()))
             continue
         if not reach:
-            out.append((pb, pb * dm, pb * d2, conc_b, True, True, False))
+            out.append((pb, pb * dm, pb * d2, conc_b, True, True, False) + ((none,) if parts else ()))
             continue
         _, h, c = attack_odds(P.boss_atk, P.char_ac, "dis" if (frightened or held) else "straight", 20)
         ph = h + c
         brk = ph * save_fails(P.conc_save, P.conc_dc)
-        # (p, E[R | row], E[R^2 | row], conc, charge kept, True Strike)
-        rows = [(brk, 0.0, 0.0, "", True, False), (ph - brk, 0.0, 0.0, conc_b, True, False)]
+        # (p, E[R | row], E[R^2 | row], conc, charge kept, True Strike, parts | row); the boss's hit rows carry its
+        # critical share (c / ph of them)
+        boss_hit = (0.0, 0.0, 0.0, 0.0, 1.0, 1.0, c / ph if ph else 0.0)
+        rows = [(brk, 0.0, 0.0, "", True, False, boss_hit), (ph - brk, 0.0, 0.0, conc_b, True, False, boss_hit)]
         if P.riposte:
             w = P.riposte
             rmode = net_mode(P.adv or held, False)
@@ -422,20 +454,25 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True):
             dice = w.dice + ((P.mark_die,) if conc_b == "mark" and P.mark_die else ())
             flat = w.flat + (w.adv_flat if rmode == "adv" else 0) + (P.gaping if gaping else 0)
             can_sneak = bool(P.sneak_dice) and rmode == "adv" and w.sneak
-            rows.append(((1 - ph) * miss, 0.0, 0.0, conc_b, True, False))
+            rows.append(((1 - ph) * miss, 0.0, 0.0, conc_b, True, False, (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)))
             for pr, is_crit in ((hit, False), (crit, True)):
                 spend = can_sneak and riposte_spends(P, is_crit)
                 m_, v_ = landed(dice + (P.sneak_dice if spend else ()), flat + (w.adv_flat if spend else 0), is_crit)
-                rows.append(((1 - ph) * pr, m_, v_, conc_b, not spend, P.riposte_ts))
+                sa_dice = dice_moments(P.sneak_dice, 2 if is_crit else 1)[0] if spend else 0.0
+                rows.append(((1 - ph) * pr, m_, v_, conc_b, not spend, P.riposte_ts,
+                             (1.0, 1.0, float(is_crit), sa_dice, 1.0, 0.0, 0.0)))
         else:
-            rows.append((1 - ph, 0.0, 0.0, conc_b, True, False))
-        for pr, rm, rs, cc, keep, ts in rows:
+            rows.append((1 - ph, 0.0, 0.0, conc_b, True, False, (0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)))
+        for pr, rm, rs, cc, keep, ts, x in rows:
             # boss damage R (riposte) and the tick (dm) are independent: E[(T+R)^2] = E[T^2] + 2E[T]E[R] + E[R^2]
-            out.append((pb * pr, pb * pr * (dm + rm), pb * pr * (d2 + 2 * dm * rm + rs), cc, True, keep, ts))
+            row = (pb * pr, pb * pr * (dm + rm), pb * pr * (d2 + 2 * dm * rm + rs), cc, True, keep, ts)
+            out.append(row + ((tuple(pb * pr * y for y in x),) if parts else ()))
     return out
 
 
 # ------------------------------------------------------------------------------------------------------ the fight
+# what Search.fight_parts sums over the fight: the own turn's parts, its damage, the boss turn's parts, our damage in it
+FIGHT_PARTS = OWN_PARTS + ("own_dmg",) + BOSS_PARTS + ("react_dmg",)
 FAMILIES = {
     # mode allowed with the boss in reach / out of reach, and the options the family may use
     "melee": dict(adjacent=("melee",), away=("melee", "free"), ensnare=False,
@@ -531,13 +568,17 @@ class Search:
         self.memo[s] = best
         return best
 
-    def _branches(self, s, plan):
+    def _branches(self, s, plan, parts=False):
+        """-> [(p, E[D;branch], E[D^2;branch], next state)], D = this turn's damage and the boss turn's after it; parts:
+        each branch also carries E[X;branch] of FIGHT_PARTS."""
         start = TurnStart(s.adjacent, s.conc, s.gaping, s.sneak, s.ts)
-        res = _turn_cached(self.P, plan, start)
+        res = run_turn(self.P, plan, start, parts=True) if parts else _turn_cached(self.P, plan, start)
         out = []
-        for (sa, k, fr, gnew, ens), (p, m1, m2) in res.items():
+        for (sa, k, fr, gnew, ens), val in res.items():
+            p, m1, m2 = val[:3]
             if p <= 0:
                 continue
+            own = (val[3] + (m1,)) if parts else ()
             conc = "mark" if plan.mark else s.conc
             if ens == 1:
                 conc = "ensnare"
@@ -548,15 +589,18 @@ class Search:
                       pierce_r=s.pierce_r and not (plan.pierce and plan.mode != "melee"), dread=False)
             last = s.rnd >= ROUNDS
             if not s.boss_after:
-                out.append((p, m1, m2, None))
+                out.append((p, m1, m2, None) + ((own + (0.0,) * (len(BOSS_PARTS) + 1),) if parts else ()))
                 continue
             # round 1: the boss starts too far away to reach the character unless the character walked up to it
             reach = not (s.rnd == 1 and not s.adjacent and plan.mode != "melee")
-            for pb, rm, rs, cc, adj, keep, ts in boss_turn(self.P, conc, plan.mode in ("melee", "stand"), fr, gnew,
-                                                           reach):
+            for row in boss_turn(self.P, conc, plan.mode in ("melee", "stand"), fr, gnew, reach, parts=parts):
+                pb, rm, rs, cc, adj, keep, ts = row[:7]
                 nxt = None if last else State(adjacent=adj, conc=cc,
                                               boss_after=(s.rnd + 1 < ROUNDS) or self.last, sneak=keep, ts=ts, **nx)
-                out.append((p * pb, m1 * pb + p * rm, m2 * pb + 2 * m1 * rm + p * rs, nxt))
+                br = (p * pb, m1 * pb + p * rm, m2 * pb + 2 * m1 * rm + p * rs, nxt)
+                if parts:
+                    br += (tuple(x * pb for x in own) + tuple(p * y for y in row[7]) + (p * rm,),)
+                out.append(br)
         return out
 
     def start_state(self):
@@ -593,6 +637,34 @@ class Search:
                 groups[nx] = groups.get(nx, 0.0) + p
             s = max(groups.items(), key=lambda kv: kv[1])[0] if groups else None
         return out
+
+    def fight_parts(self):
+        """The chosen policy's expectations over the whole fight, exact (every course weighed, not the most likely
+        one), the two starts mixed as total() mixes them: {"sums": {FIGHT_PARTS name: E[sum over the fight]},
+        "rounds": [(E[D_r], sd D_r)]}, D_r = round r's damage (our turn and the boss's turn after it)."""
+        P = self.P
+        dist = {self.start_state(): 1 - P.boss_first}
+        if P.boss_first:
+            s2 = replace(self.start_state(), adjacent=True)
+            dist[s2] = dist.get(s2, 0.0) + P.boss_first
+        sums = [0.0] * len(FIGHT_PARTS)
+        rounds = []
+        while dist:
+            nxt, e1, e2 = {}, 0.0, 0.0
+            for s, w in dist.items():
+                if w <= 0:
+                    continue
+                _, _, plan = self.value(s)
+                for p, m1, m2, nx, vec in self._branches(s, plan, parts=True):
+                    e1 += w * m1
+                    e2 += w * m2
+                    for i, x in enumerate(vec):
+                        sums[i] += w * x
+                    if nx is not None:
+                        nxt[nx] = nxt.get(nx, 0.0) + w * p
+            rounds.append((e1, max(0.0, e2 - e1 * e1) ** 0.5))
+            dist = nxt
+        return {"sums": dict(zip(FIGHT_PARTS, sums)), "rounds": rounds}
 
 
 def turn_numbers(P, plan, start):
@@ -649,6 +721,41 @@ def best_search(P, fam, policy=None):
         if best is None or tot > best[1] + 1e-9:
             best = (S, tot, sd)
     return best + (totals,)
+
+
+def fight_expect(S):
+    """The policy's numbers per round as the gear model gives them for the gauntlet's boss fight (plan.py's expect.boss,
+    model.attack_parts' names and rounding), exact over every course of the fight: per round over the 16 the own turn's
+    attack rolls, landed rolls, critical hits, their rates, the shares of rolls with net Advantage / Disadvantage / any
+    Disadvantage, damage per landed roll with and without Sneak Attack (its dice), Sneak Attack's damage, the own turn's
+    damage; the reactions' (the riposte in the boss's turn) rolls, landed rolls, critical hits, damage and Sneak Attack;
+    damage per round in all and damage taken per round (the boss's hits, None when the spec does not give its damage);
+    plus the fight's total and sd and each round's mean and sd."""
+    P = S.P
+    fp = S.fight_parts()
+    t = {k: v / ROUNDS for k, v in fp["sums"].items()}
+    att, hits = t["attacks"], t["hits"]
+    tot, sd = S.total()
+
+    def r(x, n):
+        return round(x, n) if x is not None else None
+    taken = None
+    if P.taken_hit is not None:
+        raw = t["boss_hits"] * P.taken_hit + t["boss_crits"] * P.taken_crit
+        taken = max(0.5 * raw, raw - P.taken_heal)
+    return {"split": True, "dpr": r(t["own_dmg"] + t["react_dmg"], 2), "taken": r(taken, 3),
+            "attacks": r(att, 3), "hits": r(hits, 3), "crits": r(t["crits"], 3),
+            "hit_rate": r(hits / att, 4) if att else None, "crit_rate": r(t["crits"] / att, 4) if att else None,
+            "adv_rate": r(t["adv"] / att, 4) if att else None, "dis_rate": r(t["dis"] / att, 4) if att else None,
+            "dis_any_rate": r(t["dis_any"] / att, 4) if att else None,
+            "dmg_per_hit": r(t["own_dmg"] / hits, 2) if hits else None,
+            "dmg_per_hit_no_sneak": r((t["own_dmg"] - t["sneak"]) / hits, 2) if hits else None,
+            "sneak": r(t["sneak"], 2), "own_dpr": r(t["own_dmg"], 2), "react_attacks": r(t["react_attacks"], 3),
+            "react_hits": r(t["react_hits"], 3), "react_crits": r(t["react_crits"], 3),
+            "react_dmg": r(t["react_dmg"], 2), "react_sneak": r(t["react_sneak"], 2),
+            "boss_attacks": r(t["boss_attacks"], 3), "boss_hits": r(t["boss_hits"], 3),
+            "sneak_policy": P.riposte_sneak, "total": r(tot, 1), "sd": r(sd, 1),
+            "rounds": [{"round": i + 1, "dmg": r(m, 1), "sd": r(d, 1)} for i, (m, d) in enumerate(fp["rounds"])]}
 
 
 def enemy_turn_reactions(policy):
@@ -727,12 +834,15 @@ def harness_rounds(path, A, evade_steps, evade_every_round=False):
 
 
 def apply_to_spec(spec, P, family, A, evade_steps):
-    """The spec with the family's round plan and its predicted numbers (expect.strategy); the riposte reaction is set
-    to fire when the profile counts it, and Sneak Attack's answers in the enemies' turns follow the family's best
-    reaction policy (best_search)."""
+    """The spec with the family's round plan and its predicted numbers: expect.boss = the policy's per-round parts
+    (fight_expect), the ones the report compares the runs with, the gear model's own kept as expect.boss_gear;
+    expect.strategy = the same with the per-round plan along the most likely course and each round's mean over every
+    course. The riposte reaction is set to fire when the profile counts it, and Sneak Attack's answers in the enemies'
+    turns follow the family's best reaction policy (best_search)."""
     S, tot, sd, totals = best_search(P, family)
     path = [{"round": s.rnd, "adjacent": s.adjacent, "plan": plan, "text": describe(plan), "mean": m, "sd": d}
             for s, plan, m, d in S.path()]
+    fe = fight_expect(S)
     out = json.loads(json.dumps(spec, default=str))
     plan = out["plan"]
     plan["rounds"] = harness_rounds(path, A, evade_steps, "leave" in FAMILIES[family]["adjacent"])
@@ -743,11 +853,23 @@ def apply_to_spec(spec, P, family, A, evade_steps):
         plan.setdefault("reactions", {})["Interrupt_TheClover_TrueStrike_Riposte"] = "auto"
     if len(sneak_policies(P)) > 1:
         plan["reactions_enemy_turn"] = enemy_turn_reactions(S.P.riposte_sneak)
-    out["expect"]["strategy"] = {"family": family, "why": FAMILIES[family]["why"], "total": round(tot, 1),
-                                 "sd": round(sd, 1), "dpr": round(tot / ROUNDS, 2), "sneak_policy": S.P.riposte_sneak,
-                                 "policies": {k: round(v, 1) for k, v in totals.items()},
-                                 "rounds": [{"round": r["round"], "text": r["text"], "dmg": round(r["mean"], 1),
-                                             "sd": round(r["sd"], 1)} for r in path]}
+    ex = out["expect"]
+    gear = ex.get("boss_gear") or ex.get("boss") or {}
+    ex["boss_gear"] = gear
+    parts = {k: v for k, v in fe.items() if k not in ("rounds", "total", "sd")}
+    boss = dict(parts, source="strategy " + family)
+    for k in ("taken_hit", "taken_crit", "taken_heal"):
+        if k in gear:
+            boss[k] = gear[k]
+    if boss.get("taken") and gear.get("taken") and gear.get("R"):
+        # rounds survived: the same hit points over the policy's damage taken
+        boss["R"] = round(gear["R"] * gear["taken"] / boss["taken"], 2)
+    ex["boss"] = boss
+    ex["strategy"] = dict(parts, family=family, why=FAMILIES[family]["why"], total=round(tot, 1), sd=round(sd, 1),
+                          dpr=round(tot / ROUNDS, 2), policies={k: round(v, 1) for k, v in totals.items()},
+                          rounds=[{"round": r["round"], "text": r["text"], "dmg": round(r["mean"], 1),
+                                   "sd": round(r["sd"], 1), "mean": x["dmg"], "mean_sd": x["sd"]}
+                                  for r, x in zip(path, fe["rounds"])])
     return out
 
 

@@ -957,11 +957,126 @@ def test_strategy_harness_rounds():
     assert not fails, fails
 
 
+def _adv_odds(bonus, ac=19):
+    """(non-critical hit, critical hit) of one roll with Advantage, natural 19-20 critical, natural 1 a miss: both d20s
+    enumerated here, apart from the code under test."""
+    hit = crit = 0
+    for a in range(1, 21):
+        for b in range(1, 21):
+            nat = max(a, b)
+            if nat >= 19:
+                crit += 1
+            elif nat > 1 and nat + bonus >= ac:
+                hit += 1
+    return hit / 400, crit / 400
+
+
+def test_strategy_parts():
+    """fight_expect, the policy's per-round parts in the gear model's names: (1) an evade fight with nothing to choose
+    (no dice, no Action Surge, mark, Dread, Sneak Attack, Sharpshooter) against hand formulas over 4 rounds: round 1
+    four shots from out of reach, then Disengage + three shots; the boss walks up in round 1, attacks in rounds 2-3
+    and has no turn after the 4th (2 attacks, 40% hit, 5% critical), the riposte on its misses; (2) on the thx numbers
+    the sums are the search's own: the rounds' means add up to its expected total, damage per round = own turn +
+    reactions, damage per landed roll less Sneak Attack's share; melee rolls more and hits more often than evade;
+    standing shoots with Disadvantage cancelled by Advantage (any Disadvantage, no net one), the others never."""
+    import strategy as G
+    old = G.ROUNDS
+    G.ROUNDS = 4
+    fails = []
+    try:
+        P0 = G.replace(_thx_profile(), sharpshooter=None, sup_dice=0, surge=False, mark_die=0, dread_die=0,
+                       sneak_dice=(), pierce_melee=False, pierce_ranged=False, riposte_sneak="never",
+                       taken_hit=9.0, taken_crit=4.5)
+        e = G.fight_expect(G.best_search(P0, "evade")[0])
+        h16, c16 = _adv_odds(16)
+        h14, c14 = _adv_odds(14)
+        rolls = [(16, (6, 4), 8)] * 2 + [(14, (6, 4), 6)] * 2 + ([(16, (6, 4), 8)] * 2 + [(14, (6, 4), 6)]) * 3
+        hits = sum(h16 + c16 if b == 16 else h14 + c14 for b, _d, _f in rolls)
+        crits = sum(c16 if b == 16 else c14 for b, _d, _f in rolls)
+        own = sum((h16 if b == 16 else h14) * (sum((x + 1) / 2 for x in d) + f) +
+                  (c16 if b == 16 else c14) * (2 * sum((x + 1) / 2 for x in d) + f) for b, d, f in rolls)
+        rh, rc = _adv_odds(14)                         # the riposte: Crimson, +14, (6, 4, 4) + 8, Vicious 7
+        rip = 2 * 0.6 * (rh * (8.5 + 15) + rc * (17 + 15))
+        want = {"attacks": 13 / 4, "hits": hits / 4, "crits": crits / 4, "hit_rate": hits / 13, "adv_rate": 1.0,
+                "dis_rate": 0.0, "dis_any_rate": 0.0, "own_dpr": own / 4, "dmg_per_hit": own / hits,
+                "sneak": 0.0, "react_attacks": 2 * 0.6 / 4, "react_hits": 2 * 0.6 * (rh + rc) / 4,
+                "react_crits": 2 * 0.6 * rc / 4, "react_dmg": rip / 4, "react_sneak": 0.0, "boss_attacks": 0.5,
+                "boss_hits": 0.2, "taken": (2 * 0.4 * 9 + 2 * 0.05 * 4.5) / 4, "dpr": (own + rip) / 4}
+        for k, v in want.items():
+            got = e.get(k)
+            if got is None or abs(got - v) > 10 ** -(2 if k in ("own_dpr", "react_dmg", "dpr", "dmg_per_hit",
+                                                                   "sneak", "react_sneak") else 3):
+                fails.append(f"evade {k}: {got} want {v:.4f}")
+        P = _thx_profile(boss_first=0.15, riposte_ts=True, taken_hit=9.0, taken_crit=4.5)
+        ex = {}
+        for fam in ("melee", "evade", "stand"):
+            S, tot, sd, _ = G.best_search(P, fam)
+            e = ex[fam] = G.fight_expect(S)
+            fp = S.fight_parts()
+            if abs(sum(m for m, _d in fp["rounds"]) - tot) > 1e-6 or \
+                    abs(fp["sums"]["own_dmg"] + fp["sums"]["react_dmg"] - tot) > 1e-6:
+                fails.append(f"{fam}: rounds {sum(m for m, _d in fp['rounds'])} / parts "
+                             f"{fp['sums']['own_dmg'] + fp['sums']['react_dmg']} vs total {tot}")
+            if e["total"] != round(tot, 1) or e["sd"] != round(sd, 1) or len(e["rounds"]) != 4:
+                fails.append(f"{fam}: total {e['total']} sd {e['sd']} vs {tot} {sd}")
+            if abs(e["own_dpr"] + e["react_dmg"] - e["dpr"]) > 0.011 or \
+                    abs((e["dmg_per_hit"] - e["dmg_per_hit_no_sneak"]) * e["hits"] - e["sneak"]) > 0.05:
+                fails.append(f"{fam}: dpr {e['dpr']} own {e['own_dpr']} react {e['react_dmg']}, per hit "
+                             f"{e['dmg_per_hit']} / {e['dmg_per_hit_no_sneak']} sneak {e['sneak']}")
+            if fam != "stand" and (e["dis_any_rate"] != 0.0 or e["adv_rate"] != 1.0):
+                fails.append(f"{fam}: Advantage {e['adv_rate']} any Disadvantage {e['dis_any_rate']}")
+        m, v, s = ex["melee"], ex["evade"], ex["stand"]
+        if not (m["attacks"] > v["attacks"] and m["hit_rate"] > v["hit_rate"] and m["own_dpr"] > v["own_dpr"]):
+            fails.append(f"melee {m['attacks']} {m['hit_rate']} vs evade {v['attacks']} {v['hit_rate']}")
+        if not (s["dis_any_rate"] > 0.5 and s["dis_rate"] == 0.0 and s["adv_rate"] < 0.5):
+            fails.append(f"stand: Advantage {s['adv_rate']} Disadvantage {s['dis_rate']} any {s['dis_any_rate']}")
+    finally:
+        G.ROUNDS = old
+    assert not fails, fails
+
+
+# The gear model's boss-scenario parts for Astarion thx with set astarion.thx.a3.1 (plan.py expect.boss, model.py as of
+# this test): the model's evade plan, Hunter's Mark never recast, we act first, no superiority dice or Piercing Shot.
+GEAR_THX_EVADE = {"attacks": 3.188, "hits": 2.856, "crits": 0.606, "hit_rate": 0.8959, "crit_rate": 0.19,
+                  "adv_rate": 1.0, "dis_rate": 0.0, "dis_any_rate": 0.0, "sneak": 4.24, "dmg_per_hit": 30.06,
+                  "react_attacks": 0.525, "react_hits": 0.504, "react_crits": 0.1, "react_sneak": 4.23,
+                  "react_dmg": 18.72, "taken": 3.825}
+
+
+def test_strategy_gear_crosscheck():
+    """The strategy's evade parts against the gear model's (GEAR_THX_EVADE) under the gear model's assumptions (no
+    concentration break, so Hunter's Mark is never recast; we act first; no superiority dice, no Piercing Shot): the
+    rolls, landed rolls, critical hits, their rates, the Advantage shares and the riposte's rolls, landed rolls,
+    critical hits and Sneak Attack are equal within rounding. Known differences, checked as such: the gear model's
+    own-turn Sneak Attack (the charge lost to the riposte as a share) within 1%; its damage per landed roll within 2%;
+    its riposte damage lower by about Vicious per landed riposte (the search counts Vicious on the riposte, seen in
+    game); its damage taken counts a boss attack in all 16 rounds, the gauntlet's boss attacks in 14 (none in round 1,
+    no turn after the 16th)."""
+    import strategy as G
+    P = _thx_profile(riposte_ts=True, conc_save=30, sup_dice=0, pierce_melee=False, pierce_ranged=False,
+                     taken_hit=9.0, taken_crit=4.5)
+    e = G.fight_expect(G.best_search(P, "evade_nohold", "always")[0])
+    g = GEAR_THX_EVADE
+    fails = [f"{k}: {e[k]} vs gear {g[k]}" for k in ("attacks", "hits", "crits", "hit_rate", "crit_rate", "adv_rate",
+                                                     "dis_rate", "dis_any_rate", "react_attacks", "react_hits",
+                                                     "react_crits", "react_sneak")
+             if abs(e[k] - g[k]) > 0.0011]
+    if abs(e["sneak"] / g["sneak"] - 1) > 0.01 or abs(e["dmg_per_hit"] / g["dmg_per_hit"] - 1) > 0.02:
+        fails.append(f"Sneak Attack {e['sneak']} vs {g['sneak']}, per landed roll {e['dmg_per_hit']} vs {g['dmg_per_hit']}")
+    vicious = (e["react_dmg"] - g["react_dmg"]) / e["react_hits"]
+    if not 6.0 < vicious < 9.0:
+        fails.append(f"riposte damage {e['react_dmg']} vs {g['react_dmg']}: {vicious:.2f} per landed riposte")
+    if abs(e["taken"] - g["taken"] * 14 / 16) > 0.002:
+        fails.append(f"taken {e['taken']} vs gear {g['taken']} x 14 / 16")
+    assert not fails, fails
+
+
 CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
             test_buff_spells, test_riposte, test_item_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
-            test_strategy_true_strike, test_strategy_policy, test_reaction_sneak, test_attack_parts_split]
+            test_strategy_true_strike, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
+            test_strategy_parts, test_strategy_gear_crosscheck]
 
 
 # ============================================================================================ local-only tests
@@ -2689,6 +2804,67 @@ def mutations():
         finally:
             G.sneak_policies = old
     out.append(("strategy: only the game's default reaction policy searched", m_strategy_one_policy))
+
+    def m_strategy_parts_no_boss_crit():
+        import strategy as G
+        old = G.boss_turn
+        # the boss's critical hits left out of the parts (damage taken without their extra)
+        G.boss_turn = lambda *a, **k: [r[:7] + ((r[7][:6] + (0.0,),) if len(r) > 7 else ()) for r in old(*a, **k)]
+        try:
+            return _ci_red(test_strategy_parts)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy parts: the boss's critical hits not counted", m_strategy_parts_no_boss_crit))
+
+    def m_strategy_parts_one_start():
+        import strategy as G
+        old = G.Search.fight_parts
+
+        def bad(self):
+            P = self.P
+            self.P = G.replace(P, boss_first=0.0)                # the boss-first start left out of the parts
+            try:
+                return old(self)
+            finally:
+                self.P = P
+        G.Search.fight_parts = bad
+        try:
+            return _ci_red(test_strategy_parts)
+        finally:
+            G.Search.fight_parts = old
+    out.append(("strategy parts: only the fight where we act first", m_strategy_parts_one_start))
+
+    def m_strategy_parts_crit_not_landed():
+        import strategy as G
+        old = G.run_turn
+
+        def bad(P, plan, start, parts=False):
+            res = old(P, plan, start, parts)
+            if not parts:
+                return res
+            # landed rolls without the critical ones
+            return {k: v[:3] + (v[3][:1] + (v[3][1] - v[3][2],) + v[3][2:],) for k, v in res.items()}
+        G.run_turn = bad
+        try:
+            return _ci_red(test_strategy_parts)
+        finally:
+            G.run_turn = old
+    out.append(("strategy parts: critical hits not counted as landed rolls", m_strategy_parts_crit_not_landed))
+
+    def m_strategy_parts_riposte_on_hit():
+        import strategy as G
+        old = G.boss_turn
+
+        def bad(*a, **k):
+            # a riposte roll counted on the boss's hits too (react_attacks = the row's weight where it hits)
+            return [r[:7] + (((r[7][4],) + r[7][1:],) if r[7][5] else (r[7],)) if len(r) > 7 else r
+                    for r in old(*a, **k)]
+        G.boss_turn = bad
+        try:
+            return _ci_red(test_strategy_gear_crosscheck)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy parts: a riposte roll on the boss's hits", m_strategy_parts_riposte_on_hit))
 
     def m_strategy_last_boss_turn():
         import strategy as G
