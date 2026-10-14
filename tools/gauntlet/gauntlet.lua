@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 9
+G.VERSION = 10
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -2007,6 +2007,8 @@ G._on = {
   reaction = function(who, interrupt, ...) G.dispatch(onReaction, { n = 1, who }, who, interrupt, ...) end,
   turn_started = function(who) G.dispatch(onTurn, { n = 1, who }, true, who) end,
   turn_ended = function(who) G.dispatch(onTurn, { n = 1, who }, false, who) end,
+  entity_event = function(obj, event) if event == G.MOVE_EVENT then G.moveEnds[uuid(obj)] = now() end end,
+  move_cancelled = function(obj, event) if event == G.MOVE_EVENT then G.moveEnds[uuid(obj)] = now() end end,
   status_on = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, true, obj, status, causee) end,
   status_off = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, false, obj, status, causee) end,
   crit = function(def, ownerAtt, att, ...) G.dispatch(onCrit, { n = 3, def, att, ownerAtt }, def, ownerAtt, att, ...) end,
@@ -2063,6 +2065,14 @@ if not G._listeners9 then
   G._listeners9 = {
     turn_started = pcall(Ext.Osiris.RegisterListener, "TurnStarted", 1, "after", on("turn_started")),
     turn_ended = pcall(Ext.Osiris.RegisterListener, "TurnEnded", 1, "after", on("turn_ended")),
+  }
+end
+-- added in version 10: the engine's end of a CharacterMoveToPosition (its event name), arrived or cancelled
+if not G._listeners10 then
+  local function on(k) return function(...) pcall(G._on[k], ...) end end
+  G._listeners10 = {
+    entity_event = pcall(Ext.Osiris.RegisterListener, "EntityEvent", 2, "after", on("entity_event")),
+    move_cancelled = pcall(Ext.Osiris.RegisterListener, "CharacterMoveToCancelled", 2, "after", on("move_cancelled")),
   }
 end
 
@@ -2518,7 +2528,11 @@ end
 -- an enemy's reach is avoided when another spot in range has a clean route, else taken (the Attack of Opportunity is
 -- real damage, the same for both sets). In range and in sight already: the cast goes from where the character stands.
 G.REACH = 3.4          -- the game's reach plus slack for curved routes
-G.MOVE_MAX_MS = 8000
+-- A move ends on the engine's event for it (EntityEvent or CharacterMoveToCancelled with MOVE_EVENT; in game it came on
+-- every arrival, 0-66 ms before the position settled, so the position is read MOVE_SETTLE_MS later). MOVE_MAX_MS only
+-- bounds a move whose event never comes.
+G.MOVE_EVENT, G.MOVE_MAX_MS, G.MOVE_SETTLE_MS = "LA_gauntlet_move", 30000, 150
+G.moveEnds = G.moveEnds or {}
 function G.route(u, x, y, z)
   local e = ent(u)
   if not e then return nil end
@@ -2611,14 +2625,17 @@ function G.castSpot(F, tgt, range, who)
   end
   return best or any
 end
--- Waits for the move to end (there, stalled or timed out) and charges the Movement the engine did not. -> true when done.
+-- Waits for the move to end (the engine's event, or MOVE_MAX_MS) and charges the Movement the engine did not. -> true
+-- when done.
 function G.moveSettled(F, t)
   local M = F.moving
   local x, y, z = xyz(F.char)
   if not x then return true end
   local there = math.sqrt((x - M.spot.x) ^ 2 + (z - M.spot.z) ^ 2) < 0.5
-  if math.sqrt((x - M.last[1]) ^ 2 + (z - M.last[3]) ^ 2) > 0.05 then M.last, M.lastT = { x, y, z }, t end
-  if not there and t - M.lastT < 800 and t - M.t0 < G.MOVE_MAX_MS then return false end
+  local ended = G.moveEnds[uuid(F.char)]
+  ended = ended and ended >= M.t0 and ended or nil
+  if not ended and t - M.t0 < G.MOVE_MAX_MS then return false end
+  if ended and t - ended < G.MOVE_SETTLE_MS then return false end
   local moved = math.sqrt((x - M.p0[1]) ^ 2 + (z - M.p0[3]) ^ 2)
   local spent = math.max(0, M.mv0 - resAmount(F.char, "Movement"))
   local owed = math.max(0, math.min(math.max(M.spot.len or 0, moved), M.mv0) - spent)
@@ -2627,7 +2644,7 @@ function G.moveSettled(F, t)
     pcall(function() ent(F.char):Replicate("ActionResources") end)
   end
   M.rec.move.moved = moved
-  M.rec.move.result = there and "there" or (t - M.t0 >= G.MOVE_MAX_MS and "timeout" or "stalled")
+  M.rec.move.result = there and "there" or (ended and "ended short" or "timeout")
   return true
 end
 
@@ -4608,6 +4625,28 @@ end
 -- dropped it (TurnBased.RequestedEndTurn reads false and no TurnEnded came), checked every END_TURN_MS, END_TURN_TRIES
 -- times before the run ends.
 G.TURN_WAIT_MS, G.HOLDER_IDLE_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES = 120000, 15000, 1, 10000, 3
+-- The turn's first request waits while the character still sheathes an earlier cast (its
+-- ServerUnsheathSpellAnimationLifetime, gone ~1.9 s after that cast's CastedSpell): in game a request sent while a
+-- riposte's was on froze 6 s and the engine then dropped the attack's off-hand half (7 of 7), every one sent after it
+-- was gone ran normally (165 of 165). Its spell is recorded in the round (R.tm.sheath); READY_MAX_MS bounds a hang.
+G.READY_MAX_MS = 10000
+function G.sheathHeld(F, R, t)
+  local spell = try(function()
+    local l = ent(F.char).ServerUnsheathSpellAnimationLifetime
+    return l and (l.Spell and l.Spell.Prototype or "?")
+  end)
+  if not spell then
+    if F.sheathSince then R.tm = R.tm or {}; R.tm.sheath = { spell = F.sheathSpell, ms = t - F.sheathSince } end
+    F.sheathSince, F.sheathSpell = nil, nil
+    return false
+  end
+  F.sheathSince, F.sheathSpell = F.sheathSince or t, spell
+  if t - F.sheathSince < G.READY_MAX_MS then return true end
+  R.tm = R.tm or {}
+  R.tm.sheath = { spell = spell, ms = t - F.sheathSince, gave_up = true }
+  F.sheathSince, F.sheathSpell = nil, nil
+  return false
+end
 -- An own turn is ended when it makes no progress (no request sent, no cast settled, no move done) for ACT_MAX_MS:
 -- longer than a pending cast's own cap, so a cast the engine holds is settled by the cast's rules, not cut here.
 G.ACT_MAX_MS = G.CAST_MAX_MS + 10000
@@ -4945,6 +4984,7 @@ function G.step(F, t)
     end
     if casting(F.char) then F.next = t + 200; return end
     if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end
+    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end
     if not F.queue then F.queue, F.qi = G.planRound(F, R), 0 end
     if F.qi < #F.queue then
       F.qi = F.qi + 1
