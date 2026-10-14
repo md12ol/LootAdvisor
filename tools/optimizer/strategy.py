@@ -476,11 +476,14 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=Fals
 # ------------------------------------------------------------------------------------------------------ the fight
 # what Search.fight_parts sums over the fight: the own turn's parts, its damage, the boss turn's parts, our damage in it
 FIGHT_PARTS = OWN_PARTS + ("own_dmg",) + BOSS_PARTS + ("react_dmg",)
+# the boss stands this far from the character as the fight starts (round 1: out of its reach, a walk-up to melee);
+# plan.py writes it into the spec for the harness's arena layout
+BOSS_START_M = 10.0
 FAMILIES = {
-    # mode allowed with the boss in reach / out of reach, and the options the family may use
-    "melee": dict(adjacent=("melee",), away=("melee", "free"), ensnare=False,
+    # mode allowed with the boss in reach / out of reach, the options the family may use, and the harness's plan mode
+    "melee": dict(adjacent=("melee",), away=("melee", "free"), ensnare=False, mode="melee",
                   why="fight in melee once the boss is in reach (Crimson Mischief + Blade of the First Blood)"),
-    "melee_open": dict(adjacent=("melee",), away=("melee",), ensnare=False,
+    "melee_open": dict(adjacent=("melee",), away=("melee",), ensnare=False, mode="melee",
                        why="as melee, and walk up to the boss in round 1 too (Dread Ambusher in melee)"),
     "evade": dict(adjacent=("leave",), away=("free",), ensnare=False,
                   why="Cunning Action Disengage + step out of reach every turn the boss is in reach, then shoot; "
@@ -493,7 +496,7 @@ FAMILIES = {
                           why="as evade, with Ensnaring Strike (Ranged) to hold the boss out of reach"),
     "stand": dict(adjacent=("stand",), away=("free",), ensnare=False,
                   why="stand and shoot with the boss in reach (Advantage and Disadvantage cancel)"),
-    "any": dict(adjacent=("melee", "leave", "stand"), away=("melee", "free"), ensnare=True,
+    "any": dict(adjacent=("melee", "leave", "stand"), away=("melee", "free"), ensnare=True, mode="melee",
                 why="every option open each turn"),
 }
 
@@ -768,14 +771,17 @@ def enemy_turn_reactions(policy):
 
 
 def rank(P, families=None, policy=None):
-    """-> [{family, why, total, sd, dpr, sneak_policy, policies, path: [{round, plan, text, mean, sd}]}], best first.
-    Each family under its best reaction policy (best_search), or under the one given."""
+    """-> [{family, why, total, sd, dpr, sneak_policy, policies, rounds: [{round, mean, sd}], path: [{round, plan, text,
+    mean, sd}]}], best first. rounds: each round's expectation over every course; path: the most likely course, its mean
+    being that course's round only. Each family under its best reaction policy (best_search), or under the one given."""
     out = []
     for fam in families or [f for f in FAMILIES if f != "any"]:
         S, tot, sd, totals = best_search(P, fam, policy)
         path = S.path()
         out.append({"family": fam, "why": FAMILIES[fam]["why"], "total": tot, "sd": sd, "dpr": tot / ROUNDS,
                     "sneak_policy": S.P.riposte_sneak, "policies": totals,
+                    "rounds": [{"round": i + 1, "mean": m, "sd": d}
+                               for i, (m, d) in enumerate(S.fight_parts()["rounds"])],
                     "path": [{"round": s.rnd, "adjacent": s.adjacent, "plan": plan, "text": describe(plan),
                               "mean": m, "sd": d} for s, plan, m, d in path]})
     out.sort(key=lambda r: -r["total"])
@@ -783,75 +789,164 @@ def rank(P, families=None, policy=None):
 
 
 # --------------------------------------------------------------------------------------- harness plan (tools/gauntlet)
+def plan_steps(plan, A, evade_steps, evade_every_round=False):
+    """One turn's plan (Plan) as the gauntlet's step list (plan.py step dicts). A and evade_steps are plan.py's step
+    builders; steps that may not be affordable carry the plain attack as their alt. evade_every_round: the Disengage
+    steps also in a turn that shoots from out of reach (they skip themselves while the boss is out of reach)."""
+    melee = plan.mode == "melee"
+    spell = "Target_MainHandAttack" if melee else "Projectile_MainHandAttack"
+    steps = []
+    if plan.mode == "leave" or (plan.mode == "free" and evade_every_round):
+        steps += evade_steps(False)
+    if plan.mark:
+        steps.append(A("Target_HuntersMark", "bonus", "@boss", "Hunter's Mark (before the attacks)"))
+    if plan.dread:
+        steps.append(A("Target_DreadAmbusher" if melee else "Projectile_DreadAmbusher", "free", "@boss",
+                       "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))
+    if plan.surge:
+        steps.append(A("Shout_ActionSurge", "free", "@self", "Action Surge", per="short"))
+    kinds = []
+    if plan.pierce:
+        kinds.append(("Target_PiercingThrust" if melee else "Projectile_PiercingShot", "piercing (once per rest)"))
+    if plan.ensnare:
+        kinds.append(("Projectile_EnsnaringStrike", "Ensnaring Strike"))
+    prefix = "Target_" if melee else "Projectile_"
+    if plan.n_maneuver:
+        kinds += [(prefix + plan.maneuver, "manoeuvre (superiority die on a hit)")] * plan.n_maneuver
+    n_main = 2 * (2 if plan.surge else 1)
+    kinds += [(spell, None)] * (n_main - len(kinds))
+    order = sorted((i for i, k in enumerate(kinds) if "piercing" not in (k[1] or "") and k[1] != "Ensnaring Strike"),
+                   key=lambda i: kinds[i][0] == spell)
+    prec = set(order[:plan.n_precision])
+    for i, (sp, why) in enumerate(kinds):
+        group, req, base_why = ("action", None, "attack") if i == 0 else \
+            ("free", "action", "Extra Attack") if i == 1 else ("free", "surge", "Action Surge attack")
+        if i in prec:
+            steps.append(A("Shout_PrecisionAttack", "free", "@self", "Precision Attack (superiority die)",
+                           cost="SuperiorityDie:1"))
+        kw = {"requires": req} if req else {}
+        plain = A(spell, group, "@boss", base_why, **kw)
+        if sp == spell:
+            steps.append(plain)
+            continue
+        # a manoeuvre's die is its HitCosts: spent only when the attack hits, so it is no use cost of the step
+        if "manoeuvre" in why:
+            kw["hit_cost"] = "SuperiorityDie:1"
+        if group == "action":
+            kw["cost"] = "ActionPoint:1"
+        steps.append(A(sp, group, "@boss", why, alt=plain, **kw))
+    return steps
+
+
 def harness_rounds(path, A, evade_steps, evade_every_round=False):
-    """The family's policy along its most likely course as the gauntlet's round plan (plan.py step dicts). A and
-    evade_steps are plan.py's step builders; steps that may not be affordable carry the plain attack as their alt.
-    evade_every_round: the Disengage steps in every round (they skip themselves while the boss is out of reach), so
-    a boss that was not held off as the most likely course assumed is still left behind."""
-    rounds = []
-    for row in path:
-        plan = row["plan"]
-        melee = plan.mode == "melee"
-        spell = "Target_MainHandAttack" if melee else "Projectile_MainHandAttack"
-        steps = []
-        if plan.mode == "leave" or (plan.mode == "free" and evade_every_round):
-            steps += evade_steps(False)
-        if plan.mark:
-            steps.append(A("Target_HuntersMark", "bonus", "@boss", "Hunter's Mark (before the attacks)"))
-        if plan.dread:
-            steps.append(A("Target_DreadAmbusher" if melee else "Projectile_DreadAmbusher", "free", "@boss",
-                           "Dread Ambusher attack", granted_by="DREAD_AMBUSHER"))
-        if plan.surge:
-            steps.append(A("Shout_ActionSurge", "free", "@self", "Action Surge", per="short"))
-        kinds = []
-        if plan.pierce:
-            kinds.append(("Target_PiercingThrust" if melee else "Projectile_PiercingShot", "piercing (once per rest)"))
-        if plan.ensnare:
-            kinds.append(("Projectile_EnsnaringStrike", "Ensnaring Strike"))
-        prefix = "Target_" if melee else "Projectile_"
-        if plan.n_maneuver:
-            kinds += [(prefix + plan.maneuver, "manoeuvre (superiority die on a hit)")] * plan.n_maneuver
-        n_main = 2 * (2 if plan.surge else 1)
-        kinds += [(spell, None)] * (n_main - len(kinds))
-        order = sorted((i for i, k in enumerate(kinds) if "piercing" not in (k[1] or "") and k[1] != "Ensnaring Strike"),
-                       key=lambda i: kinds[i][0] == spell)
-        prec = set(order[:plan.n_precision])
-        for i, (sp, why) in enumerate(kinds):
-            group, req, base_why = ("action", None, "attack") if i == 0 else                 ("free", "action", "Extra Attack") if i == 1 else ("free", "surge", "Action Surge attack")
-            if i in prec:
-                steps.append(A("Shout_PrecisionAttack", "free", "@self", "Precision Attack (superiority die)",
-                               cost="SuperiorityDie:1"))
-            kw = {"requires": req} if req else {}
-            plain = A(spell, group, "@boss", base_why, **kw)
-            if sp == spell:
-                steps.append(plain)
+    """The family's policy along its most likely course as the gauntlet's round plan (plan_steps per round)."""
+    return [plan_steps(row["plan"], A, evade_steps, evade_every_round) for row in path]
+
+
+# The state the harness reads as its turn starts, as the policy table's key: round, boss in reach, superiority dice,
+# Action Surge ready, concentration, Gaping Wound on the boss, Piercing Strike / Shot ready, Dread Ambusher's attack,
+# Sneak Attack's charge, True Strike from a riposte hit in the boss's turn just before. tools/gauntlet/gauntlet.lua
+# (G.policyKey) builds the same text.
+POLICY_FIELDS = ("rnd", "adjacent", "dice", "surge", "conc", "gaping", "pierce_m", "pierce_r", "dread", "sneak", "ts")
+
+
+def state_key(s):
+    def v(x):
+        if isinstance(x, bool):
+            return "1" if x else "0"
+        return str(x) if x != "" else "none"
+    return "|".join("%s=%s" % (f, v(getattr(s, f))) for f in POLICY_FIELDS)
+
+
+def parse_state_key(key, last_boss_turn=False):
+    """The State of a policy table key (state_key's text); KeyError / ValueError for a malformed one."""
+    kv = dict(part.split("=", 1) for part in key.split("|"))
+    b = {f: kv[f] == "1" for f in POLICY_FIELDS if f not in ("rnd", "dice", "conc")}
+    rnd = int(kv["rnd"])
+    return State(rnd=rnd, dice=int(kv["dice"]), conc="" if kv["conc"] == "none" else kv["conc"],
+                 boss_after=rnd < ROUNDS or last_boss_turn, **b)
+
+
+def state_numbers(S, s):
+    """The policy in one state: its decision, and the expectation of the own turn alone and of the round (the own turn
+    and the boss's turn after it; none after the last turn) as (mean, sd)."""
+    _, _, plan = S.value(s)
+    own = turn_numbers(S.P, plan, TurnStart(s.adjacent, s.conc, s.gaping, s.sneak, s.ts))
+    br = S._branches(s, plan)
+    p_all = sum(b[0] for b in br)
+    m = sum(b[1] for b in br) / p_all
+    m2 = sum(b[2] for b in br) / p_all
+    return {"plan": plan, "own": own, "round": (m, max(0.0, m2 - m * m) ** 0.5)}
+
+
+def reachable(S):
+    """{state: probability} of every state the chosen policy reaches, both starts mixed as total() mixes them."""
+    P = S.P
+    dist = {S.start_state(): 1 - P.boss_first}
+    if P.boss_first:
+        s2 = replace(S.start_state(), adjacent=True)
+        dist[s2] = dist.get(s2, 0.0) + P.boss_first
+    out = {}
+    while dist:
+        nxt = {}
+        for s, w in dist.items():
+            if w <= 0:
                 continue
-            # a manoeuvre's die is its HitCosts: spent only when the attack hits, so it is no use cost of the step
-            if "manoeuvre" in why:
-                kw["hit_cost"] = "SuperiorityDie:1"
-            if group == "action":
-                kw["cost"] = "ActionPoint:1"
-            steps.append(A(sp, group, "@boss", why, alt=plain, **kw))
-        rounds.append(steps)
-    return rounds
+            out[s] = out.get(s, 0.0) + w
+            _, _, plan = S.value(s)
+            for p, _m1, _m2, nx in S._branches(s, plan):
+                if nx is not None:
+                    nxt[nx] = nxt.get(nx, 0.0) + w * p
+        dist = nxt
+    return out
+
+
+def policy_table(S, A, evade_steps, evade_every_round=False):
+    """The policy as the harness follows it: for every state the policy reaches, its decision and the expectation in that
+    state (state_numbers). -> {"fields", "rounds", "has", "decisions": [{text, steps}], "states": {state_key: {d, p,
+    own, own_sd, round, round_sd}}}; d indexes decisions, p is the chance of reaching the state. has: what the character
+    can hold at all; a field it cannot hold is constant in the table (no Action Surge, no Piercing Strike, ...)."""
+    P = S.P
+    decisions, index, states = [], {}, {}
+    for s, w in sorted(reachable(S).items(), key=lambda kv: state_key(kv[0])):
+        n = state_numbers(S, s)
+        plan = n["plan"]
+        if plan not in index:
+            index[plan] = len(decisions)
+            decisions.append({"text": describe(plan), "steps": plan_steps(plan, A, evade_steps, evade_every_round)})
+        states[state_key(s)] = {"d": index[plan], "p": round(w, 6), "own": round(n["own"][0], 2),
+                                "own_sd": round(n["own"][1], 2), "round": round(n["round"][0], 2),
+                                "round_sd": round(n["round"][1], 2)}
+    return {"fields": list(POLICY_FIELDS), "rounds": ROUNDS,
+            "has": {"surge": P.surge, "pierce_m": P.pierce_melee, "pierce_r": P.pierce_ranged,
+                    "dread": bool(P.dread_die), "sneak": bool(P.sneak_dice), "ts": bool(P.riposte and P.riposte_ts)},
+            "decisions": decisions, "states": states}
 
 
 def apply_to_spec(spec, P, family, A, evade_steps):
-    """The spec with the family's round plan and its predicted numbers: expect.boss = the policy's per-round parts
-    (fight_expect), the ones the report compares the runs with, the gear model's own kept as expect.boss_gear;
-    expect.strategy = the same with the per-round plan along the most likely course and each round's mean over every
-    course. The riposte reaction is set to fire when the profile counts it, and Sneak Attack's answers in the enemies'
-    turns follow the family's best reaction policy (best_search)."""
+    """The spec with the family's policy and its predicted numbers: plan.policy = the decision in every state the policy
+    reaches (policy_table), which the harness follows turn by turn in the state it finds; plan.rounds = the decisions
+    along the most likely course (the forecast's, and the plan of a harness that has no policy table);
+    expect.boss = the policy's per-round parts (fight_expect), the ones the report compares the runs with, the gear
+    model's own kept as expect.boss_gear; expect.strategy = the same with per round the expectation over every course
+    ("mean", and "dmg" the same) and the most likely course's ("likely", its decision "text"). plan.mode follows the
+    family (melee or ranged) and plan.boss_distance is the search's starting distance (BOSS_START_M). The riposte
+    reaction is set to fire when the profile counts it, and Sneak Attack's answers in the enemies' turns follow the
+    family's best reaction policy (best_search)."""
     S, tot, sd, totals = best_search(P, family)
     path = [{"round": s.rnd, "adjacent": s.adjacent, "plan": plan, "text": describe(plan), "mean": m, "sd": d}
             for s, plan, m, d in S.path()]
     fe = fight_expect(S)
     out = json.loads(json.dumps(spec, default=str))
     plan = out["plan"]
-    plan["rounds"] = harness_rounds(path, A, evade_steps, "leave" in FAMILIES[family]["adjacent"])
+    every = "leave" in FAMILIES[family]["adjacent"]
+    plan["rounds"] = harness_rounds(path, A, evade_steps, every)
     plan["steady"] = list(plan["rounds"][-1])
     plan["fight_rounds"] = ROUNDS
     plan["strategy"] = family
+    plan["mode"] = FAMILIES[family].get("mode", "ranged")
+    plan["boss_distance"] = BOSS_START_M
+    plan["policy"] = policy_table(S, A, evade_steps, every)
     if P.riposte:
         plan.setdefault("reactions", {})["Interrupt_TheClover_TrueStrike_Riposte"] = "auto"
     if len(sneak_policies(P)) > 1:
@@ -870,8 +965,10 @@ def apply_to_spec(spec, P, family, A, evade_steps):
     ex["boss"] = boss
     ex["strategy"] = dict(parts, family=family, why=FAMILIES[family]["why"], total=round(tot, 1), sd=round(sd, 1),
                           dpr=round(tot / ROUNDS, 2), policies={k: round(v, 1) for k, v in totals.items()},
-                          rounds=[{"round": r["round"], "text": r["text"], "dmg": round(r["mean"], 1),
-                                   "sd": round(r["sd"], 1), "mean": x["dmg"], "mean_sd": x["sd"]}
+                          round_basis={"mean": "expectation over every course", "likely": "the most likely course"},
+                          rounds=[{"round": r["round"], "dmg": x["dmg"], "sd": x["sd"], "mean": x["dmg"],
+                                   "mean_sd": x["sd"], "likely": round(r["mean"], 1), "likely_sd": round(r["sd"], 1),
+                                   "text": r["text"]}
                                   for r, x in zip(path, fe["rounds"])])
     return out
 
@@ -886,6 +983,8 @@ def main(argv=None):
     ap.add_argument("--sneak-policy", choices=SNEAK_POLICIES,
                     help="Sneak Attack on the riposte in the boss's turn (default: each family's best)")
     ap.add_argument("--no-riposte", action="store_true")
+    ap.add_argument("--state", help="a policy table key (state_key): print the family's decision and expectation there")
+    ap.add_argument("--family", default="melee", help="the family --state is read under")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
     import os
@@ -898,14 +997,22 @@ def main(argv=None):
     P = profile_from_spec(spec, stats)
     if a.no_riposte:
         P = replace(P, riposte=None)
+    if a.state:
+        S = best_search(P, a.family, a.sneak_policy)[0]
+        n = state_numbers(S, parse_state_key(a.state))
+        print("%s %s: %s; own turn %.1f (sd %.1f), round %.1f (sd %.1f)" % (
+            a.family, a.state, describe(n["plan"]), n["own"][0], n["own"][1], n["round"][0], n["round"][1]))
+        return 0
     res = rank(P, policy=a.sneak_policy)
     for r in res:
         print("%-14s total %7.1f  sd %5.1f  DPR %6.2f  Sneak Attack on the riposte: %s (%s)  %s" % (
             r["family"], r["total"], r["sd"], r["dpr"], r["sneak_policy"],
             ", ".join("%s %.1f" % kv for kv in r["policies"].items()), r["why"]))
-        for row in r["path"]:
-            print("    r%-2d %-4s %6.1f (sd %4.1f)  %s" % (row["round"], "adj" if row["adjacent"] else "away",
-                                                       row["mean"], row["sd"], row["text"]))
+        print("    round  expectation (sd) | most likely course (sd): its decision")
+        for row, ex in zip(r["path"], r["rounds"]):
+            print("    r%-2d %-4s %6.1f (%4.1f) | %6.1f (%4.1f): %s" % (
+                row["round"], "adj" if row["adjacent"] else "away", ex["mean"], ex["sd"], row["mean"], row["sd"],
+                row["text"]))
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             json.dump([dict(r, path=[dict(x, plan=x["plan"].__dict__) for x in r["path"]]) for r in res], f, indent=1)

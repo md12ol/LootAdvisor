@@ -177,7 +177,8 @@ def lua_tests():
               carry_over_tests, crit_tests, effect_check_tests, rider_tests, hit_log_tests, speed_tests,
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
-              impact_wait_tests, phase_reaction_tests, step_validity_tests):
+              impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
+              sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -3780,7 +3781,8 @@ def py_tests():
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
               lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R),
               lambda: split_report_tests(R), phase_call_tests,
-              lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R)):
+              lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R),
+              lambda: strategy_round_tests(R), pointer_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -3846,9 +3848,130 @@ def strategy_spec_tests(P, R):
           "Shout_Disengage_CunningAction" in out["spells_add"], str((riders, out["spells_plan"])))
 
 
+    pol = out["plan"].get("policy") or {}
+    dsp = {a["spell"] for d in pol.get("decisions") or [] for a in d["steps"] if not a.get("granted_by")}
+    marks = [d for d in pol.get("decisions") or [] if any(a["spell"] == "Target_HuntersMark" for a in d["steps"])]
+    check("strategy spec: the policy table (each decision's steps and riders, Hunter's Mark's a concentration one), "
+          "plan mode melee with the search's starting distance, every decision's spell in the sheet",
+          pol.get("states") and marks and all(any(r_["status"] == "HUNTERS_MARK" and r_["conc"] for r_ in d["riders"])
+                                              for d in marks) and out["plan"]["mode"] == "melee" and
+          out["plan"]["boss_distance"] == SG.BOSS_START_M and dsp <= set(out["spells_add"]) and
+          ("HUNTERS_MARK", True) in [(r_["status"], r_["conc"]) for r_ in out["plan"]["riders"]],
+          str((out["plan"].get("mode"), len(pol.get("states") or {}))))
+    pd = {"rounds": [[P.A("Target_MainHandAttack", "action")]], "steady": [],
+          "policy": {"decisions": [{"steps": [P.A("Target_MenacingAttack", "action", cost="ActionPoint:1;SuperiorityDie:1",
+                                                  alt=P.A("Target_MainHandAttack", "action"))]}]}}
+    P.with_hit_costs(pd, {"Target_MenacingAttack": {"HitCosts": "SuperiorityDie:1"}})
+    m0 = pd["policy"]["decisions"][0]["steps"][0]
+    check("strategy spec: a decision played only off the most likely course is in the plan's spells, with its hit costs",
+          "Target_MenacingAttack" in P.plan_spells(pd) and m0.get("hit_cost") == "SuperiorityDie:1" and
+          m0["cost"] == "ActionPoint:1", str((m0.get("cost"), m0.get("hit_cost"))))
     check("strategy spec: no item spell beside the family's rounds (Flourish took an off-hand half's bonus action)",
           out["plan"]["item_actions"] == [] and any(it.get("spell") == "Target_OpeningAttack"
                                                      for it in out["plan"]["item_skipped"]), str(out["plan"]["item_actions"]))
+
+
+def strategy_round_tests(R):
+    """The rounds against the strategy (run.py round_rows, in the turn list and the report): each round's game damage
+    (own turn, reactions) against the expectation for the state the turn started in (the policy's), the round's
+    expectation over every course (mean) and the most likely course's (likely) beside it, labelled; a round cut short
+    after its own turn (no enemy turn) compared on its own turn only. The turn list shows each turn's state and
+    decision, every attack roll of an action (the off-hand half's miss with its d20) and the enemies' rolls. A
+    riposte's Sneak Attack is its weapon-type row only, not the weapon's necrotic rider."""
+    rec = _roll_rec([(2, 2, 0, [30, 20]), (2, 2, 0, [25, 25]), (2, 1, 0, [40])], react={1: [(27, 0, False)]})
+    rec["rounds"][2]["tm"] = {"turn": 2999990}
+    pol = {"key": "rnd=1|...", "decision": "melee, Hunter's Mark", "own": 60.0, "own_sd": 10.0, "round": 80.0,
+           "round_sd": 20.0}
+    for R_ in rec["rounds"]:
+        R_["policy"] = dict(pol, key=f"rnd={R_['r']}|conc=mark")
+    rec["rounds"][2]["actions"] = [{"spell": "Target_MainHandAttack", "target": "@boss", "result": "done",
+                                    "outcome": "hit", "rolls": [
+                                        {"cause": "Attack", "outcome": "hit", "nat": 15, "total": 29, "adv": True},
+                                        {"cause": "Attack", "outcome": "miss", "nat": 1, "total": 15, "adv": True}]}]
+    rec["results"]["summary"]["enemy_rolls"] = {"per_roll": [{"r": 1, "outcome": "miss", "nat": 9, "total": 18,
+                                                              "dis": True}]}
+    rec["expect"] = {"strategy": {"total": 300.0, "sd": 30.0, "rounds": [
+        {"round": i + 1, "mean": m, "mean_sd": 20.0, "dmg": m, "sd": 20.0, "likely": m + 5, "likely_sd": 19.0}
+        for i, m in enumerate((90.0, 85.0, 95.0))]}}
+    rows = R.round_rows(rec)
+    r1, r3 = rows[0], rows[2]
+    check("rounds: a full round against its state's round expectation, the reactions apart",
+          r1["own"] == 50 and r1["react"] == 34 and r1["game"] == 84 and r1["model"] == 80.0 and
+          abs(r1["z"] - 0.2) < 1e-9 and not r1["cut"], str(r1))
+    check("rounds: a round cut short after its own turn compared on its own turn only",
+          r3["cut"] and r3["game"] == 40 and r3["model"] == 60.0 and r3["model_sd"] == 10.0, str(r3))
+    check("rounds: the expectation over every course and the most likely course both given, apart",
+          r1["mean"] == 90.0 and r1["likely"] == 95.0, str((r1["mean"], r1["likely"])))
+    text = "\n".join(R.round_lines(rec))
+    check("rounds: the table says what was compared, the cut round and the fight's expectation",
+          "every course" in text and "Most likely course" in text and "cut short" in text and "300.0" in text and
+          "Full rounds (1, 2): game 134" in text, text[-400:])
+    tl = "\n".join(R.turn_list(rec))
+    check("turns: the state and decision, each roll (the off-hand half's miss with its d20) and the enemies' rolls",
+          "state: rnd=3|conc=mark -> melee, Hunter's Mark" in tl and "off-hand miss 1 -> 15 Advantage" in tl and
+          "main hit 15 -> 29 Advantage" in tl and "enemies' attack rolls: miss 9 -> 18 Disadvantage" in tl, tl[:900])
+    no_pol = dict(rec, rounds=[dict(x, policy=None) for x in rec["rounds"]])
+    rn = R.round_rows(no_pol)
+    check("rounds: without a policy a full round is compared with the round's expectation (mean), a cut one not",
+          rn[0]["model"] == 90.0 and rn[2]["model"] is None, str((rn[0]["model"], rn[2]["model"])))
+    # a riposte's rows: the weapon's piercing, its necrotic rider in the same burst, Sneak Attack's piercing 57 ms later
+    t = 5000000
+    rr = {"rounds": [{"r": 1, "tm": {"released": t - 1000}, "rolls": {"per_roll": [{"t": 1}]},
+                      "reactions_seen": [{"who": "c1", "interrupt": "Interrupt_SneakAttack", "t": t - 40}]}],
+          "dmg": [{"r": 1, "t": 1, "source": "c1", "target": "b1", "amount": 10, "cause": "Attack"},
+                  {"r": 1, "t": t + 2, "source": "c1", "target": "b1", "amount": 3, "cause": "Attack",
+                   "type": "Necrotic"},
+                  {"r": 1, "t": t, "source": "c1", "target": "b1", "amount": 21, "cause": "Attack",
+                   "type": "Piercing"},
+                  {"r": 1, "t": t + 57, "source": "c1", "target": "b1", "amount": 6, "cause": "Attack",
+                   "type": "Piercing"},
+                  {"r": 1, "t": t + 60, "source": "c1", "target": "b1", "amount": 2, "cause": "Attack",
+                   "type": "Necrotic"}],
+          "hits": []}
+    rp = R.reaction_parts(rr)
+    check("reactions: Sneak Attack is the weapon-type row after the hit, not a necrotic rider row (early or late)",
+          rp["rounds"][1]["sneak"] == 6 and rp["rounds"][1]["dmg"] == 32, str(rp))
+    d = tempfile.mkdtemp(prefix="gauntlet_rounds_")
+    try:
+        spec = {"set": "S", "act": 3, "expect": {"boss": {"dpr": 80.0, "split": True}}}
+        sp, res = os.path.join(d, "specs.json"), os.path.join(d, "res.jsonl")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump([{"char": "astarion", "build": "b", "act": 3, "specs": {"a": spec}}], f)
+        with open(res, "w", encoding="utf-8") as f:
+            f.write(json.dumps(dict(rec, run_id="rr1")) + "\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            R.main(["--report", res, "--specs", sp])
+        rep = buf.getvalue()
+        check("report: each run's rounds against the strategy (its states' expectations)",
+              "Run rr1, per round against the strategy" in rep and "| 3 | 40 / cut" in rep, rep[-700:])
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+def pointer_tests():
+    """Before the popup's Start the mouse pointer goes off the hotbar (no click), so no tooltip stays open in the
+    recorded fight: engine.run moves it before the Start eval."""
+    import engine as E
+    order = []
+    old = (E.pointer_off_ui, E.ev, E.write_test)
+    try:
+        E.pointer_off_ui = lambda *a, **k: order.append("pointer")
+        E.write_test = lambda *a, **k: None
+
+        def ev(code, timeout=10.0, side="server"):
+            order.append("start" if "GAUNTLET_TEST.start" in code else "eval")
+            return "busy"
+        E.ev = ev
+        try:
+            E._run({"rounds": 1}, {}, 5, 0.01, lambda *a: None, 1)
+        except E.RunInvalid:
+            pass
+        check("pointer: moved off the hotbar before the Start", order[:2] == ["pointer", "start"], str(order))
+        check("pointer: a share of the screen away from its edges",
+              all(0.1 <= v <= 0.9 for v in E.POINTER_AT), str(E.POINTER_AT))
+    finally:
+        E.pointer_off_ui, E.ev, E.write_test = old
 
 
 def surge_plan_tests(P):
@@ -4182,6 +4305,7 @@ def engine_lane_tests():
     """engine.py: a run holds the lock (nothing else may use the eval hook meanwhile; the CLI refuses), released when
     it ends; a lane run returns each lane's record; a lane that never writes one is an invalid run."""
     import engine as E
+    E.pointer_off_ui = lambda *a, **k: None
     d = tempfile.mkdtemp(prefix="gauntlet_lanes_")
     old = (E.ev, E.RUNS, E.write_se, E.LOCK)
     try:
@@ -4384,6 +4508,7 @@ def engine_tests():
     """engine.run: a busy game that misses evals is asked again; a game that stops answering, or a run that never
     finishes, is an invalid run with its cause, never a hang."""
     import engine as E
+    E.pointer_off_ui = lambda *a, **k: None
     d = tempfile.mkdtemp(prefix="gauntlet_runs_")
     old = (E.ev, E.RUNS, E.write_se, E.LOCK)
     try:
@@ -4973,6 +5098,337 @@ def roll_tests(L):
           s.net_adv == 2 and s.sneak_dmg == 6, f"{s.n} {s.landed} {s.dmg}")
 
 
+def policy_tests(L):
+    """A strategy's policy (plan.policy): each turn the harness reads the state the fight is in (round, boss in reach,
+    superiority dice, Action Surge and Piercing Strike ready from the engine's cooldowns, concentration and Gaping
+    Wound from the boss's statuses, Dread Ambusher from the turn's statuses, Sneak Attack's charge, True Strike from a
+    riposte hit in the enemies' turn just before) and plays that state's decision, recording the state, the decision
+    and the strategy's expectation for it; Hunter's Mark broken in the enemies' turn -> the decision that recasts it; a
+    state outside the table plays nothing, ends the round at once (fail-fast) and makes the run invalid, named."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local st = { b1 = { HUNTERS_MARK = true }, c1 = {} }
+      local pos = { c1 = { 0, 0, 0 }, b1 = { 1.5, 0, 0 } }
+      local res = { SuperiorityDie = 3, SneakAttack_Charge = 1 }
+      local cds = { { SpellId = { Prototype = "Target_PiercingThrust" }, Cooldown = -1 } }
+      local saved = { Osi.HasActiveStatus, Osi.GetPosition, Osi.GetActionResourceValuePersonal, Osi.IsDead,
+        Ext.Entity.Get }
+      Osi.HasActiveStatus = function(u, s) return (st[u] or {})[s] and 1 or 0 end
+      Osi.GetPosition = function(u) local p = pos[u] or { 99, 0, 99 }; return p[1], p[2], p[3] end
+      Osi.GetActionResourceValuePersonal = function(u, k) return res[k] end
+      Osi.IsDead = function() return 0 end
+      Ext.Entity.Get = function(u)
+        if u == "c1" then return { SpellBookCooldowns = { Cooldowns = cds }, StatusContainer = { Statuses = {} } } end
+      end
+      local key = function(conc, ts) return "rnd=2|adjacent=1|dice=3|surge=1|conc=" .. conc ..
+        "|gaping=0|pierce_m=0|pierce_r=1|dread=0|sneak=1|ts=" .. ts end
+      local plain = { spell = "Target_MainHandAttack", group = "action", target = "@boss" }
+      local mark = { spell = "Target_HuntersMark", group = "bonus", target = "@boss" }
+      local policy = { fields = G.POLICY_FIELDS, has = { surge = true, pierce_m = true, pierce_r = true, dread = true,
+          sneak = true, ts = true },
+        decisions = { { text = "melee", steps = { plain } },
+          { text = "melee, Hunter's Mark", steps = { mark, plain },
+            riders = { { status = "HUNTERS_MARK", on = "@boss", spell = "Target_HuntersMark", conc = true } } } },
+        states = { [key("mark", "0")] = { d = 0, own = 112.4, own_sd = 16.1, ["round"] = 131.7, round_sd = 25.3 },
+          [key("mark", "1")] = { d = 0, own = 112.4, own_sd = 16.1, ["round"] = 131.7, round_sd = 25.3 },
+          [key("none", "0")] = { d = 1, own = 97.3, own_sd = 16.3, ["round"] = 120.7, round_sd = 25.3 } } }
+      local F = { char = "c1", enemies = { "b1" }, cooldown = {}, S = { rounds = 16 },
+        afford = function() return true end,
+        plan = { rounds = { { plain }, { plain } }, steady = { plain }, policy = policy } }
+      G.F = F
+      local prev = { r = 1, tm = { end_asked = 500 }, status_log = {} }
+      local R = { r = 2, actions = {}, casts = {}, done = {} }
+      G.rounds = { prev, R }
+      T_q1 = G.planRound(F, R)
+      T_p1 = R.policy
+      -- the boss's hit broke the mark in the enemies' turn; the riposte's True Strike came before our turn ended
+      st.b1.HUNTERS_MARK = nil
+      prev.status_log = { { who = "b1", status = "TRUE_STRIKE", on = true, cause = "c1", t = 300 } }
+      local R2 = { r = 2, actions = {}, casts = {}, done = {} }
+      G.rounds = { prev, R2 }
+      T_q2 = G.planRound(F, R2)
+      T_p2 = R2.policy
+      G.riderCheck(F, R2)
+      T_rm2 = R2.rider_misses
+      -- the riposte's True Strike after our turn ended: ts = 1, a state the table does not hold
+      prev.status_log = { { who = "b1", status = "TRUE_STRIKE", on = true, cause = "c1", t = 900 } }
+      local R3 = { r = 2, actions = {}, casts = {}, done = {} }
+      G.rounds = { prev, R3 }
+      T_q3 = G.planRound(F, R3)
+      T_p3 = R3.policy
+      T_fault = G.roundFault({ plan = F.plan, S = {} }, R3)
+      T_j = G.judge({ prev, R3 }, "rounds done", G.results, { me = "c1" })
+      -- following the policy, the concentration the turn started with must be on as the turn ends
+      st.b1.HUNTERS_MARK = true
+      local R4 = { r = 2, actions = {}, casts = {}, done = {} }
+      prev.status_log = {}
+      G.rounds = { prev, R4 }
+      G.planRound(F, R4)
+      st.b1.HUNTERS_MARK = nil
+      G.results.rider_misses = nil
+      G.riderCheck(F, R4)
+      T_rm4 = R4.rider_misses
+      Osi.HasActiveStatus, Osi.GetPosition, Osi.GetActionResourceValuePersonal, Osi.IsDead, Ext.Entity.Get =
+        saved[1], saved[2], saved[3], saved[4], saved[5]
+      G.F, G.rounds = nil, {}
+    """)
+    g = L.globals()
+    q1 = [g.T_q1[i + 1].spell for i in range(len(g.T_q1))]
+    p1 = g.T_p1
+    check("policy: the live state read from the engine (reach, dice, cooldowns, the boss's statuses, the charge) is "
+          "the table's key; its decision is played and recorded with the state's expectation",
+          p1 is not None and p1.key == "rnd=2|adjacent=1|dice=3|surge=1|conc=mark|gaping=0|pierce_m=0|pierce_r=1|"
+          "dread=0|sneak=1|ts=0" and p1.decision == "melee" and q1 == ["Target_MainHandAttack"] and p1.own == 112.4
+          and p1["round"] == 131.7 and not p1.outside, str(p1 and p1.key))
+    q2 = [g.T_q2[i + 1].spell for i in range(len(g.T_q2))]
+    check("policy: Hunter's Mark broken in the enemies' turn -> the state's decision recasts it, its rider checked",
+          g.T_p2.decision == "melee, Hunter's Mark" and q2 == ["Target_HuntersMark", "Target_MainHandAttack"] and
+          g.T_rm2 is not None and g.T_rm2[1].status == "HUNTERS_MARK", str(q2))
+    check("policy: True Strike counts only from a riposte after the turn ended; a state outside the table plays "
+          "nothing, ends the round (fail-fast) and makes the run invalid with the state",
+          g.T_p3.outside is True and "ts=1" in g.T_p3.key and len(g.T_q3) == 0 and "outside the policy" in
+          str(g.T_fault) and any("outside the strategy's policy table" in c and "ts=1" in c for c in lst(g.T_j.causes)),
+          f"{g.T_p3.key} {g.T_fault}")
+    check("policy: the concentration the turn started with is checked as the turn ends (lost -> rider missing)",
+          g.T_rm4 is not None and g.T_rm4[1].status == "HUNTERS_MARK", str(g.T_rm4))
+
+
+def conc_rider_tests(L):
+    """A plan without a policy: its concentration rider (Hunter's Mark) is checked again after every later turn, on
+    now; lost, it is noted once (rider_lost: the plan is off its course), not a failed run; a rider put on and broken
+    in its own round does not count (on now only)."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local on = true
+      local saved = { Osi.HasActiveStatus, Osi.IsDead }
+      Osi.HasActiveStatus = function(u, s) return (u == "b1" and s == "HUNTERS_MARK" and on) and 1 or 0 end
+      Osi.IsDead = function() return 0 end
+      local F = { char = "c1", enemies = { "b1" }, plan = { riders = {
+        { round = 1, status = "HUNTERS_MARK", on = "@boss", conc = true },
+        { round = 1, status = "DREAD_AMBUSHER", on = "@self" } } } }
+      G.riderCheck(F, { r = 1, turn_statuses = { "DREAD_AMBUSHER" }, status_log = {} })
+      T_m1 = G.results.rider_misses
+      G.riderCheck(F, { r = 2, status_log = {} })
+      on = false
+      local R3 = { r = 3, status_log = {} }
+      G.riderCheck(F, R3)
+      G.riderCheck(F, { r = 4, status_log = {} })
+      T_lost, T_R3, T_m4 = G.results.rider_lost, R3.rider_lost, G.results.rider_misses
+      T_j = G.judge({ { r = 1, done = { action = true } } }, "rounds done", G.results, { me = "c1" })
+      -- cast and broken in its own round: logged on, not on now
+      G.reset()
+      G.riderCheck(F, { r = 1, turn_statuses = { "DREAD_AMBUSHER" },
+        status_log = { { who = "b1", status = "HUNTERS_MARK", on = true } } })
+      T_m5 = G.results.rider_misses
+      Osi.HasActiveStatus, Osi.IsDead = saved[1], saved[2]
+    """)
+    g = L.globals()
+    lost = g.T_lost
+    check("riders: concentration checked again each later turn; lost, noted once as off course, the run not failed",
+          g.T_m1 is None and lost is not None and len(lost) == 1 and lost[1].r == 3 and lost[1].since == 1 and
+          g.T_R3 is not None and g.T_m4 is None and lst(g.T_j.causes) == [], str(lost and len(lost)))
+    check("riders: a concentration rider counts only when on as the turn ends",
+          g.T_m5 is not None and g.T_m5[1].status == "HUNTERS_MARK", str(g.T_m5))
+
+
+def sneak_row_tests(L):
+    """Sneak Attack's damage in a roll is its own row (the weapon's damage type, 55-60 ms after the hit's first rows),
+    never the weapon's rider type that comes with the hit (Crimson Mischief's 1d4 necrotic), in either order; a ranged
+    hit with no rider keeps its whole late row."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local me, b = "c1", "b1"
+      local function run(rows)
+        local R = { r = 1, actions = {}, reactions_seen = { { who = me, interrupt = "Interrupt_SneakAttack", t = 0 } } }
+        local dmg = {}
+        for _, x in ipairs(rows) do
+          dmg[#dmg + 1] = { r = 1, t = x[1], source = me, owner = me, target = b, cause = "Attack", type = x[2],
+            amount = x[3] }
+        end
+        return G.rollTally(R, {}, dmg, me, {})
+      end
+      T_a = run({ { 42, "Piercing", 21 }, { 44, "Necrotic", 3 }, { 99, "Piercing", 6 } })
+      T_b = run({ { 101, "Necrotic", 2 }, { 104, "Piercing", 13 }, { 160, "Piercing", 4 } })
+      T_c = run({ { 400, "Piercing", 33 }, { 454, "Piercing", 6 } })
+      T_d = run({ { 42, "Piercing", 21 }, { 44, "Necrotic", 3 }, { 99, "Fire", 6 } })
+    """)
+    g = L.globals()
+    check("sneak: only the Sneak Attack row, not the weapon's necrotic rider (9 before)",
+          g.T_a.sneak_dmg == 6 and g.T_a.per_roll[1].rider == 9 and g.T_a.per_roll[1].dmg == 30,
+          f"{g.T_a.sneak_dmg} {g.T_a.per_roll[1].rider}")
+    check("sneak: the rider first and the weapon's row second (13 before)", g.T_b.sneak_dmg == 4, str(g.T_b.sneak_dmg))
+    check("sneak: a hit with no rider keeps its late row; a late row of another type is no Sneak Attack",
+          g.T_c.sneak_dmg == 6 and g.T_d.sneak_dmg == 0, f"{g.T_c.sneak_dmg} {g.T_d.sneak_dmg}")
+
+
+def miss_row_tests(L):
+    """Misses from the engine's attack-roll events: a miss (the character's or the boss's) is logged with its natural
+    roll, total and Advantage / Disadvantage; a hit from those events is left to DealDamage; the same miss from both
+    events once; a natural 1 is a miss, not a critical hit. The character's miss rows give its 0 damage roll its d20
+    and Advantage (known over every roll); the enemies' rolls are counted with theirs."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local me, b = "c1", "b1"
+      Ext.Types = { Serialize = function() return { probe = true } end }
+      local function comp(src, tgt, flags, nat, total, adv, dis)
+        return { Target = { Uuid = { EntityUuid = tgt } }, AC = 22,
+          Hit = { EffectFlags = flags, SpellId = "Target_MainHandAttack", Inflicter = { Uuid = { EntityUuid = src } },
+            ConditionRolls = { { Difficulty = 19, Roll = { Result = { NaturalRoll = nat, Total = total },
+              Roll = { Advantage = adv, Disadvantage = dis } } } } } }
+      end
+      G.F = { char = me, enemies = { b } }
+      G.fighting, G.round = true, 6
+      G.onMissEvent(comp(me, b, { "Miss", "Critical" }, 1, 15, true, false), "target_hit")
+      G.onMissEvent(comp(me, b, { "Miss", "Critical" }, 1, 15, true, false), "hit_result")
+      G.onMissEvent(comp(me, b, { "Hit" }, 15, 29, true, false), "target_hit")
+      G.onMissEvent(comp(b, me, { "Miss" }, 9, 18, false, true), "hit_result")
+      G.onMissEvent(comp("x", "y", { "Miss" }, 9, 18, false, false), "hit_result")
+      T_hits = G.hits
+      T_probe = G.results.miss_probe
+      local R = { r = 6, actions = {} }
+      local dmg = { { r = 6, t = 50, source = me, owner = me, target = b, cause = "Attack", type = "", amount = 0 } }
+      local oldStats = Ext.Stats.Get
+      Ext.Stats.Get = function() return { SpellRoll = "Attack(AttackType.MeleeWeaponAttack)" } end
+      T_R = G.rollTally(R, G.hits, dmg, me, { { spell = "Target_MainHandAttack", cast_t = 0 } })
+      Ext.Stats.Get = oldStats
+      T_foe = G.enemyRolls(G.hits, me, { [b] = 1 })
+      G.fighting, G.F = false, nil
+      Ext.Types = nil
+    """)
+    g = L.globals()
+    h = g.T_hits
+    check("misses: logged once from the attack-roll events with natural roll, total and Advantage, the boss's too; "
+          "hits and other creatures left out",
+          len(h) == 2 and h[1].miss is True and h[1].roll == 1 and h[1].roll_total == 15 and h[1].advantage == "true"
+          and h[1].source == "c1" and h[2].source == "b1" and h[2].disadvantage == "true" and h[2].roll == 9 and
+          g.T_probe is not None, str(len(h)))
+    check("misses: a natural 1 is a critical miss, never a critical hit", h[1].crit is False and h[1].crit_miss is True)
+    p = g.T_R.per_roll[1]
+    check("misses: the character's 0 damage roll takes its d20 and Advantage from the miss row (known over all rolls)",
+          g.T_R.miss == 1 and g.T_R.known == 1 and p.nat == 1 and p.adv is True and p.net_adv is True,
+          f"{g.T_R.known} {p.nat} {p.adv}")
+    f = g.T_foe
+    check("misses: the enemies' attack rolls counted with their outcome, d20 and Disadvantage",
+          f.n == 1 and f.miss == 1 and f.dis == 1 and f.known == 1 and f.per_roll[1].nat == 9 and
+          f.per_roll[1].outcome == "miss", f"{f.n} {f.miss} {f.dis}")
+
+
+def cast_noise_tests(L):
+    """CastSpellFailed that is no refusal: logged after the same caster's UsingSpell of the spell with no CastedSpell
+    between (the boss's Unarmed Strike on each miss; the character's Dread Ambusher on the player path) goes to
+    cast_fails_noise with why; a fail with no UsingSpell, or after one a CastedSpell answered, stays a refusal; the
+    character's fails on the old cast path stay as they are."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local me, b = "c1", "b1"
+      G.F = { char = me, enemies = { b }, playerCast = true }
+      G.fighting = true
+      local t = 0
+      local oldNow = Ext.Utils.MonotonicTime
+      Ext.Utils.MonotonicTime = function() return t end
+      G.t0 = 0
+      local R = { r = 1, casts = {}, usings = {}, cast_fails = {} }
+      G.rounds = { R }
+      local function use(who, sp) R.usings[#R.usings + 1] = { who = who, spell = sp, t = t } end
+      use(b, "Target_UnarmedAttack"); t = 700; G._onCastFailed(b, "Target_UnarmedAttack")
+      t = 800; use(me, "Target_DreadAmbusher"); t = 1900; G._onCastFailed(me, "Target_DreadAmbusher")
+      t = 2000; G._onCastFailed(me, "Target_HuntersMark")
+      t = 2100; use(me, "Target_MainHandAttack"); t = 2200; G._onCast(me, "Target_MainHandAttack")
+      t = 2300; G._onCastFailed(me, "Target_MainHandAttack")
+      T_fails, T_noise = {}, R.cast_fails_noise
+      for i, f in ipairs(R.cast_fails) do T_fails[i] = f end
+      G.F.playerCast = false
+      t = 2400; use(me, "Target_X"); t = 2500; G._onCastFailed(me, "Target_X")
+      T_fails2 = #R.cast_fails
+      Ext.Utils.MonotonicTime = oldNow
+      G.fighting, G.F, G.rounds = false, nil, {}
+    """)
+    g = L.globals()
+    fails = [g.T_fails[i + 1].spell for i in range(len(g.T_fails))]
+    noise = [(g.T_noise[i + 1].spell, g.T_noise[i + 1].why) for i in range(len(g.T_noise or {}))]
+    check("cast fails: the boss's interrupted Unarmed Strike and a started cast's late fail are noise, with why",
+          [x[0] for x in noise] == ["Target_UnarmedAttack", "Target_DreadAmbusher"] and all(x[1] for x in noise),
+          str(noise))
+    check("cast fails: a refusal (no UsingSpell, or one a CastedSpell answered) stays a fail; the old path unchanged",
+          fails == ["Target_HuntersMark", "Target_MainHandAttack"] and g.T_fails2 == 3, str(fails))
+
+
+def action_rolls_tests(L):
+    """Per action its attack rolls: a toggled attack's off-hand half is a roll of its own with its outcome (a miss
+    too); the summary's attacks are counted per roll, as summary.rolls, the per-cast outcomes kept apart."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local asked = { { spell = "Target_MainHandAttack", cast_t = 100 },
+        { spell = "Target_MainHandAttack", cast_t = 2000 } }
+      G.actionRolls(asked, { { t = 150, cause = "Attack", hit = true, crit = false, nat = 15, total = 29, adv = true },
+        { t = 600, cause = "Attack", hit = false, crit = false, nat = 1, total = 15, adv = true },
+        { t = 2100, cause = "Attack", hit = true, crit = true, nat = 20, total = 34, adv = true } })
+      T_a = asked
+      G.rounds = { { r = 1, actions = {}, attacks = { hit = 2, crit = 0, miss = 0 },
+        rolls = { n = 3, landed = 2, crit = 1, miss = 1, dmg = 60, rider = 0, sneak_dmg = 0, known = 3, adv = 3, dis = 0,
+          net_adv = 3 } } }
+      T_sum = G._summarize({ char = "c1", enemies = {} })
+      G.rounds = {}
+    """)
+    g = L.globals()
+    a = g.T_a
+    r1 = [(a[1].rolls[i + 1].outcome, a[1].rolls[i + 1].nat) for i in range(len(a[1].rolls))]
+    check("actions: each cast lists its rolls, the off-hand half's miss included",
+          r1 == [("hit", 15), ("miss", 1)] and a[2].rolls[1].outcome == "crit", str(r1))
+    s = g.T_sum
+    check("summary: attacks per roll (consistent with the rolls), per cast apart",
+          s.attacks.hit == 1 and s.attacks.crit == 1 and s.attacks.miss == 1 and s.actions_outcome.hit == 2,
+          f"{s.attacks.hit} {s.attacks.crit} {s.attacks.miss}")
+
+
+def arena_camera_tests(L):
+    """The arena: a plan's boss_distance sets the enemies' distance (a melee strategy whose boss starts out of reach),
+    else the mode's; the popup's start moves the camera onto the character (the client answers) before the "fight
+    started" marker, so the recording opens on the arena; no answer -> the start goes on, recorded."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local _, far = G.arena("boss", "melee", false, { 0, 0, 0 }, nil, 10.0)
+      local _, near = G.arena("boss", "melee", false, { 0, 0, 0 }, nil)
+      T_far, T_near = far[1][1], near[1][1]
+      local order = {}
+      local oldNotify, oldSave, oldStart = G.notify, Ext.IO.SaveFile, G.startFight
+      G.notify = function(m)
+        if m.kind == "camera" then
+          order[#order + 1] = "camera " .. tostring(m.char)
+          G.F.camera = { ok = true, dist = 0.4 }
+        end
+      end
+      Ext.IO.SaveFile = function(name, s) if name == G.MARK_FILES.started then order[#order + 1] = "marker" end end
+      G.startFight = function(F) G.mark("started", F) end
+      G.reset()
+      local F = { req = { run_id = "rid" }, popup = true, char = "c1", state = "prep" }
+      G.F = F
+      G.release(F)
+      T_order, T_cam = { table.unpack(order) }, G.results.camera
+      G.notify = function() end
+      G.reset()
+      F = { req = { run_id = "rid2" }, popup = true, char = "c1", state = "prep" }
+      G.F = F
+      G.release(F)
+      T_cam2 = G.results.camera
+      G.notify, Ext.IO.SaveFile, G.startFight = oldNotify, oldSave, oldStart
+      G.F = nil
+    """)
+    g = L.globals()
+    check("arena: the plan's boss distance places a melee plan's boss out of reach, else the melee ring",
+          abs(g.T_far - 10.0) < 1e-9 and abs(g.T_near - 1.6) < 1e-9, f"{g.T_far} {g.T_near}")
+    order = [g.T_order[i + 1] for i in range(len(g.T_order))]
+    check("camera: onto the character before the fight-started marker, the client's answer recorded",
+          order == ["camera c1", "marker"] and g.T_cam.ok is True and g.T_cam.dist == 0.4, str(order))
+    check("camera: no answer from the client -> the start goes on, recorded",
+          g.T_cam2 is not None and g.T_cam2.ok is False and "no answer" in str(g.T_cam2.why), str(g.T_cam2))
+
+
 def _roll_rec(rounds, i=0, side="a", run_id="r", dealt=None, sneak=None, react=None):
     """A run record with per-roll counts: rounds = [(rolls, landed, crits, landed damage list)], each roll's damage
     row from the character "c1" in its own turn (times 1000 apart, the turn released after them); react = {round:
@@ -5232,6 +5688,7 @@ def engine_popup_tests():
     """engine.run goes through the popup's Start: the request (with its arena's definition) and the spec are written
     to the test file, the eval sets Automatic and calls GAUNTLET_TEST.start; a refused Start is an invalid run."""
     import engine as E
+    E.pointer_off_ui = lambda *a, **k: None
     old = (E.ev, E.write_se, E.LOCK, E.RUNS)
     d = tempfile.mkdtemp(prefix="gauntlet_eng_")
     try:
@@ -5927,7 +6384,7 @@ MUTATIONS = [
      'local spell = (h and h.spell ~= "" and h.spell) or (w and w.spell) or nil', "local spell = w and w.spell"),
     ("rolls: d20 taken from the nearest hit row of any outcome", GL,
      "local same = landed and ((h.hit or h.crit) and not h.miss) or (not landed and h.miss)", "local same = true"),
-    ("rolls: Sneak Attack not marked on its roll", GL, "    if best then best.sneak = best.rider end\n", ""),
+    ("rolls: Sneak Attack not marked on its roll", GL, "    if best then best.sneak = G.sneakPart(best) end\n", ""),
     ("outcome: Hunter's Mark's cast gets a miss", GL, '    if G.spellRollKind(a.spell) == "none" then return nil end\n',
      ""),
     ("outcome: StatusEnter 0 damage rows read as a miss", GL,
@@ -5991,6 +6448,73 @@ MUTATIONS = [
      '    plan["forecast"] = plan.get("forecast") or forecast(plan, out["slots"]'),
     ("strategy spec: the riders left from the gear model's plan", PL, '    plan["riders"] = plan_riders(plan["rounds"])\n',
      ""),
+    ("policy: the most likely course played, not the state's decision", GL,
+     "    list = G.policyPick(F, R)\n    if not list then return {} end\n", "    G.policyPick(F, R)\n"),
+    ("policy: a state outside the table not invalid", GL,
+     "    if R.policy and R.policy.outside then\n      causes[#causes + 1]", "    if false then\n      causes[#causes + 1]"),
+    ("policy: fail-fast ignores a state outside the table", GL,
+     "  if R.policy and R.policy.outside then\n    return string.format", "  if false then\n    return string.format"),
+    ("policy: concentration assumed, not read from the boss", GL,
+     'conc = (on(boss, "HUNTERS_MARK") and "mark")', 'conc = ("mark")'),
+    ("policy: True Strike from any riposte, not the last enemy turn's", GL,
+     "  local since = (prev.tm or {}).end_asked or (prev.tm or {}).acted or math.huge", "  local since = 0"),
+    ("policy: the cooldowns not read (Piercing Strike always ready)", GL,
+     'pierce_m = has.pierce_m == true and not onCooldown(F.char, "Target_PiercingThrust")',
+     "pierce_m = has.pierce_m == true"),
+    ("riders: concentration not checked after its round", GL, "    local held = rd.conc and rd.round < R.r\n",
+     "    local held = false\n"),
+    ("riders: concentration counted from the round's status log", GL,
+     "      for _, x in ipairs(rd.conc and {} or R.status_log or {}) do", "      for _, x in ipairs(R.status_log or {}) do"),
+    ("riders: the turn's starting concentration not required under a policy", GL,
+     '  if (R.policy.state or {}).conc == "mark" and not seen.HUNTERS_MARK then', "  if false then"),
+    ("riders: a lost concentration never noted", GL,
+     "    if held and not (F.riderLost or {})[rd.status] then", "    if false then"),
+    ("sneak: the whole rider counted as Sneak Attack", GL, "    if best then best.sneak = G.sneakPart(best) end",
+     "    if best then best.sneak = best.rider end"),
+    ("sneak: any late row counted, whatever its type", GL,
+     '    if wtype == nil or wtype == "" or k == "" or k == wtype then', "    if true then"),
+    ("misses: no miss rows from the attack-roll events", GL, "  if not row.miss then return end\n  local F = G.F",
+     "  if true then return end\n  local F = G.F"),
+    ("misses: one miss logged twice", GL,
+     "    if h.miss and h.source == row.source and h.target == row.target then return end", ""),
+    ("misses: a natural 1 counted as a critical hit", GL,
+     "  if row.miss and row.crit then row.crit, row.crit_miss = false, true end", ""),
+    ("misses: a miss row's Advantage overruled by its flags", GL,
+     'if h and flags ~= "" and not h.miss then advFlag', 'if h and flags ~= "" then advFlag'),
+    ("cast fails: a started cast's late fail logged as a refusal", GL,
+     "    f.why = G.failNoise(G.F, R, f)\n", "    f.why = nil\n"),
+    ("cast fails: a CastedSpell between not looked at", GL,
+     "  for _, c in ipairs(R.casts or {}) do if same(c) and c.t and c.t >= use.t then return nil end end\n", ""),
+    ("cast fails: the character's fails on the old path made noise", GL,
+     "  if mine and not F.playerCast then return nil end\n", ""),
+    ("actions: the off-hand halves not listed", GL, "    if #out > 0 then a.rolls = out end", ""),
+    ("summary: attacks counted per cast again", GL, "  if rolls.n > 0 then attacks =", "  if false then attacks ="),
+    ("arena: the strategy's boss distance ignored", GL, "  local d = far or G.RANGE[mode] or 6.0",
+     "  local d = G.RANGE[mode] or 6.0"),
+    ("camera: the marker written before the camera", GL,
+     "  G.cameraOn(F, function(cam)\n    G.results.camera = cam\n    G.startFight(F)\n  end)",
+     "  G.startFight(F)\n  G.cameraOn(F, function(cam) G.results.camera = cam end)"),
+    ("camera: no answer waits for ever", GL, "    if F.camera or polls * G.POLL_MS >= G.CAMERA_WAIT_MS then",
+     "    if F.camera or polls > 1e9 then"),
+    ("rounds: a cut round compared as a full round", RN, "            if cut:\n                row.update(game=own,",
+     "            if False:\n                row.update(game=own,"),
+    ("rounds: the most likely course given as the expectation", RN,
+     '               "mean": ex.get("mean"), "mean_sd"', '               "mean": ex.get("likely"), "mean_sd"'),
+    ("turns: an action's rolls not listed", RN,
+     '(" - rolls: " + ", ".join(_roll_text(i, y) for i, y in enumerate(rolls)) if rolls else "")', '""'),
+    ("reactions: the necrotic rider counted as Sneak Attack", RN, "                if not wtype or not ty or ty == wtype:",
+     "                if True:"),
+    ("report: the rounds against the strategy left out", RN, "                rl = round_lines(r)\n",
+     "                rl = []\n"),
+    ("pointer: left on the hotbar at the Start", EN, "    def send_start():\n        pointer_off_ui()\n",
+     "    def send_start():\n"),
+    ("strategy spec: decisions without riders", PL,
+     '        d["riders"] = [{k: v for k, v in r.items() if k != "round"} for r in plan_riders([d["steps"]])]',
+     "        pass"),
+    ("strategy spec: a decision's spells not in the sheet", PL,
+     '        [d["steps"] for d in ((plan.get("policy") or {}).get("decisions") or [])]', "        []"),
+    ("riders: Hunter's Mark not a concentration rider", PL, 'CONCENTRATION_RIDERS = {"Target_HuntersMark"}',
+     "CONCENTRATION_RIDERS = set()"),
     ("split: rows in the character's own turn counted as reactions", RN,
      "return r == 0 or (rel.get(r) is not None and (d.get(\"t\") or 0) > rel[r])", "return True"),
 ]

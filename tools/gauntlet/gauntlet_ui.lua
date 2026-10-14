@@ -220,9 +220,27 @@ local function showResult(m)
   end
 end
 
+-- Before a recorded fight starts (the server's "camera" message): the camera onto the character the setup teleported
+-- to the arena (it stays where it was until the combat moves it), and the answer how far its target point is from the
+-- character (U.CAMERA_NEAR m or less: ok). Only the camera is touched, never the character.
+U.CAMERA_NEAR = 3.0
+function U.CameraOn(m)
+  local ok, d = pcall(function()
+    local p = Ext.Entity.Get(m.char).Transform.Transform.Translate
+    local c = Ext.Entity.GetAllEntitiesWithComponent("GameCameraBehavior")[1].GameCameraBehavior
+    c.TargetDestination = { p[1], p[2], p[3] }
+    c.TargetCurrent = { p[1], p[2], p[3] }
+    local t = c.TargetCurrent
+    return math.sqrt((t[1] - p[1]) ^ 2 + (t[3] - p[3]) ^ 2)
+  end)
+  send({ cmd = "camera", ok = ok and type(d) == "number" and d <= U.CAMERA_NEAR, dist = ok and d or nil,
+    why = (not ok) and tostring(d) or nil })
+end
+
 local function onNet(e)
   if e.Channel ~= "GauntletUI" then return end
   local m = try(Ext.Json.Parse, e.Payload)
+  if type(m) == "table" and m.kind == "camera" then return U.CameraOn(m) end
   if type(m) ~= "table" or not U.window then return end
   if m.kind == "test" then U.TestState(m)
   elseif m.kind == "status" then U.Status(m.text)

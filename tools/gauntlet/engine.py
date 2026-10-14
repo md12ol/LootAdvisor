@@ -10,7 +10,8 @@
                                                     # save's own boss (re-forced every run) instead of a new one
     python tools/gauntlet/engine.py disarm          # remove the test file: the test mod stays inert in every save
     python tools/gauntlet/engine.py mode automatic  # the popup's mode (manual | automatic)
-    python tools/gauntlet/engine.py start           # the popup's Start (prints "started", "busy" or why not)
+    python tools/gauntlet/engine.py start           # the popup's Start (prints "started", "busy" or why not); the mouse
+                                                    # pointer is moved off the hotbar first (pointer_off_ui)
     python tools/gauntlet/engine.py state           # the popup's mode, status and last result
 
 Scripted runs (run()) go through the popup's own Start: the run's request and spec are written to the test file,
@@ -197,6 +198,23 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
         return _run(req, spec, timeout, poll, log, max_misses)
 
 
+# Where the mouse pointer goes before a Start, as a share of the primary screen (x, y): over the game world, away from
+# the hotbar (a "Repulsor" tooltip of the hotbar under a resting pointer covered half of a recorded fight), the party
+# portraits, the minimap and the turn order, and far enough from the edges not to pan the camera.
+POINTER_AT = (0.30, 0.18)
+
+
+def pointer_off_ui(at=POINTER_AT):
+    """Moves the mouse pointer to `at` (no click), so no hotbar tooltip stays open in the recorded fight. -> (x, y), or
+    None where the pointer cannot be set (not Windows)."""
+    if os.name != "nt":
+        return None
+    import ctypes
+    u = ctypes.windll.user32
+    x, y = int(u.GetSystemMetrics(0) * at[0]), int(u.GetSystemMetrics(1) * at[1])
+    return (x, y) if u.SetCursorPos(x, y) else None
+
+
 # The popup's Start in Automatic mode; the mode is set in the same eval, so a load in between cannot leave it Manual.
 START = 'GAUNTLET_TEST.setMode("automatic")\nreturn GAUNTLET_TEST.start(Ext.Json.Parse([==[{body}]==]))'
 
@@ -210,6 +228,7 @@ def _run(req, spec, timeout, poll, log, max_misses):
     label = req["run_id"]
 
     def send_start():
+        pointer_off_ui()
         try:
             return ev(start, timeout=20.0).strip()
         except TimeoutError:
@@ -365,6 +384,7 @@ def main(argv):
     elif cmd == "mode":
         print(set_mode(argv[2]))
     elif cmd == "start":
+        pointer_off_ui()
         print(ev("return GAUNTLET_TEST.start()").strip())
     elif cmd == "state":
         print(ev("return Ext.Json.Stringify(GAUNTLET_TEST.state())").strip())

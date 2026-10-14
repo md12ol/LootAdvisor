@@ -925,6 +925,7 @@ def _round_rolls(rec):
 GAME_ROLL_CAUSES = ("Attack", "Offhand")
 REACTION_MERGE_MS = 150    # damage rows this close after a roll's first row are that roll's (gauntlet.lua ROLL_MERGE_MS)
 REACTION_HIT_MS = (300, 100)   # a hit-log row up to this much before / after a roll's first row is its roll's
+SNEAK_GAP_MS = 20          # Sneak Attack's row comes this much or more after its roll's first row (gauntlet.lua)
 
 
 def reaction_parts(rec):
@@ -932,8 +933,10 @@ def reaction_parts(rec):
     dealt after its own turn was released (the round's tm.released) or before its first turn (round 0). Attack rolls
     the way gauntlet.lua counts its own turn's (G.rollTally): a row of cause Attack / Offhand starts a roll unless it
     falls within REACTION_MERGE_MS of the last roll's first row, a 0-damage one is a miss; a roll is a critical hit when
-    a hit-log row of the character near it says so; its Sneak Attack is its rows more than 20 ms after its first ones
-    when a Sneak Attack reaction of the character came in that enemy turn. Per round lists, the damage being all the
+    a hit-log row of the character near it says so; its Sneak Attack is its rows of the weapon's damage type (the type
+    with the most damage among its rows within SNEAK_GAP_MS of the first) coming later than that, when a Sneak Attack
+    reaction of the character came in that enemy turn (gauntlet.lua G.sneakPart). Per round lists, the damage being all
+    the
     character's rows in those turns (the riders of cause Passive too). -> {rounds: {r: {n, landed, crit, dmg,
     sneak}}} or None when the record cannot tell the turns apart (no tm.released) or the character's rows."""
     rounds = [r for r in rec.get("rounds") or [] if isinstance(r, dict)]
@@ -969,10 +972,15 @@ def reaction_parts(rec):
             continue
         t, amt = d.get("t") or 0, d.get("amount") or 0
         if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:
-            if amt > 0 and t - last["t"] > 20 and sneak_t.get(d.get("r")):
-                R["sneak"] += amt
+            ty = d.get("type") or ""
+            if t - last["t"] < SNEAK_GAP_MS:
+                last["types"][ty] = last["types"].get(ty, 0) + amt
+            elif amt > 0 and sneak_t.get(d.get("r")):
+                wtype = max(sorted(last["types"]), key=lambda k: last["types"][k]) if last["types"] else ""
+                if not wtype or not ty or ty == wtype:
+                    R["sneak"] += amt
             continue
-        last = {"r": d.get("r"), "t": t}
+        last = {"r": d.get("r"), "t": t, "types": {d.get("type") or "": amt}}
         R["n"] += 1
         if amt > 0:
             R["landed"] += 1
@@ -1255,6 +1263,11 @@ def report_v2(a):
                          "Student t for means).")
             out["sides"][(i, side)] = {"n": len(runs), "mean": gm, "ci": ci, "rows": rows,
                                        "outside": [r_[0] for r_ in rows if r_[5]]}
+            for r in runs:
+                rl = round_lines(r)
+                if rl:
+                    L += ["", f"Run {r.get('run_id')}, per round against the strategy (the expectation for the state "
+                              "each turn started in; a round cut short compared on its own turn only):", ""] + rl
             if man:
                 L += ["", f"Manual runs (played by hand from the popup), against the {len(runs)} automatic run(s):"]
                 base = pooled([game_parts(r) for r in runs]) if runs else {}
@@ -1291,15 +1304,119 @@ def report_v2(a):
     return out
 
 
+def round_rows(rec):
+    """Per round of one run, the game against the strategy (expect.strategy from plan.py --strategy, the record's
+    expect): [{r, own, react, total, cut, state, decision, outside, st_own, st_own_sd, st_round, st_round_sd, mean,
+    mean_sd, likely, likely_sd, game, model, model_sd, z}]. own / react / total: the game's damage in the character's
+    turn, in the enemies' turn after it (reaction_parts) and both. A round with no released turn (the run ended
+    after its own turn: fail-fast) is cut: its enemies' turn never came. st_*: the strategy's expectation for the
+    state the turn started in (the policy's own turn and round), when the run followed a policy; mean: the round's
+    expectation over every course of the fight, likely: on the most likely course. The comparison (game, model,
+    model_sd, z) is the whole round against the state's round expectation, or the own turn against the state's own
+    one when the round was cut; without a policy against mean (own turn only when cut: none). [] when the record
+    has no rounds."""
+    rounds = [R for R in rec.get("rounds") or [] if isinstance(R, dict)]
+    if not rounds:
+        return []
+    s = (rec.get("results") or {}).get("summary") or {}
+    dealt = s.get("dealt") or []
+    rp = reaction_parts(rec)
+    strat = ((rec.get("expect") or {}).get("strategy") or {})
+    by_round = {x.get("round"): x for x in strat.get("rounds") or []}
+    out = []
+    for i, R in enumerate(rounds):
+        r = R.get("r")
+        total = dealt[i] if i < len(dealt) else None
+        react = ((rp or {}).get("rounds") or {}).get(r, {}).get("dmg", 0) if rp else None
+        if i == 0 and rp and (rp.get("rounds") or {}).get(0):
+            react = (react or 0) + (rp["rounds"][0].get("dmg") or 0)
+        own = total - react if total is not None and react is not None else None
+        cut = not (R.get("tm") or {}).get("released")
+        pol = R.get("policy") or {}
+        ex = by_round.get(r) or {}
+        row = {"r": r, "own": own, "react": react, "total": total, "cut": cut, "state": pol.get("key"),
+               "decision": pol.get("decision"), "outside": bool(pol.get("outside")), "st_own": pol.get("own"),
+               "st_own_sd": pol.get("own_sd"), "st_round": pol.get("round"), "st_round_sd": pol.get("round_sd"),
+               "mean": ex.get("mean"), "mean_sd": ex.get("mean_sd"),
+               # a spec from before "likely": its dmg / sd were the most likely course's
+               "likely": ex.get("likely", ex.get("dmg")), "likely_sd": ex.get("likely_sd", ex.get("sd")),
+               "game": None, "model": None, "model_sd": None, "z": None}
+        if pol.get("own") is not None:
+            if cut:
+                row.update(game=own, model=pol["own"], model_sd=pol.get("own_sd"))
+            else:
+                row.update(game=total, model=pol.get("round"), model_sd=pol.get("round_sd"))
+        elif ex.get("mean") is not None and not cut:
+            row.update(game=total, model=ex["mean"], model_sd=ex.get("mean_sd"))
+        if row["game"] is not None and row["model"] is not None and row["model_sd"]:
+            row["z"] = (row["game"] - row["model"]) / row["model_sd"]
+        out.append(row)
+    return out
+
+
+def round_lines(rec):
+    """round_rows as a markdown table and the run's total against the expectation, for the report and the turn list.
+    -> lines ([] when the record has no strategy expectation and followed no policy)."""
+    rows = round_rows(rec)
+    strat = (rec.get("expect") or {}).get("strategy") or {}
+    if not rows or not (strat or any(x["state"] for x in rows)):
+        return []
+    L = ["| Round | Game: own turn / reactions / round | State the turn started in -> decision | Compared: game / "
+         "model for that state (sd), z | Round expectation, every course (sd) | Most likely course (sd) |",
+         "|---|---|---|---|---|---|"]
+
+    def f(v, fmt="{:.1f}"):
+        return fmt.format(v) if v is not None else "-"
+    for x in rows:
+        state = ("OUTSIDE the policy table: " + x["state"]) if x["outside"] else \
+            (f"{x['state']} -> {x['decision']}" if x["state"] else "no policy")
+        what = "own turn" if x["cut"] else "round"
+        cmp_ = (f"{what}: {f(x['game'], '{:.0f}')} / {f(x['model'])} ({f(x['model_sd'])}), z {f(x['z'], '{:+.2f}')}"
+                if x["game"] is not None and x["model"] is not None else "-")
+        game = (f"{f(x['own'], '{:.0f}')} / {'cut (no enemy turn)' if x['cut'] else f(x['react'], '{:.0f}')} / "
+                f"{f(x['total'], '{:.0f}')}")
+        L.append(f"| {x['r']} | {game} | {state} | {cmp_} | {f(x['mean'])} ({f(x['mean_sd'])}) | "
+                 f"{f(x['likely'])} ({f(x['likely_sd'])}) |")
+    full = [x for x in rows if not x["cut"] and x["total"] is not None]
+    L.append("")
+    if full:
+        st = [x["st_round"] for x in full if x["st_round"] is not None]
+        means = [x["mean"] for x in full if x["mean"] is not None]
+        L.append(f"Full rounds ({', '.join(str(x['r']) for x in full)}): game {sum(x['total'] for x in full):.0f}" +
+                 (f"; expectation for the states the turns started in {sum(st):.1f}" if len(st) == len(full) else "") +
+                 (f"; the rounds' expectation over every course {sum(means):.1f}" if len(means) == len(full) else "") +
+                 ".")
+    for x in rows:
+        if x["cut"]:
+            L.append(f"Round {x['r']} cut short after its own turn (no enemy turn): own turn {f(x['own'], '{:.0f}')}" +
+                     (f" against {f(x['st_own'])} (sd {f(x['st_own_sd'])}) for its state" if x["st_own"] is not None
+                      else "") + ".")
+    if strat.get("total") is not None:
+        L.append(f"The fight's expectation: {strat['total']} (sd {strat.get('sd')}) over "
+                 f"{len(strat.get('rounds') or [])} rounds.")
+    return L
+
+
 def _short(u):
     m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$", str(u or ""))
     return m.group(1) if m else (u or None)
 
 
+def _roll_text(i, x):
+    adv = " Advantage" if x.get("adv") and not x.get("dis") else " Disadvantage" if x.get("dis") and not x.get("adv") \
+        else " Advantage + Disadvantage" if x.get("adv") and x.get("dis") else ""
+    nat = f" {x.get('nat')}" + (f"/{x.get('nat2')}" if x.get("nat2") else "") + \
+        (f" -> {x.get('total')}" if x.get("total") is not None else "") if x.get("nat") is not None else ""
+    return f"{'main' if i == 0 else 'off-hand'} {x.get('outcome')}{nat}{adv}"
+
+
 def turn_list(rec):
-    """What the character did, turn by turn, for a person to replay the run by hand: per round the spell or attack, its
-    target and its result (a scripted turn's planned actions with their outcome; a player's turn its casts and the
-    hits they made), then the round's damage. -> lines (markdown)."""
+    """What the character did, turn by turn, for a person to replay the run by hand: per round the state the turn
+    started in and the policy's decision (a run that followed one), the spell or attack, its target and its result
+    with each attack roll (a toggled attack's off-hand half is a roll of its own: natural roll, total, Advantage /
+    Disadvantage), a scripted turn's planned actions with their outcome or a player's turn its casts and the hits they
+    made, the enemies' attack rolls, then the round's damage; last the rounds against the strategy (round_lines).
+    -> lines (markdown)."""
     res = rec.get("results") or {}
     me = _short((rec.get("req") or {}).get("char"))
     dealt = (res.get("summary") or {}).get("dealt") or []
@@ -1311,6 +1428,10 @@ def turn_list(rec):
         r = R.get("r")
         L.append(f"Round {r}" + (f" - {dealt[r - 1]:.0f} damage" if r and r - 1 < len(dealt) else "") +
                  (" (down)" if R.get("downed") else ""))
+        pol = R.get("policy") or {}
+        if pol.get("key"):
+            L.append(f"  state: {pol['key']}" + (" - OUTSIDE the policy table" if pol.get("outside") else
+                                                  f" -> {pol.get('decision')}"))
         acts = R.get("actions") or []
         k = 0
         for x in acts:
@@ -1319,8 +1440,10 @@ def turn_list(rec):
             k += 1
             res_ = x.get("result") or "?"
             out_ = x.get("outcome")
+            rolls = x.get("rolls") or []
             L.append(f"  {k}. {x.get('spell')} -> {x.get('target') or '-'}: "
-                     f"{out_ if out_ and res_ == 'done' else res_}" + (f" ({x.get('why')})" if x.get("why") else ""))
+                     f"{out_ if out_ and res_ == 'done' else res_}" + (f" ({x.get('why')})" if x.get("why") else "") +
+                     (" - rolls: " + ", ".join(_roll_text(i, y) for i, y in enumerate(rolls)) if rolls else ""))
         if not acts:
             for c in R.get("casts") or []:
                 if me and _short(c.get("who")) != me:
@@ -1335,6 +1458,17 @@ def turn_list(rec):
                     (f" ({h.get('spell')})" if h.get("spell") else "") for h in mine))
         if k == 0:
             L.append("  (nothing)")
+        foe = [x for x in (((res.get("summary") or {}).get("enemy_rolls") or {}).get("per_roll") or [])
+               if x.get("r") == r]
+        if foe:
+            L.append("  enemies' attack rolls: " + ", ".join(
+                f"{x.get('outcome')}" + (f" {x.get('nat')}" + (f"/{x.get('nat2')}" if x.get("nat2") else "") +
+                                         (f" -> {x.get('total')}" if x.get("total") is not None else "")
+                                         if x.get("nat") is not None else "") +
+                (" Disadvantage" if x.get("dis") else "") + (" Advantage" if x.get("adv") else "") for x in foe))
+    rl = round_lines(rec)
+    if rl:
+        L += ["", "Rounds against the strategy:", ""] + rl
     return L
 
 
