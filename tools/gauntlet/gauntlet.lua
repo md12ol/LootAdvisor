@@ -2706,10 +2706,24 @@ end
 -- A move step (a.move_to): walks there with the turn's movement (the shared F.moving wait, which charges the Movement
 -- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails, and a failed
 -- planned step makes the run invalid (G.stepNotDone), so a run whose tactic never happened is no measurement.
+-- Did a move to leave the boss do what it is for, wherever the engine stopped it: out of the boss's reach (more than
+-- G.REACH away, so no Disadvantage at range either) and not Threatened by the engine's own reckoning (no FLANKED).
+-- In game a leave the engine ended 0.56 m short of its spot was out of reach (FLANKED off, both shots at Advantage),
+-- and the old 0.5 m spot test failed the run on it. Other targets (a hide spot: out of sight) need the spot itself.
+function G.moveGoalMet(F, a)
+  if a.move_to ~= "@leave_spot" then return false end
+  local b = resolveTarget(F, "@boss")
+  local d = b and dist(F.char, b)
+  if not d or d <= G.REACH or d >= 1e9 then return false end
+  return try(Osi.HasActiveStatus, F.char, "FLANKED") ~= 1, d
+end
 function G.moveStep(F, a, R, rec0)
   if rec0 then
     local m = rec0.move or {}
-    if m.result == "there" then
+    local met, d = false, nil
+    if m.result == "ended short" then met, d = G.moveGoalMet(F, a) end
+    if met then m.goal = string.format("out of reach (%.1f m from the boss)", d) end
+    if m.result == "there" or met then
       rec0.result = "done"
       R.done[a.done_key or "move"] = true
     else
