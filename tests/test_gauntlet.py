@@ -797,6 +797,11 @@ def engine_gate_tests(L):
       flanked = 0
       where.b1 = { 2, 0, 0 }
       T_goal_near = short("@leave_spot")
+      -- the boss higher up: only the floor distance counts (3.2 m out: left; 2.9 m out, 1.5 m higher: still close)
+      where.b1 = { 3.2, 0.55, 0 }
+      T_goal_high = short("@leave_spot")
+      where.b1 = { 2.9, 1.5, 0 }
+      T_goal_high_close = short("@leave_spot")
       where.b1 = { 4, 0, 0 }
       T_goal_hide = short("@hide_spot")
       Osi.HasActiveStatus = hs
@@ -807,6 +812,9 @@ def engine_gate_tests(L):
     check("move: a leave ended short is done when out of reach and not Threatened; in reach, Threatened or a hide spot fails",
           g.T_goal_out == "done|true" and g.T_goal_flanked.startswith("failed") and g.T_goal_near.startswith("failed")
           and g.T_goal_hide.startswith("failed"), f"{g.T_goal_out} {g.T_goal_flanked} {g.T_goal_near} {g.T_goal_hide}")
+    check("move: a leave is judged along the floor by the game's 3 m close range, not in 3-D with slack",
+          g.T_goal_high == "done|true" and g.T_goal_high_close.startswith("failed"),
+          f"{g.T_goal_high} {g.T_goal_high_close}")
     check("sheath gate: the turn's first request waits while the riposte is still sheathed, then goes; the wait recorded",
           g.T_sh1 is True and g.T_sh2 is True and g.T_sh3 is False and g.T_sh_rec == "Target_Riposte 1600",
           f"{g.T_sh1} {g.T_sh2} {g.T_sh3} {g.T_sh_rec}")
@@ -6715,13 +6723,15 @@ MUTATIONS = [
     ("Sneak Attack per turn: a turn without the charge counted as one that could", GL,
      "    if adv and charged then sa.adv_turns = sa.adv_turns + 1 end", "    if adv then sa.adv_turns = sa.adv_turns + 1 end"),
     ("move: a leave ended short always fails (the spot test only)", GL,
-     '    if m.result == "ended short" then met, d = G.moveGoalMet(F, a) end', "    if false then end"),
+     '    if m.result == "ended short" then met, d, why = G.moveGoalMet(F, a) end', "    if false then end"),
     ("move: a Threatened character counted out of reach", GL,
-     '  return try(Osi.HasActiveStatus, F.char, "FLANKED") ~= 1, d', "  return true, d"),
-    ("move: in the boss's reach counted as left", GL,
-     "  if not d or d <= G.REACH or d >= 1e9 then return false end", "  if not d or d >= 1e9 then return false end"),
+     '  if try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then return false, d, "Threatened (FLANKED)" end', ""),
+    ("move: within the close range counted as left", GL,
+     '  if d <= G.CLOSE_M then return false, d, "within the close range" end', ""),
+    ("move: the floor distance shortened (slack or height added)", GL,
+     "  local d = math.sqrt((x - bx) ^ 2 + (z - bz) ^ 2)", "  local d = math.sqrt((x - bx) ^ 2 + (z - bz) ^ 2) - 0.6"),
     ("move: a hide spot ended short counted as reached", GL,
-     '  if a.move_to ~= "@leave_spot" then return false end', "  if false then return false end"),
+     '  if a.move_to ~= "@leave_spot" then return false, nil, "not a leave" end', "  if false then end"),
     ("sheath gate: the step loop ignores it", GL,
      "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
     ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",

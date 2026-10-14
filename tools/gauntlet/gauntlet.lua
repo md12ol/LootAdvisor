@@ -2706,23 +2706,31 @@ end
 -- A move step (a.move_to): walks there with the turn's movement (the shared F.moving wait, which charges the Movement
 -- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails, and a failed
 -- planned step makes the run invalid (G.stepNotDone), so a run whose tactic never happened is no measurement.
--- Did a move to leave the boss do what it is for, wherever the engine stopped it: out of the boss's reach (more than
--- G.REACH away, so no Disadvantage at range either) and not Threatened by the engine's own reckoning (no FLANKED).
--- In game a leave the engine ended 0.56 m short of its spot was out of reach (FLANKED off, both shots at Advantage),
--- and the old 0.5 m spot test failed the run on it. Other targets (a hide spot: out of sight) need the spot itself.
+-- Did a move to leave the boss do what it is for, wherever the engine stopped it, by the game's own rules for a
+-- ranged attack: not Threatened (the engine's FLANKED) and more than G.CLOSE_M from the boss along the floor (the
+-- game's "too close" Disadvantage; height left out: a boss 0.55 m higher failed a 3-D test with FLANKED already off
+-- and both shots at Advantage). In game the engine ended leaves 0.54-0.56 m short of their spots, out of reach.
+-- Other targets (a hide spot: out of sight) need the spot itself. -> met, floor distance, why not
+G.CLOSE_M = 3.0
 function G.moveGoalMet(F, a)
-  if a.move_to ~= "@leave_spot" then return false end
+  if a.move_to ~= "@leave_spot" then return false, nil, "not a leave" end
   local b = resolveTarget(F, "@boss")
-  local d = b and dist(F.char, b)
-  if not d or d <= G.REACH or d >= 1e9 then return false end
-  return try(Osi.HasActiveStatus, F.char, "FLANKED") ~= 1, d
+  local x, _, z = xyz(F.char)
+  local bx, _, bz
+  if b then bx, _, bz = xyz(b) end
+  if not (x and bx) then return false, nil, "no position" end
+  local d = math.sqrt((x - bx) ^ 2 + (z - bz) ^ 2)
+  if d <= G.CLOSE_M then return false, d, "within the close range" end
+  if try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then return false, d, "Threatened (FLANKED)" end
+  return true, d
 end
 function G.moveStep(F, a, R, rec0)
   if rec0 then
     local m = rec0.move or {}
-    local met, d = false, nil
-    if m.result == "ended short" then met, d = G.moveGoalMet(F, a) end
-    if met then m.goal = string.format("out of reach (%.1f m from the boss)", d) end
+    local met, d, why = false, nil, nil
+    if m.result == "ended short" then met, d, why = G.moveGoalMet(F, a) end
+    if met then m.goal = string.format("out of reach (%.1f m from the boss along the floor)", d)
+    elseif m.result == "ended short" then m.goal = string.format("not met: %s (%s m)", tostring(why), d and string.format("%.1f", d) or "?") end
     if m.result == "there" or met then
       rec0.result = "done"
       R.done[a.done_key or "move"] = true
