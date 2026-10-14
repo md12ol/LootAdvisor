@@ -179,7 +179,7 @@ def lua_tests():
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
               impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
               sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests,
-              cast_id_tests, holder_idle_tests, end_turn_tests):
+              cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -697,6 +697,93 @@ def cast_id_tests(L):
     turns = [(g.T_turns[i + 1].who, g.T_turns[i + 1].ev) for i in range(len(g.T_turns or {}))]
     check("turns: the fight's TurnStarted / TurnEnded kept per round, others left out; the character's end noted",
           turns == [("c1", "ended"), ("b1", "started")] and g.T_ended == 700, str(turns))
+
+
+def engine_gate_tests(L):
+    """The turn's first request waits for the engine to finish sheathing an earlier cast (a riposte), and a move ends on
+    the engine's event for it, not on fixed timers."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local oldGet, oldNow = Ext.Entity.Get, Ext.Utils.MonotonicTime
+      local me = {}
+      Ext.Entity.Get = function(u) if u == "c1" then return me end end
+      G.reset(); G.t0 = 0
+      local R = { r = 4, done = {}, actions = {}, casts = {}, tm = {} }
+      local F = { char = "c1" }
+      me.ServerUnsheathSpellAnimationLifetime = { Spell = { Prototype = "Target_Riposte" } }
+      T_sh1 = G.sheathHeld(F, R, 1000)
+      T_sh2 = G.sheathHeld(F, R, 2500)
+      me.ServerUnsheathSpellAnimationLifetime = nil
+      T_sh3 = G.sheathHeld(F, R, 2600)
+      T_sh_rec = R.tm.sheath and (R.tm.sheath.spell .. " " .. R.tm.sheath.ms) or "none"
+      me.ServerUnsheathSpellAnimationLifetime = { Spell = { Prototype = "Target_Riposte" } }
+      local R2 = { tm = {} }
+      G.sheathHeld(F, R2, 0)
+      T_sh_cap = G.sheathHeld(F, R2, G.READY_MAX_MS)
+      T_sh_gave = R2.tm.sheath and R2.tm.sheath.gave_up == true
+      -- the step loop: no round planned while the sheath is on
+      local plan = G.planRound
+      local planned = 0
+      G.planRound = function() planned = planned + 1; return {} end
+      G.rounds = { { r = 4, done = {}, actions = {}, casts = {}, tm = {} } }
+      local Fq = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                   started = 1, state = "act", next = 0, turnStart = 0, progressT = 0 }
+      G.F = Fq
+      me.ServerUnsheathSpellAnimationLifetime = { Spell = { Prototype = "Target_Riposte" } }
+      G.step(Fq, 100)
+      T_sh_step1 = planned
+      me.ServerUnsheathSpellAnimationLifetime = nil
+      Fq.next = 0
+      G.step(Fq, 200)
+      T_sh_step2 = planned
+      G.planRound, G.F = plan, nil
+      me.ServerUnsheathSpellAnimationLifetime = nil
+      -- a move: standing still 1.5 s is no end; the engine's event is, read MOVE_SETTLE_MS later
+      local t = 0
+      Ext.Utils.MonotonicTime = function() return t end
+      local pos = { 3, 0, 0 }
+      local gp, gr = Osi.GetPosition, Osi.GetActionResourceValuePersonal
+      Osi.GetPosition = function() return pos[1], pos[2], pos[3] end
+      Osi.GetActionResourceValuePersonal = function() return 9 end
+      local function moving()
+        return { char = "c1", moving = { spot = { x = 3, z = 0, len = 3 }, t0 = 0, p0 = { 0, 0, 0 },
+          last = { 3, 0, 0 }, lastT = 0, mv0 = 9, rec = { move = {} } } }
+      end
+      local Fm = moving()
+      T_mv_still = G.moveSettled(Fm, 1500)
+      t = 1600; G._on.entity_event("c1", G.MOVE_EVENT)
+      T_mv_soon = G.moveSettled(Fm, 1600 + G.MOVE_SETTLE_MS - 1)
+      T_mv_done = G.moveSettled(Fm, 1600 + G.MOVE_SETTLE_MS)
+      T_mv_res = Fm.moving.rec.move.result
+      local Fo = moving()
+      Fo.moving.t0 = 2000
+      t = 2000; G._on.entity_event("c1", "SomethingElse")
+      T_mv_other = G.moveSettled(Fo, 5000)
+      pos = { 1, 0, 0 }
+      local Fs = moving()
+      Fs.moving.t0 = 6000
+      t = 7000; G._on.move_cancelled("c1", G.MOVE_EVENT)
+      T_mv_short = G.moveSettled(Fs, 7000 + G.MOVE_SETTLE_MS) and Fs.moving.rec.move.result
+      local Ft = moving()
+      Ft.moving.t0 = 8000
+      T_mv_to = G.moveSettled(Ft, 8000 + G.MOVE_MAX_MS) and Ft.moving.rec.move.result
+      Osi.GetPosition, Osi.GetActionResourceValuePersonal = gp, gr
+      Ext.Entity.Get, Ext.Utils.MonotonicTime = oldGet, oldNow
+    """)
+    g = L.globals()
+    check("sheath gate: the turn's first request waits while the riposte is still sheathed, then goes; the wait recorded",
+          g.T_sh1 is True and g.T_sh2 is True and g.T_sh3 is False and g.T_sh_rec == "Target_Riposte 1600",
+          f"{g.T_sh1} {g.T_sh2} {g.T_sh3} {g.T_sh_rec}")
+    check("sheath gate: the step loop plans the round only once the sheath is gone",
+          g.T_sh_step1 == 0 and g.T_sh_step2 == 1, f"{g.T_sh_step1} {g.T_sh_step2}")
+    check("sheath gate: a sheath that never ends is given up at READY_MAX_MS, recorded",
+          g.T_sh_cap is False and g.T_sh_gave is True, f"{g.T_sh_cap} {g.T_sh_gave}")
+    check("move: standing still is no end; the engine's move event is, read MOVE_SETTLE_MS later",
+          g.T_mv_still is False and g.T_mv_soon is False and g.T_mv_done is True and g.T_mv_res == "there",
+          f"{g.T_mv_still} {g.T_mv_soon} {g.T_mv_done} {g.T_mv_res}")
+    check("move: another event name is no end; a cancelled move short of the spot ends 'ended short'; no event: timeout",
+          g.T_mv_other is False and g.T_mv_short == "ended short" and g.T_mv_to == "timeout",
+          f"{g.T_mv_other} {g.T_mv_short} {g.T_mv_to}")
 
 
 def holder_idle_tests(L):
@@ -6538,6 +6625,24 @@ MUTATIONS = [
     ("player cast: a started cast with no evidence given up at CONFIRM_MS", GL,
      "  local started = casting(F.char) or (P.player and G.usingSeen(P, R))\n",
      "  local started = casting(F.char)\n"),
+    ("sheath gate: the step loop ignores it", GL,
+     "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
+    ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",
+     "  if true then return true end"),
+    ("sheath gate: the wait not recorded", GL,
+     "    if F.sheathSince then R.tm = R.tm or {}; R.tm.sheath = { spell = F.sheathSpell, ms = t - F.sheathSince } end\n",
+     ""),
+    ("move: ended by standing still (the old 800 ms test)", GL,
+     "  if not ended and t - M.t0 < G.MOVE_MAX_MS then return false end",
+     "  if not ended and t - M.lastT < 800 and t - M.t0 < G.MOVE_MAX_MS then return false end"),
+    ("move: the position read the moment the event comes", GL,
+     "  if ended and t - ended < G.MOVE_SETTLE_MS then return false end\n", ""),
+    ("move: any entity event ends it", GL,
+     "  entity_event = function(obj, event) if event == G.MOVE_EVENT then",
+     "  entity_event = function(obj, event) if true then"),
+    ("move: a cancelled move never ends", GL,
+     "  move_cancelled = function(obj, event) if event == G.MOVE_EVENT then G.moveEnds[uuid(obj)] = now() end end,\n",
+     "  move_cancelled = function() end,\n"),
     ("turn guard: counted from the turn's start, not the last progress", GL,
      "    if t - (F.progressT or F.turnStart or t) > G.ACT_MAX_MS then", "    if t - (F.turnStart or t) > G.ACT_MAX_MS then"),
     ("player cast: costs checked at CastedSpell, before the attack's last strike", GL,
