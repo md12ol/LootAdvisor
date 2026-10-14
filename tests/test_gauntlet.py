@@ -3736,11 +3736,69 @@ def py_tests():
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
               lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R),
               lambda: split_report_tests(R), phase_call_tests,
-              lambda: surge_plan_tests(P), arena_note_tests):
+              lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R)):
         try:
             t()
         except Exception as e:  # noqa: BLE001
             check("python test block ran", False, repr(e)[:300])
+
+
+def strategy_spec_tests(P, R):
+    """plan.py --strategy: the family's own per-round parts replace expect.boss (the gear model's kept as boss_gear),
+    so the report compares a run with the strategy it played, part by part; the riders, the forecast, the hotbar and
+    the plan's spells follow the family's rounds (melee: Hunter's Mark and melee attacks, no Disengage left from the
+    gear model's evade plan). A 3-round fight with hand-written thx numbers (the search's profile, no game stats)."""
+    sys.path.insert(0, os.path.join(LA, "tools", "optimizer"))
+    import strategy as SG
+    crimson = SG.Weapon("Crimson Mischief", 14, (6, 4, 4), 8, adv_flat=7)
+    prof = SG.Profile(melee_main=crimson, melee_off=SG.Weapon("Blade", 14, (4, 4, 4), 8),
+                      ranged_main=SG.Weapon("Hellfire", 16, (6, 4), 8, ranged=True),
+                      ranged_off=SG.Weapon("Firestoker", 14, (6, 4), 6, ranged=True), riposte=crimson, sup_dice=0,
+                      taken_hit=9.0, taken_crit=4.5)
+    gear = {"dpr": 104.57, "taken": 3.825, "R": 37.65, "taken_hit": 9.0, "taken_crit": 4.5, "split": True,
+            "attacks": 3.188, "hit_rate": 0.8959, "own_dpr": 85.85, "react_attacks": 0.525, "react_dmg": 18.72,
+            "sneak_policy": "always"}
+    evade = [P.A("Shout_Disengage_CunningAction", "bonus", "@self"), P.A("Projectile_MainHandAttack", "action")]
+    spec = {"plan": {"rounds": [evade], "steady": evade, "reactions": {}, "item_actions": [],
+                     "forecast": [["Shout_Disengage_CunningAction", "Projectile_MainHandAttack"]],
+                     "riders": [{"round": 1, "status": "DREAD_AMBUSHER", "on": "@self", "why": "Dread Ambusher",
+                                 "spell": "Projectile_DreadAmbusher"}]},
+            "expect": {"boss": dict(gear)}, "slots": {"1": 4, "2": 2}, "resources": [], "item_resources": [],
+            "passives_add": [], "spells_add": ["Shout_Disengage_CunningAction"]}
+    old_rounds, old_prof = SG.ROUNDS, SG.profile_from_spec
+    SG.ROUNDS = 3
+    SG.profile_from_spec = lambda spec_, stats_: prof
+    try:
+        out = P.strategy_spec(spec, "melee", {})
+        want = SG.fight_expect(SG.best_search(prof, "melee")[0])
+    finally:
+        SG.ROUNDS, SG.profile_from_spec = old_rounds, old_prof
+    b, ex = out["expect"]["boss"], out["expect"]
+    keys = [k for k, _l, mk, _f in R.PARTS if mk]
+    check("strategy spec: expect.boss holds the family's parts, the gear model's kept as boss_gear",
+          b.get("source") == "strategy melee" and ex.get("boss_gear") == gear and
+          all(b.get(k) == want.get(k) for k in keys) and b.get("sneak_policy") == want["sneak_policy"] and
+          ex["strategy"]["total"] == want["total"] and [r["mean"] for r in ex["strategy"]["rounds"]] ==
+          [r["dmg"] for r in want["rounds"]], str({k: (b.get(k), want.get(k)) for k in keys if b.get(k) != want.get(k)}))
+    check("strategy spec: damage taken from the boss's hits in the family's fight, rounds survived scaled with it",
+          b.get("taken") == want["taken"] and b["taken"] != gear["taken"] and
+          b.get("R") == round(gear["R"] * gear["taken"] / b["taken"], 2), str((b.get("taken"), b.get("R"))))
+    game = dict({k: want[k] for k in keys}, split=True)
+    rows = {r_[0]: r_ for r_ in R.compare_parts(game, b)}
+    check("strategy spec: the report compares with the family's parts (melee: 4+ rolls, its riposte rate)",
+          rows["attacks"][3] == want["attacks"] > gear["attacks"] and rows["own_dpr"][3] == want["own_dpr"] and
+          rows["react_attacks"][3] == want["react_attacks"] and not any(r_[5] for r_ in rows.values()),
+          str({k: rows[k][3] for k in ("attacks", "own_dpr", "react_attacks")}))
+    fc = [s for r in out["plan"]["forecast"] for s in r]
+    spells = {a["spell"] for r in out["plan"]["rounds"] for a in r}
+    check("strategy spec: the forecast is the family's rounds (melee attacks, no Disengage)",
+          len(out["plan"]["forecast"]) == 16 and "Target_MainHandAttack" in fc and
+          "Shout_Disengage_CunningAction" not in fc and set(fc) <= spells | {"@move"}, str(out["plan"]["forecast"][:2]))
+    riders = [(r["status"], r["spell"]) for r in out["plan"]["riders"]]
+    check("strategy spec: riders and the plan's spells from the family's rounds",
+          ("HUNTERS_MARK", "Target_HuntersMark") in riders and all(sp in spells for _s, sp in riders) and
+          "Target_MainHandAttack" in out["spells_plan"] and "Projectile_MainHandAttack" not in out["spells_plan"] and
+          "Shout_Disengage_CunningAction" in out["spells_add"], str((riders, out["spells_plan"])))
 
 
 def surge_plan_tests(P):
@@ -5869,6 +5927,13 @@ MUTATIONS = [
     ("split: a Sneak Attack row counted as a roll of its own", RN,
      'if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:', "if False:"),
     ("split: a model from before the split compared", RN, "        if key in SPLIT_PARTS and not split:\n            m = None\n",
+     ""),
+    ("strategy spec: the gear model's numbers left in expect.boss", PL,
+     '    plan = with_hit_costs(out["plan"], stats)\n',
+     '    out["expect"]["boss"] = spec["expect"]["boss"]\n    plan = with_hit_costs(out["plan"], stats)\n'),
+    ("strategy spec: the forecast left from the gear model's plan", PL, '    plan["forecast"] = forecast(plan, out["slots"]',
+     '    plan["forecast"] = plan.get("forecast") or forecast(plan, out["slots"]'),
+    ("strategy spec: the riders left from the gear model's plan", PL, '    plan["riders"] = plan_riders(plan["rounds"])\n',
      ""),
     ("split: rows in the character's own turn counted as reactions", RN,
      "return r == 0 or (rel.get(r) is not None and (d.get(\"t\") or 0) > rel[r])", "return True"),
