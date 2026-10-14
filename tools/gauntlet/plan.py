@@ -1107,6 +1107,11 @@ def strategy_spec(spec, family, stats):
     P = SG.profile_from_spec(spec, stats)
     out = SG.apply_to_spec(spec, P, family, A, evade_steps)
     plan = with_hit_costs(out["plan"], stats)
+    # the family's rounds hold every action and bonus action it chose: an item spell the harness's adaptive rule would
+    # add takes a bonus action the search gave to an off-hand half (Flourish replaced a toggled attack's off-hand half)
+    plan["item_skipped"] = list(plan.get("item_skipped") or []) + [
+        dict(it, reason="the strategy's rounds do not use it") for it in plan.get("item_actions") or []]
+    plan["item_actions"] = []
     plan["riders"] = plan_riders(plan["rounds"])
     plan["forecast"] = forecast(plan, out["slots"], (out.get("resources") or []) + (out.get("item_resources") or []),
                                 stats)

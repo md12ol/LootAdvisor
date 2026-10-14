@@ -802,6 +802,22 @@ def test_strategy_true_strike():
     assert not fails, fails
 
 
+def test_strategy_halves():
+    """Only a plain attack fires the off-hand half (in game a toggled Menacing Attack or Piercing Strike fired none):
+    a melee turn with Fast Hands' 2 bonus actions has 2 halves, with 1 Menacing 1, with Action Surge, Piercing Strike
+    and 1 Menacing 2 (its two plain attacks)."""
+    import strategy as G
+    P = _thx_profile()
+    start = G.TurnStart(True, "", False)
+
+    def halves(plan):
+        return sum(1 for a in G.build_attacks(P, plan, start) if a.label == "off-hand")
+    got = [halves(G.Plan("melee")), halves(G.Plan("melee", maneuver="Menacing", n_maneuver=1)),
+           halves(G.Plan("melee", surge=True, pierce=True, maneuver="Menacing", n_maneuver=1)),
+           halves(G.Plan("melee", maneuver="Menacing", n_maneuver=2))]
+    assert got == [2, 1, 2, 0], got
+
+
 def test_strategy_policy():
     """The reaction policy: each family is searched under always / crit / never and keeps the best (its totals are the
     plain searches'); the plan's answers for the enemies' turns follow it; the fight ends as the 16th turn ends (no
@@ -1075,7 +1091,7 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
             test_buff_spells, test_riposte, test_item_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
-            test_strategy_true_strike, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
+            test_strategy_true_strike, test_strategy_halves, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck]
 
 
@@ -2794,6 +2810,25 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: True Strike from the riposte ignored", m_strategy_no_ts))
+
+    def m_strategy_halves_any():
+        import strategy as G
+        old = G.build_attacks
+
+        def more(P, plan, state):
+            out_ = old(P, plan, state)
+            n = sum(1 for a in out_ if a.label == "off-hand")
+            ba = P.bonus_actions - (1 if plan.mark else 0) - (1 if plan.mode == "leave" else 0)
+            off = P.melee_off if plan.mode == "melee" else P.ranged_off
+            return out_ + [G.Attack("off-hand", off, out_[0].mode)] * max(0, ba - n)
+        G.build_attacks = more
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_halves)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: a manoeuvre counted with an off-hand half", m_strategy_halves_any))
 
     def m_strategy_one_policy():
         import strategy as G

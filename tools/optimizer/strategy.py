@@ -311,6 +311,9 @@ def build_attacks(P, plan, state):
         out.append(Attack(kind if kind != "maneuver" else man, main, mode, maneuver=man, precision=i in prec,
                           pierce=kind == "pierce", ensnare=kind == "ensnare", dis_any=dis))
     ba = P.bonus_actions - (1 if plan.mark else 0) - (1 if plan.mode == "leave" else 0)
+    # only a plain attack fires the off-hand half: in game a toggled Menacing Attack or Piercing Strike fired none
+    # (3 of 3) and left the bonus action unspent, so the halves are at most the plain attacks
+    ba = min(ba, sum(1 for kind, _m in kinds if kind == "plain"))
     for j in range(max(0, ba)):
         out.append(Attack("off-hand", off, mode, if_no_ensnare=plan.ensnare and j == ba - 1, dis_any=dis))
     if getattr(state, "ts", False):

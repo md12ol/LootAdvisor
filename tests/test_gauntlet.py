@@ -556,6 +556,30 @@ def watchdog_tests(L):
           g.T_after == "done" and "bad request" in str(g.T_bad) and g.T_saved >= 1, str(g.T_bad))
     check("run start: prep that never finishes -> invalid run, not a hang",
           "prep timed out" in str(g.T_prep) and g.T_prep_valid is False, str(g.T_prep))
+    # Action Surge on the player path: done only once its status (the extra action) is on the character
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset(); G.t0 = 0
+      local has = 0
+      local hs = Osi.HasActiveStatus
+      Osi.HasActiveStatus = function(u, s) if s == G.SURGE_STATUS then return has end return 0 end
+      local F = { char = "c1", enemies = {}, cooldown = {}, plan = {} }
+      local R = { r = 6, actions = {}, casts = { { who = "c1", spell = "Shout_ActionSurge" } }, done = {} }
+      local rec = { spell = "Shout_ActionSurge" }
+      R.actions[1] = rec
+      F.pending = { a = { spell = "Shout_ActionSurge", group = "free" }, rec = rec, spell = "Shout_ActionSurge",
+                    who = "c1", target = "c1", player = true, casts0 = 0, dmg0 = 0, t0 = 0, costs = {}, res = {},
+                    before = {}, snap0 = {} }
+      T_s1 = G.settle(F, R, 100)
+      T_d1 = R.done.surge == true
+      has = 1
+      T_s2 = G.settle(F, R, 150)
+      T_d2 = R.done.surge == true
+      Osi.HasActiveStatus = hs
+    """)
+    check("Action Surge: not done before its status gives the extra action, done once it is on",
+          g.T_s1 is False and g.T_d1 is False and g.T_s2 is True and g.T_d2 is True,
+          str((g.T_s1, g.T_d1, g.T_s2, g.T_d2)))
     # the combat's first turn: the first request waits longer (in game one sent 200 ms after it started was refused)
     L.execute(r"""
       local G = GAUNTLET
@@ -3779,7 +3803,8 @@ def strategy_spec_tests(P, R):
             "attacks": 3.188, "hit_rate": 0.8959, "own_dpr": 85.85, "react_attacks": 0.525, "react_dmg": 18.72,
             "sneak_policy": "always"}
     evade = [P.A("Shout_Disengage_CunningAction", "bonus", "@self"), P.A("Projectile_MainHandAttack", "action")]
-    spec = {"plan": {"rounds": [evade], "steady": evade, "reactions": {}, "item_actions": [],
+    flourish = {"spell": "Target_OpeningAttack", "item": "Crimson Mischief", "group": "bonus", "value": 2.5}
+    spec = {"plan": {"rounds": [evade], "steady": evade, "reactions": {}, "item_actions": [flourish],
                      "forecast": [["Shout_Disengage_CunningAction", "Projectile_MainHandAttack"]],
                      "riders": [{"round": 1, "status": "DREAD_AMBUSHER", "on": "@self", "why": "Dread Ambusher",
                                  "spell": "Projectile_DreadAmbusher"}]},
@@ -3819,6 +3844,11 @@ def strategy_spec_tests(P, R):
           ("HUNTERS_MARK", "Target_HuntersMark") in riders and all(sp in spells for _s, sp in riders) and
           "Target_MainHandAttack" in out["spells_plan"] and "Projectile_MainHandAttack" not in out["spells_plan"] and
           "Shout_Disengage_CunningAction" in out["spells_add"], str((riders, out["spells_plan"])))
+
+
+    check("strategy spec: no item spell beside the family's rounds (Flourish took an off-hand half's bonus action)",
+          out["plan"]["item_actions"] == [] and any(it.get("spell") == "Target_OpeningAttack"
+                                                     for it in out["plan"]["item_skipped"]), str(out["plan"]["item_actions"]))
 
 
 def surge_plan_tests(P):
@@ -5659,6 +5689,10 @@ MUTATIONS = [
      "    local clear = true"),
     ("first turn: the combat's first request sent as early as any other", GL,
      "t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t", "t + G.ACT_DELAY_MS, t"),
+    ("Action Surge: done before its status is on", GL,
+     "    if try(Osi.HasActiveStatus, F.char, G.SURGE_STATUS) == 1 or t - P.tEff >= G.PLAYER_END_MS then",
+     "    if true then"),
+    ("strategy spec: the item rule keeps its item spells", PL, '    plan["item_actions"] = []\n', ""),
     ("impact wait: the step loop never waits for the last attack to land", GL,
      "    if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end\n", ""),
     ("impact wait: the attack's damage row not waited for", GL, "  if not first then return true end\n", ""),
