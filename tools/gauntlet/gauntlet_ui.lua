@@ -238,6 +238,16 @@ local function cameraDist(char, set)
     return math.sqrt((t[1] - p[1]) ^ 2 + (t[3] - p[3]) ^ 2)
   end)
 end
+-- The server's "camera_follow" (each own turn, each move): the camera glides (its destination only) to the middle
+-- between the character and the boss, or onto the character alone. Only the camera is touched; no answer.
+function U.CameraFollow(m)
+  pcall(function()
+    local p = Ext.Entity.Get(m.char).Transform.Transform.Translate
+    local q = m.also and Ext.Entity.Get(m.also) and Ext.Entity.Get(m.also).Transform.Transform.Translate or p
+    local c = Ext.Entity.GetAllEntitiesWithComponent("GameCameraBehavior")[1].GameCameraBehavior
+    c.TargetDestination = { (p[1] + q[1]) / 2, (p[2] + q[2]) / 2, (p[3] + q[3]) / 2 }
+  end)
+end
 function U.CameraOn(m)
   local ok0, why0 = cameraDist(m.char, true)
   Ext.Timer.WaitFor(U.CAMERA_SETTLE_MS, function()
@@ -252,6 +262,7 @@ local function onNet(e)
   if e.Channel ~= "GauntletUI" then return end
   local m = try(Ext.Json.Parse, e.Payload)
   if type(m) == "table" and m.kind == "camera" then return U.CameraOn(m) end
+  if type(m) == "table" and m.kind == "camera_follow" then return U.CameraFollow(m) end
   if type(m) ~= "table" or not U.window then return end
   if m.kind == "test" then U.TestState(m)
   elseif m.kind == "status" then U.Status(m.text)
