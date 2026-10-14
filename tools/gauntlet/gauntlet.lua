@@ -1095,6 +1095,32 @@ function G.reactionsApply(plan, chars)
   end
   return report
 end
+-- Reactions whose answer depends on whose turn it is: plan.reactions_enemy_turn = { Interrupt_X = policy } is the
+-- answer while the enemies act, plan.reactions (G.reactionPolicy) the one in the character's own turn. Sneak Attack has
+-- one charge that comes back as the character's turn ends, so a Sneak Attack on a riposte in the enemy's turn costs the
+-- next turn's; the plan says when the riposte may take it. Applied to the character at the start of each of its turns
+-- ("own") and as it asks to end its turn ("enemy"), read back, and kept in F.reactionPhase so each reaction seen is
+-- logged with the answer in force (G.judge fails the run on one that fired against it). Scripted runs only.
+-- -> { phase, policy = { Interrupt_X = policy }, verified }, or nil when the plan has no such answers.
+function G.reactionsPhase(F, phase)
+  local over = F and F.plan and F.plan.reactions_enemy_turn
+  if not F or F.manual or F.player or type(over) ~= "table" or next(over) == nil then return nil end
+  local known = {}
+  for _, k in ipairs(G.knownInterrupts(F.char)) do known[k] = true end
+  local want, pol = {}, {}
+  for k, p in pairs(over) do
+    if known[k] then
+      pol[k] = phase == "enemy" and (POLICY_FLAGS[p] and p or "never") or G.reactionPolicy(k, F.plan)
+      if pol[k] == "ask" then pol[k] = "never" end
+      want[k] = G.reactionFlags(pol[k])
+    end
+  end
+  setPrefs(F.char, want)
+  local back, ok = G.reactionsOf(F.char), true
+  for k, flags in pairs(want) do if not sameFlags(back[k] or {}, flags) then ok = false end end
+  F.reactionPhase = { phase = phase, policy = pol, verified = ok }
+  return F.reactionPhase
+end
 function G.reactionsRestore()
   local n = 0
   for u, own in pairs(G.savedReactions or {}) do
@@ -1732,7 +1758,11 @@ local function onReaction(who, interrupt)
   local R = G.rounds[#G.rounds]
   if R then
     R.reactions_seen = R.reactions_seen or {}
-    R.reactions_seen[#R.reactions_seen + 1] = { who = uuid(who), interrupt = interrupt, t = now() - G.t0 }
+    -- the turn-dependent answer in force (G.reactionsPhase), for the character's own reactions
+    local P = G.F and G.F.reactionPhase
+    local mine = P and G.F.char and uuid(who) == uuid(G.F.char)
+    R.reactions_seen[#R.reactions_seen + 1] = { who = uuid(who), interrupt = interrupt, t = now() - G.t0,
+      phase = mine and P.phase or nil, policy = mine and P.policy[interrupt] or nil }
   end
 end
 -- Who a fight's record follows: the character, its summons and the run's enemies.
@@ -2503,8 +2533,8 @@ function G.moveTarget(F, to)
   return best
 end
 -- A move step (a.move_to): walks there with the turn's movement (the shared F.moving wait, which charges the Movement
--- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails and counts as
--- an action not done, so a run without surveyed hide spots shows it.
+-- the engine did not), then records done (R.done[a.done_key]) or why not. A step with nowhere to go fails, and a failed
+-- planned step makes the run invalid (G.stepNotDone), so a run whose tactic never happened is no measurement.
 function G.moveStep(F, a, R, rec0)
   if rec0 then
     local m = rec0.move or {}
@@ -2541,6 +2571,12 @@ end
 -- F.pending until G.settle confirms or fails it.
 local function doAction(F, a, R, rec0)
   if a.requires and not R.done[a.requires] then
+    -- a step whose prerequisite was not needed this round is not needed either (the evade move without Disengage)
+    if (R.not_needed or {})[a.requires] then
+      R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
+        result = "not needed: no " .. a.requires .. " needed this round" }
+      return
+    end
     R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, result = "skipped: no " .. a.requires .. " this round",
       optional = a.optional }
     return
@@ -2558,6 +2594,10 @@ local function doAction(F, a, R, rec0)
     if not b or not dist(F.char, b) or dist(F.char, b) > G.REACH then
       R.actions[#R.actions + 1] = { spell = a.spell, why = a.why, optional = true,
         result = "not needed: the boss is not in reach" }
+      if a.done_key then
+        R.not_needed = R.not_needed or {}
+        R.not_needed[a.done_key] = true
+      end
       return
     end
   end
@@ -3066,11 +3106,20 @@ function G.outsideAttackers(dmg, me, enemies)
   return out, n
 end
 
+-- A planned step that was not carried out: neither done, nor optional, nor replaced by its fallback (alt), nor
+-- "not needed" (those are optional). The evade move with no spot to go to, a Disengage the engine refused, a step
+-- skipped because the step it needs failed. -> "spell (why): result", or nil.
+function G.stepNotDone(a)
+  if a.result == "done" or a.optional or tostring(a.result or ""):find("-> alt", 1, true) then return nil end
+  return string.format("%s (%s): %s", tostring(a.spell), tostring(a.why or "-"), tostring(a.result or "no result"))
+end
 -- Is the run a measurement? { valid, causes }. Invalid: ended early (turn never came, aborted, reset, prep failed,
 -- a reaction prompt), a reaction prompt the policy missed, a test character whose reactions could not be set, casts
--- outside the plan, an acting round in which no action was confirmed, set items that did not go on, a character
--- still encumbered when the fight started, or hits from creatures outside the run. A round in which the character
--- was down is no idle round: it is counted in results.downed and the summary instead.
+-- outside the plan, an acting round in which no action was confirmed, a planned step not carried out (G.stepNotDone),
+-- a reaction of the character that fired against the turn's answer (G.reactionsPhase) or a turn whose answers could
+-- not be set, set items that did not go on, a character still encumbered when the fight started, or hits from
+-- creatures outside the run. A round in which the character was down is no idle round: it is counted in
+-- results.downed and the summary instead.
 function G.judge(rounds, why, results, opts)
   local causes = {}
   if why and why ~= "rounds done" and why ~= "downed" then causes[#causes + 1] = "ended: " .. why end
@@ -3090,6 +3139,31 @@ function G.judge(rounds, why, results, opts)
     for _, f in ipairs(R.cast_faults or {}) do
       causes[#causes + 1] = string.format("round %s, %s: %s", tostring(f.r or R.r), tostring(f.spell), tostring(f.why))
     end
+  end
+  if not (opts and opts.player) then
+    for _, R in ipairs(rounds or {}) do
+      for _, a in ipairs(R.downed and {} or R.actions or {}) do
+        local nd = G.stepNotDone(a)
+        if nd then causes[#causes + 1] = string.format("round %s: planned step not done: %s", tostring(R.r), nd) end
+      end
+    end
+  end
+  local me0 = opts and opts.me
+  for _, R in ipairs(rounds or {}) do
+    for _, x in ipairs(R.reactions_seen or {}) do
+      if x.policy == "never" and (not me0 or x.who == me0) then
+        causes[#causes + 1] = string.format("round %s: %s fired in the %s turn against the plan's answer \"never\"",
+          tostring(R.r), tostring(x.interrupt), tostring(x.phase))
+      end
+    end
+    for _, ph in ipairs(R.reaction_phases or {}) do
+      if ph.verified == false then
+        causes[#causes + 1] = string.format("round %s: reactions for the %s turn not set", tostring(R.r), ph.phase)
+      end
+    end
+  end
+  if results.reaction_phase_start and results.reaction_phase_start.verified == false then
+    causes[#causes + 1] = "reactions for the enemies' turn not set at the start"
   end
   local smiss = (results.summary or {}).summon_misses or 0
   if smiss > 0 then causes[#causes + 1] = smiss .. " summon attack(s) refused or never seen" end
@@ -3324,6 +3398,8 @@ local function roundStart(F)
     end
   end
   G.rounds[#G.rounds + 1] = R
+  local ph = G.reactionsPhase(F, "own")
+  if ph then R.reaction_phases = { { phase = ph.phase, verified = ph.verified } } end
   -- the queue is planned on the first act step, once the engine has refilled the turn's resources
   F.queue, F.qi, F.pending, F.moving = ((F.manual or F.player) and {} or nil), 0, nil, nil
 end
@@ -3919,6 +3995,9 @@ function G.start(F)
         -- lanes: the lane runner parked the rest of the party; each lane sets its own character's reactions
         G.results.parked = F.lane and G.LANES and G.LANES.parkedCount or G.parkOthers(u, A and A.park)
         G.results.reactions = G.reactionsApply(F.plan, F.lane and { uuid(u) } or nil)
+        -- the enemies may act first: their turn's answers until the character's first turn starts
+        local ph = G.reactionsPhase(F, "enemy")
+        if ph then G.results.reaction_phase_start = { phase = ph.phase, verified = ph.verified } end
         -- The same setup for both sets of a pair, with the game's rules: Attacks of Opportunity stay on (a cast that
         -- needs a step moves first, G.castSpot) and the sheet's own hit points (a down ends the run, G.step).
         G.results.ignore_leave_attack_range = false
@@ -4132,6 +4211,10 @@ function G.roundFault(F, R)
     return string.format("round %d: %d planned cast(s) refused or never seen", R.r, R.cast_misses)
   end
   if #(R.rider_misses or {}) > 0 then return string.format("round %d: rider missing", R.r) end
+  for _, a in ipairs(R.actions or {}) do
+    local nd = G.stepNotDone(a)
+    if nd then return string.format("round %d: planned step not done: %s", R.r, nd) end
+  end
   if (F.S or {}).char_acts ~= false and not (R.done and (R.done.action or R.done.item)) then
     return string.format("round %d: no action confirmed", R.r)
   end
@@ -4430,6 +4513,11 @@ function G.step(F, t)
     end
     local fault = R and G.roundFault(F, R)
     if fault then return finish(F, fault) end
+    local ph = G.reactionsPhase(F, "enemy")
+    if ph and R then
+      R.reaction_phases = R.reaction_phases or {}
+      R.reaction_phases[#R.reaction_phases + 1] = { phase = ph.phase, verified = ph.verified }
+    end
     G.endTurn(F.char)
     G.endIdleTurns(F)
     if R and R.tm then R.tm.end_asked = t - G.t0 end

@@ -71,10 +71,12 @@ NUKE_ROUNDS = 0.6                               # at most this share of the roun
 # nothing in the loadout applies never occurs (other_status) and Sneak Attack needs the roll's own Advantage (allies).
 SCENARIOS = {"day": dict(rounds=ROUNDS, fights=FIGHTS, sr_windows=SR_WINDOWS, enemies=ENEMIES, enemy_hp=None,
                          stealth=True, attacks_only=False, dmg_scale=1.0, target_hp_pct=None, melee_contact=0.0,
-                         slot_share=(2 / 3, 0.5), nuke_rounds=0.6, other_status=0.1, allies=True),
+                         slot_share=(2 / 3, 0.5), nuke_rounds=0.6, other_status=0.1, allies=True,
+                         last_enemy_turn=True),
              "boss": dict(rounds=16, fights=1, sr_windows=1, enemies=1, enemy_hp=5000.0, stealth=False,
                           attacks_only=True, dmg_scale=0.5, target_hp_pct=99, melee_contact=15 / 16,
-                          slot_share=(1.0, 1.0), nuke_rounds=1.0, other_status=0.0, allies=False)}
+                          slot_share=(1.0, 1.0), nuke_rounds=1.0, other_status=0.0, allies=False,
+                          last_enemy_turn=False)}
 ALLIES = {"on": True}                           # the scenario in force has allies (model.scenario swaps it)
 # Ranged attacks made with an enemy within melee reach roll with Disadvantage, from two rules: the attacker is Threatened
 # (FLANKED) and the target is within 3 m (seen in game: from round 2 of a boss fight no hit carried the Advantage flag
@@ -92,6 +94,21 @@ HIDE_LEGAL = False
 # reach): a day's fights, model assumption; the boss walks up in round 1 and stays in reach (melee_contact).
 REACH_SHARE = {"day": 0.5, "boss": SCENARIOS["boss"]["melee_contact"]}
 REACH = {"share": REACH_SHARE["day"]}           # the share in force (model.scenario swaps it)
+# Whether the enemies get a turn after the character's last one (model.scenario swaps it): the gauntlet's boss fight
+# ends as the character's 16th turn ends, so the reactions of the enemy's turns come in one turn fewer than the turns
+# the enemy spends in reach (reach_turns)
+ENEMY_TURNS = {"last": True}
+# Sneak Attack's one charge (SneakAttack_Charge) comes back as the character's turn ends: seen in game, Sneak Attack
+# spent on a reaction in the enemy's turn is missing in the character's next turn, and spent in the character's turn
+# it is there again for the enemy's. The policy for Sneak Attack on a reaction in the enemy's turn (the gauntlet's
+# plan.reactions_enemy_turn): None = the better one per evaluation (reaction_sneak), else "always" / "crit" / "never".
+SNEAK_REACTION = {"policy": None}
+
+
+def reach_turns(reach):
+    """The share of the rounds with an enemy turn in reach that is played: reach, less the turn after the last round
+    when the scenario has none (the enemy is in reach then too)."""
+    return reach if ENEMY_TURNS["last"] else max(0.0, reach - 1.0 / ROUNDS)
 
 # ----------------------------------------------------------------------------------- encounter assumptions
 # Everything situational is an uptime taken from these tables (model assumptions, not game data; the game data
@@ -1136,14 +1153,25 @@ def eval_event(st, ev, boosts, names, E, target_save_pen, adv_extra=0.0, dis_ext
         pca = pca + max(0.0, pha - pca) * mt["autocrit"]
         crit_extra = dice + mt["crit_dice"] * ((sides + 1) / 2 if sides else 0)
         val = ph * f2 + pc * crit_extra
+        # the hit chance with Sharpshooter's penalty off (True Strike from a riposte, true_strike_gain)
+        pen = ss_penalty(st) if (tog and "Sharpshooter_AllIn" in st.class_passives and
+                                 ev.get("attack_type") in ("RangedWeaponAttack", "RangedOffHandWeaponAttack")) else 0
+        ph_ts = mech.p_hit_mix(b2 + pen, E["ac"], a_net, d_net) if pen else ph
         if best is None or val > best[0]:
-            best = (val, ph, pc, tog, a_net * pha, a_net * pca)
+            best = (val, ph, pc, tog, a_net * pha, a_net * pca, f2, ph_ts)
     st._toggle = {}
-    val, ph, pc, tog, ph_adv, pc_adv = best
+    val, ph, pc, tog, ph_adv, pc_adv, per_hit, ph_ts = best
     val += ev.get("any_dmg", 0.0)            # hit or miss (a thrown weapon's explosion)
     out.update(dmg=n * val, ph=ph, pc=pc, hits=n * ph, crits=n * pc, dmg_instances=n * ph, toggle=tog, ph_adv=ph_adv,
-               pc_adv=pc_adv)
+               pc_adv=pc_adv, per_hit=per_hit, ph_ts=ph_ts)
     return out
+
+
+def ss_penalty(st):
+    """Sharpshooter All In's attack roll penalty (its RollBonus(RangedWeaponAttack, -N) in the game stats): N."""
+    m = re.search(r"RollBonus\(RangedWeaponAttack,\s*-(\d+)\)", (st.W.stats.get("Sharpshooter_AllIn") or {}).get("Boosts")
+                  or "")
+    return int(m.group(1)) if m else 0
 
 
 def triggers_of(st):
@@ -1406,6 +1434,7 @@ def scenario(name):
              "ENEMY_DMG_SCALE", "SLOT_SHARE", "NUKE_ROUNDS")
     keep, keep_hp, keep_tg, keep_pct = {k: g[k] for k in names}, dict(ENEMY_HP), mech.MAX_TARGETS, mech.TARGET_HP_PCT
     keep_mc, keep_reach, keep_other, keep_allies = mech.MELEE_CONTACT, REACH["share"], mech.OTHER_STATUS_P, ALLIES["on"]
+    keep_last = ENEMY_TURNS["last"]
     kept = [dict(c) for c in _caches()]
     s = SCENARIOS[name]
     g.update(ROUNDS=s["rounds"], FIGHTS=s["fights"], SR_WINDOWS=s["sr_windows"],
@@ -1420,6 +1449,7 @@ def scenario(name):
     mech.OTHER_STATUS_P = s["other_status"]
     ALLIES["on"] = s["allies"]
     REACH["share"] = REACH_SHARE[name]
+    ENEMY_TURNS["last"] = s["last_enemy_turn"]
     for c in _caches():
         c.clear()
     try:
@@ -1433,6 +1463,7 @@ def scenario(name):
         mech.OTHER_STATUS_P = keep_other
         ALLIES["on"] = keep_allies
         REACH["share"] = keep_reach
+        ENEMY_TURNS["last"] = keep_last
         for c, k in zip(_caches(), kept):
             c.clear()
             c.update(k)
@@ -1545,18 +1576,21 @@ def _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec
     # ally next to the target; its dice double on a critical hit
     rogue = st.classes.get("Rogue", 0)
     sa = 0.0
+    sneak = None
     if rogue and st.plan["mode"] != "caster":
         sad = math.ceil(rogue / 2) * 3.5
-        elig = [(ev, r) for ev, r in zip(evs, results) if ev["kind"] in ("weapon",) and
-                (ev.get("ranged") or "Finesse" in ((W.items.get(st.loadout.get(ev["slot"]) or "") or {}).get("weapon")
-                                                   or {}).get("properties", []))]
+        elig = [(ev, r) for ev, r in zip(evs, results) if ev["kind"] in ("weapon",) and sneak_weapon(st, ev)]
+        # with allies: Advantage or an ally in 0.8 of the turns (model rule); alone: the rolls' own net Advantage
+        hk, ck, share = ("ph", "pc", 0.8) if ALLIES["on"] else ("ph_adv", "pc_adv", 1.0)
+        sneak = dict(sad=sad, hk=hk, ck=ck, share=share)
         if elig:
-            # with allies: Advantage or an ally in 0.8 of the turns (model rule); alone: the rolls' own net Advantage
-            hk, ck, share = ("ph", "pc", 0.8) if ALLIES["on"] else ("ph_adv", "pc_adv", 1.0)
             p_any = 1 - math.prod((1 - r[hk]) ** ev["n"] for ev, r in elig)
             h_ = sum(r[hk] * ev["n"] for ev, r in elig)
             crit_given_hit = sum(r[ck] * ev["n"] for ev, r in elig) / h_ if h_ else 0.0
-            sa = share * p_any * sad * (1 + crit_given_hit)
+            # Sneak Attack's damage is a hit of its own for the weapon's on-damage passives (sneak_rider)
+            rider = sum(r[hk] * ev["n"] * sneak_rider(st, ev, names) for ev, r in elig) / h_ if h_ else 0.0
+            sa = share * p_any * (sad * (1 + crit_given_hit) + rider)
+            sneak["dice_frac"] = sad * (1 + crit_given_hit) / (sad * (1 + crit_given_hit) + rider)
             dmg += sa
     # marks / smites / superiority
     if special.get("mark"):
@@ -1604,12 +1638,96 @@ def _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec
             evs.append(rx[0])
             results.append(rx[1])
     rx = item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt)
+    policy = None
     if rx:
+        # Sneak Attack on the riposte takes the charge of the character's next turn (SNEAK_REACTION); a riposte hit's
+        # True Strike lifts Sharpshooter's penalty from the next turn's first attack action
+        lost, policy = reaction_sneak(st, rx, sneak, sa, names)
+        gain, gain_hits = true_strike_gain(st, rx, evs, results)
+        sa -= lost
+        rx[1]["dmg"] += gain - lost
+        rx[1]["ts_gain"], rx[1]["ts_hits"], rx[1]["sneak_lost"] = gain, gain_hits, lost
         dmg += rx[1]["dmg"]
         offence += rx[1]["dmg"]
         evs.append(rx[0])
         results.append(rx[1])
-    return Result(st, offence, dmg, ctrl, dur, evs, results, extra, sa, tgt, detail)
+    # the parts count Sneak Attack's own damage (its dice), as the game's log shows it: a passive it sets off is apart
+    res = Result(st, offence, dmg, ctrl, dur, evs, results, extra, sa * ((sneak or {}).get("dice_frac") or 1.0), tgt,
+                 detail)
+    res.sneak_policy = policy
+    return res
+
+
+def sneak_weapon(st, ev):
+    """Can Sneak Attack ride on this weapon event: a ranged weapon or a finesse one."""
+    return bool(ev.get("ranged") or "Finesse" in ((st.W.items.get(st.loadout.get(ev.get("slot")) or "") or {})
+                                                  .get("weapon") or {}).get("properties", []))
+
+
+def sneak_rider(st, ev, names):
+    """Damage a Sneak Attack from this weapon event adds beyond its dice: the weapon's own on-damage passives that need
+    an attack with the weapon (AttackedWithPassiveSourceWeapon) fire again on Sneak Attack's damage (seen in game:
+    Crimson Mischief's Vicious, a second 7 after the Sneak Attack row on every riposte). Sneak Attack needs net
+    Advantage, so an Advantage condition holds."""
+    out = 0.0
+    for t, slot, _origin in triggers_of(st):
+        if slot != ev.get("slot") or "OnDamage" not in t["ctx"] or "AttackedWithPassiveSourceWeapon" not in t["cond"]:
+            continue
+        c = mech.Ctx(st, dict(ev, _item_slot=slot, crit_given_hit=0.0, adv=1.0, hit_flag=1.0, kill_p=0.0), "trigger")
+        p = mech.cond_p(t["cond"], c)
+        for cond, name, args in mech.functor_list(t["functors"]):
+            if name == "DealDamage" and args and args[0].upper() not in ("SELF", "TARGET"):
+                out += p * (mech.cond_p(cond, c) if cond else 1.0) * mech.avg_expr(args[0], names)
+    return out
+
+
+def reaction_sneak(st, rx, sneak, sa_own, names):
+    """Sneak Attack on a reaction in the enemy's turn (the weapon riposte), with the one charge shared with the
+    character's turn: a spend in the enemy's turn leaves the character's next turn without it. -> (own-turn Sneak
+    Attack damage lost per round, policy). Adds the reaction's Sneak Attack to rx's result ("sneak", "dmg"). The
+    policy is SNEAK_REACTION's, or the better one: spend on a hit (always) when the hit's Sneak Attack is worth more
+    than the next turn's (sa_own a turn), on a critical hit only (crit) when only its doubled dice are, else never."""
+    ev, r = rx
+    if not sneak or not sneak_weapon(st, dict(ev, kind="weapon")):
+        return 0.0, None
+    n = ev.get("n") or 0.0
+    hk, ck, share = sneak["hk"], sneak["ck"], sneak["share"]
+    p_hit, p_crit = share * r.get(hk, 0.0), share * r.get(ck, 0.0)
+    if n <= 0 or p_hit <= 0:
+        return 0.0, None
+    rider = sneak_rider(st, ev, names)
+    v_hit, v_crit = sneak["sad"] + rider, 2 * sneak["sad"] + rider
+    policy = SNEAK_REACTION["policy"]
+    if policy is None:
+        policy = "always" if v_hit > sa_own else "crit" if v_crit > sa_own else "never"
+    spend_hit, spend_crit = policy == "always", policy in ("always", "crit")
+    spends = n * ((p_hit - p_crit) * spend_hit + p_crit * spend_crit)
+    gain = n * ((p_hit - p_crit) * spend_hit * v_hit + p_crit * spend_crit * v_crit)
+    r["sneak"] = n * ((p_hit - p_crit) * spend_hit + 2 * p_crit * spend_crit) * sneak["sad"]
+    r["dmg"] += gain
+    return spends * sa_own, policy
+
+
+def true_strike_gain(st, rx, evs, results):
+    """A riposte that hits puts True Strike on the enemy when its spell does (ApplyStatus(TRUE_STRIKE) on success); seen
+    in game, both rolls of the character's next first attack action (the main hand and its off-hand half) then roll
+    without Sharpshooter's penalty, its +10 kept. -> (damage per round, extra landed rolls per round)."""
+    ev, r = rx
+    S = st.W.stats
+    props = (S.get(ev.get("spell_id") or "") or {}).get("Properties") or ""
+    m = re.search(r"UseSpell\(\w+,\s*(\w+)", props)
+    if not m or "ApplyStatus(TRUE_STRIKE," not in ((S.get(m.group(1)) or {}).get("SpellSuccess") or "").replace(" ", ""):
+        return 0.0, 0.0
+    rate = (ev.get("n") or 0.0) * r.get("ph", 0.0)
+    gain = hits = 0.0
+    for name in ("attack", "off-hand shot"):
+        er = next(((e, x) for e, x in zip(evs, results) if e.get("name") == name and (e.get("n") or 0) > 0), None)
+        if er and er[1].get("ph_ts", 0.0) > er[1].get("ph", 0.0):
+            # one roll of this event a turn (the off-hand half only while the turn pays it: at most its rolls a turn)
+            k = min(1.0, er[0]["n"])
+            hits += rate * k * (er[1]["ph_ts"] - er[1]["ph"])
+            gain += rate * k * (er[1]["ph_ts"] - er[1]["ph"]) * er[1].get("per_hit", 0.0)
+    return gain, hits
 
 
 def _buff_spells(st):
@@ -1699,7 +1817,7 @@ def item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt):
     ev = special.get("riposte_ev")
     if not ev:
         return None
-    reach = 1.0 if st.plan["mode"] == "melee" else REACH["share"]
+    reach = reach_turns(1.0 if st.plan["mode"] == "melee" else REACH["share"])
     taken = sum(e.get("n") or 0.0 for e in evs if e.get("name") == "Riposte")
     n = max(0.0, min(1.0 - taken, dur.get("enemy_attacks", 0.0) * reach * (1 - dur.get("enemy_ph", 1.0))))
     if n <= 0:
@@ -1721,7 +1839,7 @@ def wrath_event(st, E, boosts, names, tgt, dur):
     interrupts with the gear's boosts. -> (event, result) or None"""
     if "WrathOfTheStorm" not in st.class_passives:
         return None
-    reach = 1.0 if st.plan["mode"] == "melee" else REACH["share"]
+    reach = reach_turns(1.0 if st.plan["mode"] == "melee" else REACH["share"])
     n = min(1.0, dur.get("enemy_attacks", 0.0) * reach * dur.get("enemy_ph", 0.0))
     if n <= 0:
         return None
@@ -1929,13 +2047,28 @@ def auto_save(W, iid):
 
 
 def attack_parts(evs, results, dmg, sa):
-    """Per round, what the gauntlet compares with the game part by part: attack rolls, landed hits (critical ones
-    included), critical hits, their rates, the share of rolls with net Advantage / Disadvantage (both at once cancel)
-    and with any Disadvantage (an enemy in reach of a ranged attack), all damage per landed
-    hit (with and without Sneak Attack) and Sneak Attack's damage. Save spells, automatic damage and an item spell the
-    plan does not use make no attack roll and are left out of the counts, not of the damage."""
+    """Per round, what the gauntlet compares with the game part by part, the character's own turn and its reactions
+    in the enemy's turn apart (split): in its own turn the attack rolls, landed hits (critical ones included),
+    critical hits, their rates, the share of rolls with net Advantage / Disadvantage (both at once cancel) and with any
+    Disadvantage (an enemy in reach of a ranged attack), the turn's damage per landed hit (with and without Sneak
+    Attack) and Sneak Attack's damage (sa: the own turn's); for the reactions (react_*) their attack rolls, landed
+    hits, critical hits, damage and Sneak Attack, and own_dpr = the damage per round less the reactions'. A riposte's
+    True Strike gain lands in the next own turn: its damage and landed rolls count there. Save spells, automatic
+    damage and an item spell the plan does not use make no attack roll and are left out of the counts, not of the
+    damage."""
     att = hits = crits = adv = dis = dis_any = 0.0
+    r_att = r_hits = r_crits = r_dmg = r_sneak = 0.0
     for ev, r in zip(evs, results):
+        if ev.get("kind") == "reaction":
+            ts = r.get("ts_gain") or 0.0
+            r_dmg += (r.get("dmg") or 0.0) - ts + (r.get("sneak_lost") or 0.0)
+            r_sneak += r.get("sneak") or 0.0
+            hits += r.get("ts_hits") or 0.0
+            if r.get("ph"):
+                r_att += ev.get("n") or 0.0
+                r_hits += r.get("hits") or 0.0
+                r_crits += r.get("crits") or 0.0
+            continue
         if not r.get("ph") or ev.get("dropped"):
             continue
         tg = 1
@@ -1950,12 +2083,15 @@ def attack_parts(evs, results, dmg, sa):
         adv += (ev.get("n") or 0.0) * tg * (r.get("adv_net") or 0.0)
         dis += (ev.get("n") or 0.0) * tg * (r.get("dis_net") or 0.0)
         dis_any += (ev.get("n") or 0.0) * tg * (r.get("dis_any") or 0.0)
-    return {"attacks": round(att, 3), "hits": round(hits, 3), "crits": round(crits, 3),
+    own = dmg - r_dmg
+    return {"split": True, "attacks": round(att, 3), "hits": round(hits, 3), "crits": round(crits, 3),
             "hit_rate": round(hits / att, 4) if att else None, "crit_rate": round(crits / att, 4) if att else None,
             "adv_rate": round(adv / att, 4) if att else None, "dis_rate": round(dis / att, 4) if att else None,
             "dis_any_rate": round(dis_any / att, 4) if att else None,
-            "dmg_per_hit": round(dmg / hits, 2) if hits else None,
-            "dmg_per_hit_no_sneak": round((dmg - sa) / hits, 2) if hits else None, "sneak": round(sa, 2)}
+            "dmg_per_hit": round(own / hits, 2) if hits else None,
+            "dmg_per_hit_no_sneak": round((own - sa) / hits, 2) if hits else None, "sneak": round(sa, 2),
+            "own_dpr": round(own, 2), "react_attacks": round(r_att, 3), "react_hits": round(r_hits, 3),
+            "react_crits": round(r_crits, 3), "react_dmg": round(r_dmg, 2), "react_sneak": round(r_sneak, 2)}
 
 
 class Result:

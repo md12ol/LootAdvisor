@@ -15,7 +15,8 @@ The method (one boss fight of 16 rounds, fixed repeats, one statistic, the model
 - --report compares each set with the model's BOSS scenario (expect.boss from plan.py, not the day numbers): first
   part by part, counted per attack roll (attack rolls, landed rolls and critical hits per round, hit and critical
   rates, rolls with net Advantage and with Disadvantage, damage per landed roll with and without Sneak Attack, the
-  riders), then damage per round. A part is flagged when the model's value lies outside the game's 95% interval
+  riders) in the character's own turn, then its reactions in the enemies' turns (a riposte: its rolls, landed rolls,
+  critical hits, damage and Sneak Attack per round) apart, then damage per round (own turn and in all). A part is flagged when the model's value lies outside the game's 95% interval
   (exact binomial for rates, Student t for means); the +-10% band around the model is shown beside it. One statistic
   for the sets: the 95% t-interval of the mean of the run means (on their logarithms), per side and for the ratio of a
   pair's two sides. Runs from the popup's Manual mode
@@ -921,13 +922,77 @@ def _round_rolls(rec):
     return rs
 
 
+GAME_ROLL_CAUSES = ("Attack", "Offhand")
+REACTION_MERGE_MS = 150    # damage rows this close after a roll's first row are that roll's (gauntlet.lua ROLL_MERGE_MS)
+REACTION_HIT_MS = (300, 100)   # a hit-log row up to this much before / after a roll's first row is its roll's
+
+
+def reaction_parts(rec):
+    """The character's reactions in the enemies' turns, from the record's damage and hit rows: every row the character
+    dealt after its own turn was released (the round's tm.released) or before its first turn (round 0). Attack rolls
+    the way gauntlet.lua counts its own turn's (G.rollTally): a row of cause Attack / Offhand starts a roll unless it
+    falls within REACTION_MERGE_MS of the last roll's first row, a 0-damage one is a miss; a roll is a critical hit when
+    a hit-log row of the character near it says so; its Sneak Attack is its rows more than 20 ms after its first ones
+    when a Sneak Attack reaction of the character came in that enemy turn. Per round lists, the damage being all the
+    character's rows in those turns (the riders of cause Passive too). -> {rounds: {r: {n, landed, crit, dmg,
+    sneak}}} or None when the record cannot tell the turns apart (no tm.released) or the character's rows."""
+    rounds = [r for r in rec.get("rounds") or [] if isinstance(r, dict)]
+    rel = {r.get("r"): (r.get("tm") or {}).get("released") for r in rounds}
+    if not rounds or not all(rel.get(r.get("r")) is not None or r is rounds[-1] for r in rounds):
+        return None
+    dmg = rec.get("dmg") or []
+    # the character: the source of the damage rows its own turns' rolls came from
+    own_t = {(r.get("r"), p.get("t")) for r in rounds for p in ((r.get("rolls") or {}).get("per_roll") or [])}
+    srcs = [d.get("source") for d in dmg if (d.get("r"), d.get("t")) in own_t and d.get("source")]
+    if not srcs:
+        return None
+    me = max(set(srcs), key=srcs.count)
+
+    def enemy_turn(d):
+        r = d.get("r")
+        return r == 0 or (rel.get(r) is not None and (d.get("t") or 0) > rel[r])
+    rows = sorted((d for d in dmg if d.get("source") == me and d.get("target") != me and enemy_turn(d)),
+                  key=lambda d: d.get("t") or 0)
+    sneak_t = {}
+    for r in rounds:
+        for x in r.get("reactions_seen") or []:
+            if x.get("who") == me and "SneakAttack" in str(x.get("interrupt")) and \
+                    rel.get(r.get("r")) is not None and (x.get("t") or 0) > rel[r.get("r")]:
+                sneak_t.setdefault(r.get("r"), []).append(x.get("t") or 0)
+    hits = [h for h in rec.get("hits") or [] if h.get("source") == me]
+    out = {}
+    last = None
+    for d in rows:
+        R = out.setdefault(d.get("r"), {"n": 0, "landed": 0, "crit": 0, "dmg": 0, "sneak": 0})
+        R["dmg"] += d.get("amount") or 0
+        if d.get("cause") not in GAME_ROLL_CAUSES:
+            continue
+        t, amt = d.get("t") or 0, d.get("amount") or 0
+        if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:
+            if amt > 0 and t - last["t"] > 20 and sneak_t.get(d.get("r")):
+                R["sneak"] += amt
+            continue
+        last = {"r": d.get("r"), "t": t}
+        R["n"] += 1
+        if amt > 0:
+            R["landed"] += 1
+            if any(h.get("crit") and -REACTION_HIT_MS[1] <= t - (h.get("t") or 0) <= REACTION_HIT_MS[0] for h in hits):
+                R["crit"] += 1
+        else:
+            last = None
+    return {"rounds": out}
+
+
 def game_parts(rec):
     """One run's parts as the report compares them, counted per attack roll (a two-weapon shot rolls twice): rolls,
     landed rolls (critical hits included), critical hits, rolls with Advantage net of Disadvantage and with
     Disadvantage (of the rolls whose state the hit log gave: landed ones only so far, which leans towards
     Advantage), the character's own damage (summons left out), Sneak
     Attack's damage, the riders, and the samples the intervals are taken over: damage per landed roll and per round.
-    A record from before rolls were counted falls back to its per-action outcomes, with no samples but the rounds'."""
+    The rolls are the character's own turn's (gauntlet.lua counts them as the turn ends); its reactions in the enemies'
+    turns are counted apart (reaction_parts: react_* per round) and their damage taken out of the own turn's ("own"),
+    so each part compares like with like with the model's split (model.attack_parts). A record from before rolls were
+    counted falls back to its per-action outcomes, with no samples but the rounds'."""
     res = rec.get("results") or {}
     s = res.get("summary") or {}
     rounds = len(s.get("dealt") or []) or s.get("rounds") or 0
@@ -935,6 +1000,28 @@ def game_parts(rec):
     summon = list(s.get("summon_dealt") or [])
     own_r = [d - (summon[i] if i < len(summon) else 0) for i, d in enumerate(dealt)]
     own = sum(dealt) - (s.get("summon_damage") or 0)
+    total = own
+    rp = reaction_parts(rec)
+    react = {"split": False}
+    if rp is not None:
+        order0 = [r.get("r") for r in rec.get("rounds") or [] if isinstance(r, dict)]
+        per_r = [rp["rounds"].get(r) or {} for r in order0]
+        # an enemy turn before round 1 counts with round 1
+        pre = rp["rounds"].get(0) or {}
+        if per_r and pre:
+            per_r[0] = {k: (per_r[0].get(k) or 0) + (pre.get(k) or 0) for k in ("n", "landed", "crit", "dmg", "sneak")}
+        react = {"split": True, "react_n": sum(x.get("n") or 0 for x in per_r),
+                 "react_landed": sum(x.get("landed") or 0 for x in per_r),
+                 "react_crit": sum(x.get("crit") or 0 for x in per_r),
+                 "react_dmg": sum(x.get("dmg") or 0 for x in per_r),
+                 "react_sneak": sum(x.get("sneak") or 0 for x in per_r),
+                 "react_n_round": [x.get("n") or 0 for x in per_r],
+                 "react_landed_round": [x.get("landed") or 0 for x in per_r],
+                 "react_crit_round": [x.get("crit") or 0 for x in per_r],
+                 "react_dmg_round": [x.get("dmg") or 0 for x in per_r],
+                 "react_sneak_round": [x.get("sneak") or 0 for x in per_r]}
+        own -= react["react_dmg"]
+        own_r = [d - (per_r[i].get("dmg") or 0 if i < len(per_r) else 0) for i, d in enumerate(own_r)]
     hr = res.get("hit_riders") or {}
     hm, sa = hr.get("hunters_mark") or {}, hr.get("sneak_attack") or {}
     out = {"rounds": rounds, "own": own, "dpr": s.get("dpr") or 0.0, "hm_hits": hm.get("hits") or 0,
@@ -942,7 +1029,8 @@ def game_parts(rec):
            # a record from before the per-turn count has turns with Advantage only, under "turns"
            "sa_turns": sa.get("adv_turns", sa.get("turns")) or 0,
            "sa_rider_adv": sa.get("rider_adv", sa.get("rider")) or 0,
-           "runs": 1, "run_dpr": [own / rounds if rounds else 0.0], "own_round": own_r}
+           "runs": 1, "run_dpr": [total / rounds if rounds else 0.0], "own_round": own_r, "total": total,
+           "total_round": [d - (summon[i] if i < len(summon) else 0) for i, d in enumerate(dealt)], **react}
     rr = _round_rolls(rec)
     if rr is None:
         a = s.get("attacks") or {}
@@ -993,6 +1081,7 @@ def pooled(parts):
     r = t.get("rounds") or 0
     att, landed, known = t.get("attacks") or 0, t.get("landed") or 0, t.get("known") or 0
     own, sneak = t.get("own") or 0, t.get("sneak_dmg") or 0
+    split = bool(t.get("split"))
     v = {"attacks": att / r if r else None, "hits": landed / r if r else None,
          "crits": (t.get("crits") or 0) / r if r else None,
          "hit_rate": landed / att if att else None, "crit_rate": (t.get("crits") or 0) / att if att else None,
@@ -1003,8 +1092,13 @@ def pooled(parts):
          "sneak": sneak / r if r and t.get("per_roll") else None,
          "hm_share": t["hm_rider"] / t["hm_hits"] if t.get("hm_hits") else None,
          "sa_share": t["sa_rider_adv"] / t["sa_turns"] if t.get("sa_turns") else None,
-         "dpr": own / r if r else None,
+         "dpr": (t.get("total") or 0) / r if r else None,
+         "own_dpr": own / r if r and split else None,
+         "split": split,
          "sa_counts": (t.get("sa_rider") or 0, t.get("sa_turns") or 0, t.get("sa_all_turns") or 0)}
+    for key in ("n", "landed", "crit", "dmg", "sneak"):
+        v["react_" + {"n": "attacks", "landed": "hits", "crit": "crits"}.get(key, key)] = \
+            (t.get("react_" + key) or 0) / r if r and split else None
     ci = {}
     if att:
         ci["hit_rate"] = binom_interval(landed, att)
@@ -1015,7 +1109,9 @@ def pooled(parts):
     ci["hm_share"] = binom_interval(t.get("hm_rider") or 0, t.get("hm_hits") or 0)
     ci["sa_share"] = binom_interval(t.get("sa_rider_adv") or 0, t.get("sa_turns") or 0)
     for key, sample in (("attacks", "n_round"), ("hits", "landed_round"), ("crits", "crit_round"),
-                        ("sneak", "sneak_round")):
+                        ("sneak", "sneak_round"), ("react_attacks", "react_n_round"),
+                        ("react_hits", "react_landed_round"), ("react_crits", "react_crit_round"),
+                        ("react_dmg", "react_dmg_round"), ("react_sneak", "react_sneak_round")):
         ci[key] = t_interval(xs.get(sample) or [])
     if landed and xs.get("landed_dmg"):
         # the damage of no roll (a status ticking, a surface) per landed roll, added to the rolls' own interval
@@ -1023,24 +1119,38 @@ def pooled(parts):
         ci["dmg_per_hit"] = _shifted(t_interval(xs["landed_dmg"]), extra)
         ci["dmg_per_hit_no_sneak"] = _shifted(t_interval(xs.get("landed_dmg_ns") or []), extra)
     runs = xs.get("run_dpr") or []
-    ci["dpr"] = t_interval(runs) if len(runs) >= 3 else t_interval(xs.get("own_round") or [])
+    ci["dpr"] = t_interval(runs) if len(runs) >= 3 else t_interval(xs.get("total_round") or xs.get("own_round") or [])
+    if split:
+        ci["own_dpr"] = t_interval(xs.get("own_round") or [])
     v["_ci"] = ci
     return v
 
 
-PARTS = [("attacks", "attack rolls per round", "attacks", "{:.2f}"),
-         ("hits", "landed rolls per round", "hits", "{:.2f}"),
-         ("crits", "critical hits per round", "crits", "{:.2f}"),
-         ("hit_rate", "hit rate (per roll)", "hit_rate", "{:.0%}"),
-         ("crit_rate", "critical hits per roll", "crit_rate", "{:.1%}"),
-         ("adv_rate", "rolls with net Advantage (logged rolls)", "adv_rate", "{:.0%}"),
-         ("dis_rate", "rolls with Disadvantage (logged rolls)", "dis_rate", "{:.0%}"),
-         ("dmg_per_hit", "damage per landed roll", "dmg_per_hit", "{:.1f}"),
-         ("dmg_per_hit_no_sneak", "damage per landed roll, no Sneak Attack", "dmg_per_hit_no_sneak", "{:.1f}"),
-         ("sneak", "Sneak Attack damage per round", "sneak", "{:.2f}"),
+PARTS = [("attacks", "own turn: attack rolls per round", "attacks", "{:.2f}"),
+         ("hits", "own turn: landed rolls per round", "hits", "{:.2f}"),
+         ("crits", "own turn: critical hits per round", "crits", "{:.2f}"),
+         ("hit_rate", "own turn: hit rate (per roll)", "hit_rate", "{:.0%}"),
+         ("crit_rate", "own turn: critical hits per roll", "crit_rate", "{:.1%}"),
+         ("adv_rate", "own turn: rolls with net Advantage (logged rolls)", "adv_rate", "{:.0%}"),
+         ("dis_rate", "own turn: rolls with Disadvantage (logged rolls)", "dis_rate", "{:.0%}"),
+         ("dmg_per_hit", "own turn: damage per landed roll", "dmg_per_hit", "{:.1f}"),
+         ("dmg_per_hit_no_sneak", "own turn: damage per landed roll, no Sneak Attack", "dmg_per_hit_no_sneak",
+          "{:.1f}"),
+         ("sneak", "own turn: Sneak Attack damage per round", "sneak", "{:.2f}"),
+         ("own_dpr", "own turn: damage per round", "own_dpr", "{:.1f}"),
+         ("react_attacks", "reactions: attack rolls per round", "react_attacks", "{:.2f}"),
+         ("react_hits", "reactions: landed rolls per round", "react_hits", "{:.2f}"),
+         ("react_crits", "reactions: critical hits per round", "react_crits", "{:.2f}"),
+         ("react_dmg", "reactions: damage per round", "react_dmg", "{:.2f}"),
+         ("react_sneak", "reactions: Sneak Attack damage per round", "react_sneak", "{:.2f}"),
          ("hm_share", "Hunter's Mark on landed hits", None, "{:.0%}"),
          ("sa_share", "Sneak Attack in turns with net Advantage", None, "{:.0%}"),
-         ("dpr", "damage per round (own)", "dpr", "{:.1f}")]
+         ("dpr", "damage per round (own turn and reactions)", "dpr", "{:.1f}")]
+# parts the model counts with the reactions in when its numbers come from before the split (no "split" in expect.boss):
+# not compared, the game's being the own turn's alone
+SPLIT_PARTS = {"attacks", "hits", "crits", "hit_rate", "crit_rate", "adv_rate", "dis_rate", "dmg_per_hit",
+               "dmg_per_hit_no_sneak", "sneak", "own_dpr", "react_attacks", "react_hits", "react_crits", "react_dmg",
+               "react_sneak"}
 
 
 def compare_parts(game, model, tol=PART_TOL):
@@ -1050,8 +1160,12 @@ def compare_parts(game, model, tol=PART_TOL):
     model x (1 +- tol), shown beside it. A part the model does not give is shown, not compared."""
     out = []
     ci_all = game.get("_ci") or {}
+    # like with like: both sides split into own turn and reactions, or neither compared
+    split = bool((model or {}).get("split")) and bool(game.get("split"))
     for key, label, mkey, _fmt in PARTS:
         g, m = game.get(key), (model or {}).get(mkey) if mkey else None
+        if key in SPLIT_PARTS and not split:
+            m = None
         ratio = g / m if g is not None and m else None
         ci = ci_all.get(key)
         band = ("in" if abs(ratio - 1) <= tol else "out") if ratio is not None else ""
@@ -1130,6 +1244,11 @@ def report_v2(a):
                     fmt = dict((k, f_) for k, _l, _m, f_ in PARTS)[key]
                     L.append(f"| {label} | {_f(fmt, g)} | {_ci(fmt, pci)} | {_f(fmt, m)} | {_f('{:.2f}', ratio)} | "
                              f"{_band(fmt, m)}{' (game ' + band + ')' if band else ''} | {flag} |")
+                if not (boss or {}).get("split") or not gp.get("split"):
+                    L.append("\nOwn-turn and reaction parts not compared: " + (
+                        "the model's numbers count the reactions with the own turn (a spec from before the split): "
+                        "re-run plan.py." if not (boss or {}).get("split") else
+                        "the record cannot tell the enemies' turns from the character's (no turn end times)."))
                 sa_n, sa_adv, sa_all = gp.get("sa_counts") or (0, 0, 0)
                 L.append(f"\nSneak Attack: {sa_n} trigger(s) / {sa_adv} turn(s) with net Advantage / {sa_all} turn(s). "
                          "OUTSIDE: the model's value is outside the game's 95% interval (exact binomial for rates, "

@@ -10,11 +10,16 @@ from the game stats (profile_from_spec). The search is exact, not sampled:
   with it; damage is carried as its first two moments (dice means and variances, every die doubled on a critical hit);
 - one turn: the attacks in order with a branch state (Sneak Attack spent, superiority dice spent, boss Frightened, Gaping
   Wound, Ensnaring Strike), so Sneak Attack lands once, on the first hit with net Advantage;
-- the boss's turn: it walks up and attacks unless Frightened or restrained; its miss gives the set's riposte reaction,
-  its hit can break concentration;
+- the boss's turn: it walks up and attacks unless Frightened or restrained (not in round 1: it starts too far away to
+  reach); its miss gives the set's riposte reaction, its hit can break concentration;
+- Sneak Attack's one charge (SneakAttack_Charge) comes back as the character's turn ends (seen in game: spent on the
+  riposte in the boss's turn, it is missing in the character's next turn; spent in the character's turn, it is there
+  again for the boss's), so a riposte that takes it costs the next turn's; the reaction policy (SNEAK_POLICIES) says
+  when the riposte may take it;
 - the fight: dynamic programming over (round, boss adjacent at the turn's start, superiority dice, Action Surge,
-  concentration, Gaping Wound, the once-per-rest item attacks, Dread Ambusher) for the largest expected total; the same
-  recursion carries the second moment, so the total's standard deviation is exact for the chosen policy.
+  concentration, Gaping Wound, the once-per-rest item attacks, Dread Ambusher, Sneak Attack's charge, True Strike from
+  the riposte) for the largest expected total; the same recursion carries the second moment, so the total's standard
+  deviation is exact for the chosen policy. The fight is the gauntlet's: it ends as the character's 16th turn ends.
 
 A strategy family limits what the turn may do with the boss in reach (melee, step away, stand and shoot) and what it
 may use; the search finds each family's best policy, and families are ranked by expected total.
@@ -27,6 +32,11 @@ import sys
 from dataclasses import dataclass, replace
 
 ROUNDS = 16
+# The reaction policy for Sneak Attack in the boss's turn (on the riposte), as the gauntlet sets it
+# (plan.reactions_enemy_turn for Interrupt_SneakAttack / Interrupt_SneakAttack_Critical): "always" (both fire, the
+# game's default), "crit" (only on a critical riposte), "never" (kept for the character's turn). The character's own
+# turn always uses it.
+SNEAK_POLICIES = ("always", "crit", "never")
 
 
 # ------------------------------------------------------------------------------------------------------- dice maths
@@ -118,7 +128,10 @@ class Profile:
     ensnare: bool = True            # Ensnaring Strike known
     ensnare_die: int = 6
     riposte: Weapon = None          # the set's reaction attack when an enemy's melee attack misses
-    riposte_sneak: bool = False     # Sneak Attack on the reaction attack (once per turn, the boss's turn)
+    riposte_sneak: str = "never"    # SNEAK_POLICIES: when the riposte may take Sneak Attack's charge
+    riposte_ts: bool = False        # a riposte that hits puts True Strike on the boss (TRUE_STRIKE): the first attack
+                                    # action of the character's next turn rolls without Sharpshooter's -5 (seen in
+                                    # game: +16 / +14 in place of +11 / +9 on both rolls of that action, the +10 kept)
     boss_ac: int = 19
     boss_save: int = 4
     boss_atk: int = 9
@@ -170,13 +183,16 @@ def profile_from_spec(spec, stats):
 
     mm, mo = weapon("MainHand", "main", False), weapon("OffHand", "off", False)
     rm, ro = weapon("Ranged", "main", True), weapon("RangedOff", "off", True)
-    riposte = None
+    riposte, riposte_ts = None, False
     off_sid = items.get("MeleeOffHand")
     for p in _passives(stats, off_sid, "off") if off_sid else []:
         for intr in re.findall(r"UnlockInterrupt\((\w+)\)", (stats.get(p) or {}).get("Boosts") or ""):
             props = (stats.get(intr) or {}).get("Properties") or ""
             if "IsMiss()" in ((stats.get(intr) or {}).get("Conditions") or "") and "UseSpell(" in props:
                 riposte = mm
+                m = re.search(r"UseSpell\(\w+,\s*(\w+)", props)
+                success = ((stats.get(m.group(1)) or {}).get("SpellSuccess") or "") if m else ""
+                riposte_ts = "ApplyStatus(TRUE_STRIKE," in success.replace(" ", "")
     ab = spec["sheet"]["abilities"]
     con = ab.get("CON", 10)
     for b in boosts:
@@ -209,7 +225,7 @@ def profile_from_spec(spec, stats):
         spell_dc=8 + prof + wis, maneuvers=maneuvers,
         pierce_melee="Target_PiercingThrust" in ((stats.get(items.get("MeleeMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
         pierce_ranged="Projectile_PiercingShot" in ((stats.get(items.get("RangedMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
-        ensnare=cl.get("Ranger", 0) >= 1, riposte=riposte,
+        ensnare=cl.get("Ranger", 0) >= 1, riposte=riposte, riposte_ts=riposte_ts,
         boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)), boss_atk=int(E.get("atk", 9)),
         char_ac=int(spec["expect"]["ac"]), conc_save=(con - 10) // 2 + save_bonus, boss_first=first)
 
@@ -227,6 +243,7 @@ class Attack:
     pierce: bool = False
     ensnare: bool = False
     if_no_ensnare: bool = False     # fired with the bonus action an Ensnaring Strike that missed left over
+    true_strike: bool = False       # a roll of the turn's first attack action after a riposte hit: no Sharpshooter -5
 
 
 @dataclass(frozen=True)
@@ -289,7 +306,16 @@ def build_attacks(P, plan, state):
     ba = P.bonus_actions - (1 if plan.mark else 0) - (1 if plan.mode == "leave" else 0)
     for j in range(max(0, ba)):
         out.append(Attack("off-hand", off, mode, if_no_ensnare=plan.ensnare and j == ba - 1))
-    return [replace(a, sharpshooter=_choose_ss(P, a.weapon, a.mode, a.precision, a.extra_dice)) for a in out]
+    if getattr(state, "ts", False):
+        # True Strike on the boss: both rolls of the first attack action (its main hand and the off-hand half the
+        # bonus action pays) roll without Sharpshooter's -5
+        first = next((i for i, a in enumerate(out) if a.label != "Dread Ambusher"), None)
+        half = next((i for i, a in enumerate(out) if a.label == "off-hand"), None)
+        for i in (first, half):
+            if i is not None:
+                out[i] = replace(out[i], true_strike=True)
+    return [replace(a, sharpshooter=bool(a.true_strike and a.weapon.ranged and P.sharpshooter) or
+                    _choose_ss(P, a.weapon, a.mode, a.precision, a.extra_dice)) for a in out]
 
 
 @dataclass(frozen=True)
@@ -297,6 +323,8 @@ class TurnStart:
     adjacent: bool
     conc: str                       # "" / "mark" / "ensnare" (the boss restrained)
     gaping: bool                    # Gaping Wound from the turn before is still on the boss
+    sneak: bool = True              # Sneak Attack's charge is there (not spent on the riposte in the boss's turn)
+    ts: bool = False                # True Strike on the boss from a riposte hit in the boss's turn
 
 
 def run_turn(P, plan, start):
@@ -305,7 +333,7 @@ def run_turn(P, plan, start):
     q_fright = save_fails(P.boss_save, P.maneuver_dc)
     q_gape = save_fails(P.boss_save, P.maneuver_dc + 2)
     q_snare = save_fails(P.boss_save, P.spell_dc)
-    states = {(False, 0, False, False, 0): (1.0, 0.0, 0.0)}
+    states = {(not start.sneak, 0, False, False, 0): (1.0, 0.0, 0.0)}
     marked0 = plan.mark or start.conc == "mark"
     for a in build_attacks(P, plan, start):
         nxt = {}
@@ -320,6 +348,8 @@ def run_turn(P, plan, start):
                 continue
             w = a.weapon
             pen, ssd = P.sharpshooter if (a.sharpshooter and P.sharpshooter) else (0, 0)
+            if a.true_strike:
+                pen = 0
             miss, hit, crit = attack_odds(w.bonus - pen, P.boss_ac, a.mode, P.crit_from,
                                           P.sup_die if a.precision else 0)
             marked = marked0 and not ens
@@ -333,7 +363,9 @@ def run_turn(P, plan, start):
                 if not pr:
                     continue
                 d = dice + (P.sneak_dice if sneak else ())
-                mu, s2 = landed(d, flat, is_crit)
+                # Sneak Attack's damage is a hit of its own for the weapon's "on damage with Advantage" passive
+                # (Crimson Mischief's Vicious: a second 7 after the Sneak Attack row, seen on every riposte)
+                mu, s2 = landed(d, flat + (w.adv_flat if sneak else 0), is_crit)
                 base = (p * pr, pr * (m1 + p * mu), pr * (m2 + 2 * m1 * mu + p * s2))
                 k2 = k + (1 if a.maneuver else 0)
                 outs = [((sa or bool(sneak), k2, fr, gnew, ens), 1.0)]
@@ -353,9 +385,16 @@ def run_turn(P, plan, start):
     return states
 
 
-def boss_turn(P, conc, ends_adjacent, frightened, gaping):
-    """The boss's turn after ours -> [(p, E[R], E[R^2], conc after, adjacent at our next turn)], R = our damage in it
-    (the riposte, the Ensnaring Strike tick)."""
+def riposte_spends(P, crit):
+    """Does the riposte take Sneak Attack's charge on a hit (crit: a critical hit), under the profile's policy."""
+    return P.riposte_sneak == "always" or (crit and P.riposte_sneak == "crit")
+
+
+def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True):
+    """The boss's turn after ours -> [(p, E[R], E[R^2], conc after, adjacent at our next turn, Sneak Attack's charge at
+    our next turn, True Strike on the boss at our next turn)], R = our damage in it (the riposte, the Ensnaring Strike
+    tick). reach False: the boss only walks up (round 1: it starts too far away to attack). Sneak Attack's charge is
+    always there in the boss's turn: it came back as ours ended."""
     out = []
     branches = [(1.0, conc == "ensnare", 0.0, 0.0)]
     if conc == "ensnare":
@@ -365,31 +404,34 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping):
     for pb, held, dm, d2 in branches:
         conc_b = conc if (conc != "ensnare" or held) else ""
         moves = not frightened and not held
-        attacks = ends_adjacent or moves
-        if not attacks:
-            out.append((pb, pb * dm, pb * d2, conc_b, False))
+        if not (ends_adjacent or moves):
+            out.append((pb, pb * dm, pb * d2, conc_b, False, True, False))
+            continue
+        if not reach:
+            out.append((pb, pb * dm, pb * d2, conc_b, True, True, False))
             continue
         _, h, c = attack_odds(P.boss_atk, P.char_ac, "dis" if (frightened or held) else "straight", 20)
         ph = h + c
         brk = ph * save_fails(P.conc_save, P.conc_dc)
-        rows = [(brk, 0.0, 0.0, ""), (ph - brk, 0.0, 0.0, conc_b)]
+        # (p, E[R | row], E[R^2 | row], conc, charge kept, True Strike)
+        rows = [(brk, 0.0, 0.0, "", True, False), (ph - brk, 0.0, 0.0, conc_b, True, False)]
         if P.riposte:
             w = P.riposte
             rmode = net_mode(P.adv or held, False)
             miss, hit, crit = attack_odds(w.bonus, P.boss_ac, rmode, P.crit_from)
-            dice = w.dice + ((P.mark_die,) if conc_b == "mark" and P.mark_die else ()) + \
-                (P.sneak_dice if (P.riposte_sneak and rmode == "adv") else ())
+            dice = w.dice + ((P.mark_die,) if conc_b == "mark" and P.mark_die else ())
             flat = w.flat + (w.adv_flat if rmode == "adv" else 0) + (P.gaping if gaping else 0)
-            mh, sh = landed(dice, flat, False)
-            mc, sc = landed(dice, flat, True)
-            rm = hit * mh + crit * mc
-            rs = hit * sh + crit * sc
-            rows.append((1 - ph, rm, rs, conc_b))
+            can_sneak = bool(P.sneak_dice) and rmode == "adv" and w.sneak
+            rows.append(((1 - ph) * miss, 0.0, 0.0, conc_b, True, False))
+            for pr, is_crit in ((hit, False), (crit, True)):
+                spend = can_sneak and riposte_spends(P, is_crit)
+                m_, v_ = landed(dice + (P.sneak_dice if spend else ()), flat + (w.adv_flat if spend else 0), is_crit)
+                rows.append(((1 - ph) * pr, m_, v_, conc_b, not spend, P.riposte_ts))
         else:
-            rows.append((1 - ph, 0.0, 0.0, conc_b))
-        for pr, rm, rs, cc in rows:
+            rows.append((1 - ph, 0.0, 0.0, conc_b, True, False))
+        for pr, rm, rs, cc, keep, ts in rows:
             # boss damage R (riposte) and the tick (dm) are independent: E[(T+R)^2] = E[T^2] + 2E[T]E[R] + E[R^2]
-            out.append((pb * pr, pb * pr * (dm + rm), pb * pr * (d2 + 2 * dm * rm + rs), cc, True))
+            out.append((pb * pr, pb * pr * (dm + rm), pb * pr * (d2 + 2 * dm * rm + rs), cc, True, keep, ts))
     return out
 
 
@@ -427,7 +469,9 @@ class State:
     pierce_m: bool
     pierce_r: bool
     dread: bool
-    boss_after: bool                # the boss's turn follows this one (false only for the last turn when it acts first)
+    boss_after: bool                # the boss's turn follows this one (false for the last turn: the gauntlet ends there)
+    sneak: bool = True              # Sneak Attack's charge at the turn's start
+    ts: bool = False                # True Strike on the boss at the turn's start
 
 
 def plans(P, s, fam):
@@ -465,7 +509,7 @@ def _turn_cached(P, plan, start):
 class Search:
     """The best policy of one family: V(state) = max over plans of E[this turn + boss turn + V(next)]."""
 
-    def __init__(self, P, fam, last_boss_turn=True):
+    def __init__(self, P, fam, last_boss_turn=False):
         self.P, self.fam, self.last = P, fam, last_boss_turn
         self.memo = {}
 
@@ -488,7 +532,7 @@ class Search:
         return best
 
     def _branches(self, s, plan):
-        start = TurnStart(s.adjacent, s.conc, s.gaping)
+        start = TurnStart(s.adjacent, s.conc, s.gaping, s.sneak, s.ts)
         res = _turn_cached(self.P, plan, start)
         out = []
         for (sa, k, fr, gnew, ens), (p, m1, m2) in res.items():
@@ -506,9 +550,12 @@ class Search:
             if not s.boss_after:
                 out.append((p, m1, m2, None))
                 continue
-            for pb, rm, rs, cc, adj in boss_turn(self.P, conc, plan.mode in ("melee", "stand"), fr, gnew):
+            # round 1: the boss starts too far away to reach the character unless the character walked up to it
+            reach = not (s.rnd == 1 and not s.adjacent and plan.mode != "melee")
+            for pb, rm, rs, cc, adj, keep, ts in boss_turn(self.P, conc, plan.mode in ("melee", "stand"), fr, gnew,
+                                                           reach):
                 nxt = None if last else State(adjacent=adj, conc=cc,
-                                              boss_after=(s.rnd + 1 < ROUNDS) or self.last, **nx)
+                                              boss_after=(s.rnd + 1 < ROUNDS) or self.last, sneak=keep, ts=ts, **nx)
                 out.append((p * pb, m1 * pb + p * rm, m2 * pb + 2 * m1 * rm + p * rs, nxt))
         return out
 
@@ -518,18 +565,16 @@ class Search:
                      pierce_m=P.pierce_melee, pierce_r=P.pierce_ranged, dread=bool(P.dread_die), boss_after=True)
 
     def total(self):
-        """-> (E[total], sd) over who acts first: we do (the boss walks up after our turn), or the boss walks up and
-        attacks first (then our first turn starts in its reach and no boss turn follows our 16th)."""
+        """-> (E[total], sd) over who acts first: we do (the boss walks up after our turn), or the boss does (it walks
+        up from too far away to attack, so our first turn starts in its reach). Either way the fight ends as our 16th
+        turn ends (the gauntlet does not wait for the boss's turn after it)."""
         P = self.P
         v1, v2, _ = self.value(self.start_state())
         e1, e2 = (1 - P.boss_first) * v1, (1 - P.boss_first) * v2
         if P.boss_first:
-            other = Search(P, self.fam, last_boss_turn=False)
-            s0 = replace(self.start_state(), adjacent=True)
-            for pb, rm, rs, cc, _adj in boss_turn(P, "", True, False, False):
-                w1, w2, _ = other.value(replace(s0, conc=cc))
-                e1 += P.boss_first * (pb * w1 + rm)
-                e2 += P.boss_first * (pb * w2 + 2 * rm * w1 + rs)
+            w1, w2, _ = self.value(replace(self.start_state(), adjacent=True))
+            e1 += P.boss_first * w1
+            e2 += P.boss_first * w2
         return e1, max(0.0, e2 - e1 * e1) ** 0.5
 
     def path(self, s=None):
@@ -587,14 +632,40 @@ def describe(plan):
     return ", ".join(out)
 
 
-def rank(P, families=None):
-    """-> [{family, why, total, sd, dpr, path: [{round, plan, text, mean, sd}]}], best first."""
+def sneak_policies(P):
+    """The reaction policies worth comparing: all of SNEAK_POLICIES when the riposte can take Sneak Attack, else the
+    profile's own."""
+    return SNEAK_POLICIES if (P.riposte and P.sneak_dice and P.adv) else (P.riposte_sneak,)
+
+
+def best_search(P, fam, policy=None):
+    """-> (Search, E[total], sd, {policy: E[total]}) of the family under the given reaction policy, or under the one of
+    sneak_policies with the largest expected total (ties: the earlier one)."""
+    best, totals = None, {}
+    for pol in ((policy,) if policy else sneak_policies(P)):
+        S = Search(replace(P, riposte_sneak=pol), fam)
+        tot, sd = S.total()
+        totals[pol] = tot
+        if best is None or tot > best[1] + 1e-9:
+            best = (S, tot, sd)
+    return best + (totals,)
+
+
+def enemy_turn_reactions(policy):
+    """The plan's Sneak Attack answers for the enemies' turns (the gauntlet's plan.reactions_enemy_turn)."""
+    return {"Interrupt_SneakAttack": "auto" if policy == "always" else "never",
+            "Interrupt_SneakAttack_Critical": "auto" if policy in ("always", "crit") else "never"}
+
+
+def rank(P, families=None, policy=None):
+    """-> [{family, why, total, sd, dpr, sneak_policy, policies, path: [{round, plan, text, mean, sd}]}], best first.
+    Each family under its best reaction policy (best_search), or under the one given."""
     out = []
     for fam in families or [f for f in FAMILIES if f != "any"]:
-        S = Search(P, fam)
-        tot, sd = S.total()
+        S, tot, sd, totals = best_search(P, fam, policy)
         path = S.path()
         out.append({"family": fam, "why": FAMILIES[fam]["why"], "total": tot, "sd": sd, "dpr": tot / ROUNDS,
+                    "sneak_policy": S.P.riposte_sneak, "policies": totals,
                     "path": [{"round": s.rnd, "adjacent": s.adjacent, "plan": plan, "text": describe(plan),
                               "mean": m, "sd": d} for s, plan, m, d in path]})
     out.sort(key=lambda r: -r["total"])
@@ -657,9 +728,9 @@ def harness_rounds(path, A, evade_steps, evade_every_round=False):
 
 def apply_to_spec(spec, P, family, A, evade_steps):
     """The spec with the family's round plan and its predicted numbers (expect.strategy); the riposte reaction is set
-    to fire when the profile counts it."""
-    S = Search(P, family)
-    tot, sd = S.total()
+    to fire when the profile counts it, and Sneak Attack's answers in the enemies' turns follow the family's best
+    reaction policy (best_search)."""
+    S, tot, sd, totals = best_search(P, family)
     path = [{"round": s.rnd, "adjacent": s.adjacent, "plan": plan, "text": describe(plan), "mean": m, "sd": d}
             for s, plan, m, d in S.path()]
     out = json.loads(json.dumps(spec, default=str))
@@ -670,8 +741,11 @@ def apply_to_spec(spec, P, family, A, evade_steps):
     plan["strategy"] = family
     if P.riposte:
         plan.setdefault("reactions", {})["Interrupt_TheClover_TrueStrike_Riposte"] = "auto"
+    if len(sneak_policies(P)) > 1:
+        plan["reactions_enemy_turn"] = enemy_turn_reactions(S.P.riposte_sneak)
     out["expect"]["strategy"] = {"family": family, "why": FAMILIES[family]["why"], "total": round(tot, 1),
-                                 "sd": round(sd, 1), "dpr": round(tot / ROUNDS, 2),
+                                 "sd": round(sd, 1), "dpr": round(tot / ROUNDS, 2), "sneak_policy": S.P.riposte_sneak,
+                                 "policies": {k: round(v, 1) for k, v in totals.items()},
                                  "rounds": [{"round": r["round"], "text": r["text"], "dmg": round(r["mean"], 1),
                                              "sd": round(r["sd"], 1)} for r in path]}
     return out
@@ -684,7 +758,8 @@ def main(argv=None):
     ap.add_argument("--pair", type=int, default=0)
     ap.add_argument("--side", default="a")
     ap.add_argument("--stats", help="stats_resolved.json (default: data/cache)")
-    ap.add_argument("--riposte-sneak", action="store_true", help="count Sneak Attack on the boss-turn riposte")
+    ap.add_argument("--sneak-policy", choices=SNEAK_POLICIES,
+                    help="Sneak Attack on the riposte in the boss's turn (default: each family's best)")
     ap.add_argument("--no-riposte", action="store_true")
     ap.add_argument("--out")
     a = ap.parse_args(argv)
@@ -696,13 +771,13 @@ def main(argv=None):
     with open(a.spec, encoding="utf-8") as f:
         spec = json.load(f)[a.pair]["specs"][a.side]
     P = profile_from_spec(spec, stats)
-    if a.riposte_sneak:
-        P = replace(P, riposte_sneak=True)
     if a.no_riposte:
         P = replace(P, riposte=None)
-    res = rank(P)
+    res = rank(P, policy=a.sneak_policy)
     for r in res:
-        print("%-14s total %7.1f  sd %5.1f  DPR %6.2f  %s" % (r["family"], r["total"], r["sd"], r["dpr"], r["why"]))
+        print("%-14s total %7.1f  sd %5.1f  DPR %6.2f  Sneak Attack on the riposte: %s (%s)  %s" % (
+            r["family"], r["total"], r["sd"], r["dpr"], r["sneak_policy"],
+            ", ".join("%s %.1f" % kv for kv in r["policies"].items()), r["why"]))
         for row in r["path"]:
             print("    r%-2d %-4s %6.1f (sd %4.1f)  %s" % (row["round"], "adj" if row["adjacent"] else "away",
                                                        row["mean"], row["sd"], row["text"]))
