@@ -2329,13 +2329,18 @@ end
 -- then UsingSpell 0.26 s later; a refused request: one or two and no UsingSpell). So a refusal counts once
 -- PLAYER_FAIL_MS have passed since the first one with no UsingSpell of the spell since the request. -> the failure row
 G.PLAYER_FAIL_MS = 1000
+-- Did the engine start the pending cast: a UsingSpell of the character for it since the request.
+function G.usingSeen(P, R)
+  for i = (P.using0 or 0) + 1, #(R.usings or {}) do
+    local x = R.usings[i]
+    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return true end
+  end
+  return false
+end
 function G.playerRefused(P, R, t)
   local f = G.castRefused(P, R.cast_fails)
   if not f then return nil end
-  for i = (P.using0 or 0) + 1, #(R.usings or {}) do
-    local x = R.usings[i]
-    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return nil end
-  end
+  if G.usingSeen(P, R) then return nil end
   P.failAt = P.failAt or t
   if t - P.failAt < G.PLAYER_FAIL_MS then return nil end
   return f
@@ -2803,9 +2808,25 @@ function G.castFault(R, spell, kind, why)
   R.cast_faults = R.cast_faults or {}
   R.cast_faults[#R.cast_faults + 1] = { r = R.r, spell = spell, kind = kind, why = why }
 end
--- The player path's end of a cast: CastedSpell (after its damage rows), or PLAYER_END_MS after the first evidence.
-G.PLAYER_END_MS = 3000
-G.SURGE_STATUS, G.SURGE_MAX_MS = "ACTION_SURGE", 8000
+-- The player path's end of a cast is the engine's CastedSpell (after its damage rows), waited for up to CAST_MAX_MS
+-- from the request. A cast sent soon after a riposte was frozen 6 s between its UsingSpell and its strike, longer than
+-- any fixed wait the harness had; the cap only bounds a hang.
+G.CAST_MAX_MS = 60000
+-- An attack's last strike normally lands before its CastedSpell; STRIKES_MAX_MS after it bounds the wait for a strike
+-- the engine never makes (the main hand to off-hand gap in game: 528-637 ms).
+G.STRIKES_MAX_MS = 2000
+-- Has the engine struck the pending attack's last blow: a hit-log row from the character with AttackFlags LastAttack
+-- (a single attack carries FirstAttack and LastAttack, a dual one's off-hand half LastAttack alone; misses too). A
+-- reaction's rows (Riposte) are not the cast's.
+function G.strikesDone(P, hits)
+  for i = (P.hits0 or 0) + 1, #(hits or {}) do
+    local h = hits[i]
+    local f = tostring(h.attack_flags or "")
+    if h.source == P.who and f:find("LastAttack", 1, true) and not f:find("Reaction", 1, true) then return true end
+  end
+  return false
+end
+G.SURGE_STATUS = "ACTION_SURGE"
 -- Did the pending cast's main hand land a row (hit or miss) on its target: a damage row from the character since the
 -- cast that is not the off-hand half's.
 function G.mainFired(P, dmg)
@@ -2825,6 +2846,14 @@ end
 function G.checkSpent(F, R, P)
   local fired = P.dual and G.offhandFired(P, G.dmg, G.hits)
   P.rec.offhand_half = P.dual and (fired and "fired" or "none") or nil
+  -- a toggled attack whose main hand struck, with no last strike and the target alive: the engine dropped the off-hand
+  -- half (in game after a cast frozen 6 s it took the bonus action and never struck); the run is no longer the plan
+  if P.toggled and P.dual and not fired and G.mainFired(P, G.dmg) and not G.strikesDone(P, G.hits)
+    and alive(P.target) then
+    P.rec.offhand_half = "lost"
+    G.castFault(R, P.spell, "lost half", "the engine took the off-hand half's costs and never struck it")
+    return
+  end
   local owed, maybe = P.costs, nil
   if fired then owed = addCosts(P.costs, P.dual) elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end
   -- the hit costs: owed after a hit, owed as none after a miss, either when the outcome was not seen
@@ -2935,23 +2964,31 @@ function G.impactPending(F, t, dmg, hits)
   return false
 end
 -- Settles the pending cast at time t: true when it is finished (done, or failed and its fallback started), false
--- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS.
+-- while still waiting. A cast still in progress may run to CONFIRM_MAX_MS (on the player path CAST_MAX_MS).
 function G.settle(F, R, t)
   local P = F.pending
   if not P then return true end
   local ev = G.castEvidence(P, R.casts, G.dmg, function(k, lv) return resAmount(F.char, k, lv) end)
   if ev and P.player and not P.ended then
-    -- the engine spends at the cast's start: the check waits for its end, when the damage rows are in
-    P.tConf = P.tConf or t
-    if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end
+    -- the engine spends at the cast's start: the check waits for its CastedSpell, when the damage rows are in
+    if ev ~= "cast" and t - (P.t0 or t) < G.CAST_MAX_MS then return false end
+    if ev ~= "cast" then P.rec.no_casted = ev end
     P.ended = true
+  end
+  -- an attack's strikes: CastedSpell usually comes after its rows, but after a frozen cast it came 130 ms before them,
+  -- so the costs are checked once the engine marks the cast's last strike (a hit-log row with LastAttack), or
+  -- STRIKES_MAX_MS after the CastedSpell when none comes (an off-hand half the engine dropped)
+  if ev and P.player and not P.struck and P.target and P.target ~= P.who and (P.dual or G.landsLater(P.spell)) then
+    P.tCast = P.tCast or t
+    if not G.strikesDone(P, G.hits) and t - P.tCast < G.STRIKES_MAX_MS then return false end
+    P.struck = true
   end
   -- Action Surge's extra action point comes ~100 ms after its CastedSpell, after its status (on at +33 ms): a request
   -- sent before it reads the action points without it, and the surge's action shows up as spent by the wrong attack.
   -- So it settles once the action points rise above their amount at the request. After a riposte the CastedSpell came
-  -- 6 s after UsingSpell, hence the cap SURGE_MAX_MS from the request.
+  -- 6 s after UsingSpell; the cap CAST_MAX_MS from the request only bounds a hang.
   if ev and P.player and P.spell == "Shout_ActionSurge" and not P.effectSeen then
-    if (resAmount(F.char, "ActionPoint") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.SURGE_MAX_MS then
+    if (resAmount(F.char, "ActionPoint") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.CAST_MAX_MS then
       P.effectSeen = true
     else
       return false
@@ -2988,7 +3025,10 @@ function G.settle(F, R, t)
   -- the engine's own refusal ends the wait at once (on the player path once no cast followed it)
   local refused
   if P.player then refused = G.playerRefused(P, R, t) else refused = G.castRefused(P, R.cast_fails) end
-  if not refused and (waited < G.CONFIRM_MS or (waited < G.CONFIRM_MAX_MS and casting(F.char))) then return false end
+  -- a cast the engine started (UsingSpell, or casting now) is waited for to the cap; one it never started, CONFIRM_MS
+  local maxMs = P.player and G.CAST_MAX_MS or G.CONFIRM_MAX_MS
+  local started = casting(F.char) or (P.player and G.usingSeen(P, R))
+  if not refused and (waited < G.CONFIRM_MS or (waited < maxMs and started)) then return false end
   F.pending = nil
   G.restoreToggle(F, P)
   R.cast_misses = (R.cast_misses or 0) + 1
@@ -4508,7 +4548,10 @@ end
 -- ends, invalid. Ending the character's own turn is retried until the engine lets go of it.
 -- The longest enemy turn of the pilot took 9.5 s: 20 s and one recovery (45 s and two cost 135 s per hung run). A combat
 -- that ended (out of combat for COMBAT_LOST_MS while waiting) is reacted to at once instead.
-G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS = 20000, 1, 4000, 3, 90000
+G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES = 20000, 1, 4000, 3
+-- An own turn is ended when it makes no progress (no request sent, no cast settled, no move done) for ACT_MAX_MS:
+-- longer than a pending cast's own cap, so a cast the engine holds is settled by the cast's rules, not cut here.
+G.ACT_MAX_MS = G.CAST_MAX_MS + 10000
 G.COMBAT_LOST_MS = 3000
 -- pauses around the character's turn: after the turn starts (the engine refills the turn's resources) and after the
 -- last action (the cast has ended: G.step waits for casting() first). The combat's first turn needs longer: in game a
@@ -4761,8 +4804,8 @@ function G.step(F, t)
         return finish(F, string.format("round %d: %d summon attack(s) refused or never seen", last.r, last.summon_misses))
       end
       roundStart(F)
-      F.state, F.next, F.turnStart = (F.manual or F.player) and "player" or "act",
-        t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t
+      F.state, F.next, F.turnStart, F.progressT = (F.manual or F.player) and "player" or "act",
+        t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t, t
     elseif not F.manual and G.combatLost(F, t) then
       -- the combat ended (an item spell ended it, the enemies are not hostile): no turn will come, nothing to wait for
       F.recoveries = (F.recoveries or 0) + 1
@@ -4805,8 +4848,8 @@ function G.step(F, t)
     end
   elseif F.state == "act" and t >= F.next then
     local R = G.rounds[#G.rounds]
-    if t - (F.turnStart or t) > G.ACT_MAX_MS then
-      note("turn took over %d s: ending it", math.floor(G.ACT_MAX_MS / 1000))
+    if t - (F.progressT or F.turnStart or t) > G.ACT_MAX_MS then
+      note("turn made no progress for %d s: ending it", math.floor(G.ACT_MAX_MS / 1000))
       if F.pending then F.pending.rec.result = "failed: turn time limit"; F.pending = nil end
       if F.moving then F.moving.rec.result = "failed: turn time limit (moving)"; F.moving = nil end
       F.state, F.next = "ending", t
@@ -4815,19 +4858,21 @@ function G.step(F, t)
     if F.moving then
       if not G.moveSettled(F, t) then F.next = t + G.POLL_MS; return end
       local M = F.moving
-      F.moving = nil
+      F.moving, F.progressT = nil, t
       doAction(F, M.a, M.R, M.rec)
       F.next = t + G.POLL_MS
       return
     end
     if F.pending then
       if not G.settle(F, R, t) or F.pending then F.next = t + G.POLL_MS; return end
+      F.progressT = t
     end
     if casting(F.char) then F.next = t + 200; return end
     if G.impactPending(F, t, G.dmg, G.hits) then F.next = t + G.POLL_MS; return end
     if not F.queue then F.queue, F.qi = G.planRound(F, R), 0 end
     if F.qi < #F.queue then
       F.qi = F.qi + 1
+      F.progressT = t
       doAction(F, F.queue[F.qi], R)
       F.next = t + (F.queue[F.qi].ms or 300)
     else
