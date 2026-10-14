@@ -178,7 +178,8 @@ def lua_tests():
               plan_gap_lua_tests, real_roll_tests, outcome_tests, idle_turn_tests, popup_tests, release_tests,
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
               impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
-              sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests):
+              sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests,
+              cast_id_tests, holder_idle_tests, end_turn_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -642,6 +643,146 @@ def watchdog_tests(L):
     nx = list(g.T_next.values())
     check("first turn: the combat's first request waits FIRST_ACT_DELAY_MS, later turns ACT_DELAY_MS",
           nx == [g.GAUNTLET.FIRST_ACT_DELAY_MS, g.GAUNTLET.ACT_DELAY_MS] and nx[0] >= 400, str(nx))
+
+
+def cast_id_tests(L):
+    """The engine's storyActionID on every event row (UsingSpell, CastedSpell, CastSpellFailed, AttackedBy, the hit and
+    miss rows, with the hit's cast guid), the pending cast's own id from the character's first UsingSpell of its spell
+    since the request, and the fight's turns per round."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local me, b = "c1", "b1"
+      local t = 0
+      local oldNow = Ext.Utils.MonotonicTime
+      Ext.Utils.MonotonicTime = function() return t end
+      G.t0 = 0
+      local R = { r = 1, casts = {}, usings = {}, cast_fails = {} }
+      G.rounds = { R }
+      local rec = {}
+      G.F = { char = me, enemies = { b }, pending = { who = me, spell = "Target_MainHandAttack", using0 = 0, rec = rec } }
+      G.fighting, G.round = true, 1
+      t = 100; G._on.using(b, "Target_MainHandAttack", "Target", "None", 49100)
+      t = 200; G._on.using(me, "Target_MainHandAttack", "Target", "None", 49235)
+      t = 300; G._on.using(me, "Target_MainHandAttack", "Target", "None", 49300)
+      t = 400; G._on.cast(me, "Target_MainHandAttack", "Target", "None", 49235)
+      t = 500; G._on.failed(me, "Target_HuntersMark", "Target", "None", 49240)
+      t = 600; G._on.attacked(b, me, me, "Slashing", 7, "Attack", 49235)
+      T_P, T_rec, T_R, T_dmg = G.F.pending, rec, R, G.dmg[1]
+      T_hit = G.hitRow({ Hit = { StoryActionId = 49235, SpellCastGuid = "g-49235", EffectFlags = { "Hit" } } })
+      T_dd = G.hitRow({ StoryActionId = 49236, Hit = { EffectFlags = { "Hit" } } })
+      G.onMissEvent({ Target = { Uuid = { EntityUuid = me } }, Hit = { EffectFlags = { "Miss" }, StoryActionId = 49234,
+        Inflicter = { Uuid = { EntityUuid = b } } } }, "hit_result")
+      T_miss = G.hits[1]
+      t = 700; G._on.turn_ended(me)
+      t = 800; G._on.turn_started(b)
+      G._on.turn_started("x9")
+      T_turns, T_ended = R.turns, G.F.turnEndedAt
+      Ext.Utils.MonotonicTime = oldNow
+      G.fighting, G.F, G.rounds = false, nil, {}
+    """)
+    g = L.globals()
+    R = g.T_R
+    sids = [R.usings[i + 1].sid for i in range(3)]
+    check("cast ids: UsingSpell, CastedSpell and CastSpellFailed rows keep the storyActionID",
+          sids == [49100, 49235, 49300] and R.casts[1].sid == 49235 and R.cast_fails[1].sid == 49240, str(sids))
+    check("cast ids: an AttackedBy row keeps its storyActionID", g.T_dmg.sid == 49235, str(g.T_dmg.sid))
+    check("cast ids: a hit row keeps the hit's storyActionID and cast guid, else the damage event's id",
+          g.T_hit.sid == 49235 and g.T_hit.cast_guid == "g-49235" and g.T_dd.sid == 49236,
+          f"{g.T_hit.sid} {g.T_hit.cast_guid} {g.T_dd.sid}")
+    check("cast ids: a miss row keeps the hit's storyActionID", g.T_miss is not None and g.T_miss.sid == 49234,
+          str(g.T_miss and g.T_miss.sid))
+    check("cast ids: the pending cast takes the id of the character's first UsingSpell of its spell (not the boss's)",
+          g.T_P.sid == 49235 and g.T_rec.sid == 49235, f"{g.T_P.sid} {g.T_rec.sid}")
+    turns = [(g.T_turns[i + 1].who, g.T_turns[i + 1].ev) for i in range(len(g.T_turns or {}))]
+    check("turns: the fight's TurnStarted / TurnEnded kept per round, others left out; the character's end noted",
+          turns == [("c1", "ended"), ("b1", "started")] and g.T_ended == 700, str(turns))
+
+
+def holder_idle_tests(L):
+    """The turn watchdog ends the holder's turn (the boss's) only once the holder and the character have been idle for
+    HOLDER_IDLE_MS and the holder is not casting, or at the TURN_WAIT_MS cap: a slow boss attack or a riposte is never
+    cut short, which would bias the damage taken."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local t = 0
+      local oldNow, oldGet = Ext.Utils.MonotonicTime, Ext.Entity.Get
+      Ext.Utils.MonotonicTime = function() return t end
+      local boss = { TurnBased = { IsActiveCombatTurn = true } }
+      Ext.Entity.Get = function(u) if u == "e1" then return boss end end
+      Osi.IsInCombat = function() return 1 end
+      local function start()
+        G.reset(); G.t0 = 0; G.round = 3
+        G.rounds = { { r = 3, done = {}, actions = {}, casts = {} } }
+        local F = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {},
+                    rounds = 16, started = 1, state = "wait", deadline = G.TURN_WAIT_MS, waitAt = 0 }
+        G.F, G.fighting = F, true
+        return F
+      end
+      local function recs() return #(G.results.turn_recoveries or {}) end
+      local F = start()
+      t = 15000; G._on.using("e1", "Target_UnarmedAttack", "Target", "None", 1); G.step(F, t)
+      t = 25000; G.step(F, t); T_active = recs()
+      t = 15000 + G.HOLDER_IDLE_MS + 1; G.step(F, t); T_idle = recs()
+      F = start()
+      t = 10000; G._on.cast("c1", "Interrupt_Riposte", "Target", "None", 2); G.step(F, t)
+      t = G.HOLDER_IDLE_MS + 1; G.step(F, t); T_riposte = recs()
+      F = start()
+      boss.SpellCastIsCasting = { Cast = 1 }
+      t = 3 * G.HOLDER_IDLE_MS; G.step(F, t); T_casting = recs()
+      t = G.TURN_WAIT_MS + 1; G.step(F, t); T_cap = recs()
+      boss.SpellCastIsCasting = nil
+      Ext.Utils.MonotonicTime, Ext.Entity.Get = oldNow, oldGet
+      Osi.IsInCombat = nil
+      G.fighting, G.F = false, nil
+    """)
+    g = L.globals()
+    check("holder idle: a boss that acted 10 s ago keeps its turn (the old 20 s clock would have ended it)",
+          g.T_active == 0, str(g.T_active))
+    check("holder idle: idle for HOLDER_IDLE_MS since its last event, the holder's turn is recovered", g.T_idle == 1,
+          str(g.T_idle))
+    check("holder idle: the character's own cast (a riposte) counts as activity", g.T_riposte == 0, str(g.T_riposte))
+    check("holder idle: a holder still casting is not recovered before the cap, at TURN_WAIT_MS it is",
+          g.T_casting == 0 and g.T_cap == 1, f"{g.T_casting} {g.T_cap}")
+
+
+def end_turn_tests(L):
+    """Ending the own turn: the request is sent again only when the engine dropped it (RequestedEndTurn reads false and
+    no TurnEnded came), never on the clock alone."""
+    L.execute(r"""
+      local G = GAUNTLET
+      local t = 0
+      local oldNow, oldGet = Ext.Utils.MonotonicTime, Ext.Entity.Get
+      Ext.Utils.MonotonicTime = function() return t end
+      local me
+      Ext.Entity.Get = function(u) if u == "c2" then return me end end
+      local asks = 0
+      Osi.EndTurn = function() asks = asks + 1 end
+      -- -> the requests sent: one on ending the turn, and any at the first check after engine() ran
+      local function run(engine)
+        me = { TurnBased = { IsActiveCombatTurn = true } }
+        G.reset(); G.t0 = 0; G.round = 1
+        local F = { char = "c2", enemies = {}, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                    started = 1, state = "ending", next = 0 }
+        G.F, G.fighting = F, true
+        asks, t = 0, 0
+        G.step(F, 0)
+        t = 100; engine()
+        t = G.END_TURN_MS + 1; G.step(F, t)
+        return asks
+      end
+      T_pending = run(function() end)
+      T_dropped = run(function() me.TurnBased.RequestedEndTurn = false end)
+      T_ended = run(function() me.TurnBased.RequestedEndTurn = false; G._on.turn_ended("c2") end)
+      Ext.Utils.MonotonicTime, Ext.Entity.Get = oldNow, oldGet
+      Osi.EndTurn = nil
+      G.fighting, G.F = false, nil
+    """)
+    g = L.globals()
+    check("end turn: a request the engine still holds is not sent again", g.T_pending == 1, str(g.T_pending))
+    check("end turn: a dropped request (RequestedEndTurn false again) is sent again", g.T_dropped == 2,
+          str(g.T_dropped))
+    check("end turn: after the character's TurnEnded nothing is sent again", g.T_ended == 1, str(g.T_ended))
 
 
 def speed_tests(L):
@@ -6020,6 +6161,41 @@ MUTATIONS = [
      'local what = "none"; F.recoveries = G.TURN_RECOVERIES'),
     ("own turn: no end-turn retry limit", GL, 'if F.endTries >= G.END_TURN_TRIES then return finish',
      'if false then return finish'),
+    ("own turn: end-turn request re-sent on the clock", GL, "if G.endTurnDropped(F) then G.endTurn(F.char) end",
+     "G.endTurn(F.char)"),
+    ("own turn: a dropped end-turn request never re-sent", GL, "if G.endTurnDropped(F) then G.endTurn(F.char) end",
+     "if false then G.endTurn(F.char) end"),
+    ("own turn: TurnEnded ignored", GL,
+     "if F.turnEndedAt and F.turnEndedAt >= (F.endAskedAt or 0) then return false end", ""),
+    ("watchdog: recovery on the clock, activity ignored", GL,
+     "if t - math.max(F.waitAt or t, F.activeAt or 0) <= G.HOLDER_IDLE_MS then return false end",
+     "if t - (F.waitAt or t) <= G.HOLDER_IDLE_MS then return false end"),
+    ("watchdog: a casting holder not waited for", GL, "if casting(h) then F.activeAt = t; return false end",
+     "if false then return false end"),
+    ("watchdog: events not noted as activity", GL,
+     'if G.member(F, (select(i, ...))) then F.activeAt = now(); return end', "if false then return end"),
+    ("watchdog: no absolute cap", GL, "elseif t > F.deadline or (not F.manual and G.turnIdle(F, t, turnHolders)) then",
+     "elseif not F.manual and G.turnIdle(F, t, turnHolders) then"),
+    ("turns: TurnStarted / TurnEnded not recorded", GL,
+     'R.turns[#R.turns + 1] = { who = uuid(who), ev = started and "started" or "ended", t = now() - G.t0 }', ""),
+    ("cast ids: UsingSpell row without its id", GL,
+     "R.usings[#R.usings + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid }",
+     "R.usings[#R.usings + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }"),
+    ("cast ids: CastedSpell row without its id", GL,
+     "R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid }",
+     "R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }"),
+    ("cast ids: CastSpellFailed row without its id", GL,
+     "local f = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid }",
+     "local f = { who = uuid(caster), spell = spell, t = now() - G.t0 }"),
+    ("cast ids: AttackedBy row without its id", GL, "type = dtype, amount = amount, cause = cause, sid = sid }",
+     "type = dtype, amount = amount, cause = cause }"),
+    ("cast ids: hit row ignores the hit's own id", GL, 'sid = first(e, { "Hit.StoryActionId", "StoryActionId" })',
+     'sid = first(e, { "StoryActionId" })'),
+    ("cast ids: hit row without the cast guid", GL, 'cast_guid = first(hit, { "SpellCastGuid" })', "cast_guid = nil"),
+    ("cast ids: the pending cast's id never bound", GL, "if P and P.sid == nil then G.bindSid(P, R) end", ""),
+    ("cast ids: the pending cast's id from anyone's UsingSpell", GL,
+     "    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then\n      P.sid = x.sid",
+     "    if baseSpell(x.spell) == baseSpell(P.spell) then\n      P.sid = x.sid"),
     ("run start: prep inside the eval", GL, "wait(50, function() G.start(F) end)", "G.start(F)"),
     ("prep: no deadline", GL, "elseif now() > F.prepDeadline then", "elseif false then"),
     ("verdict: idle rounds ignored", GL, "if idle > 0 then", "if false then"),
