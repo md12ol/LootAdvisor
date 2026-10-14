@@ -3632,6 +3632,7 @@ local function roundStart(F)
   -- target (Toll the Dead's d12) work while "below half" and kill effects stay off; the model's boss scenario assumes
   -- the same (mech.TARGET_HP_PCT)
   for _, d in ipairs(F.enemies) do pcall(Osi.SetHitpointsPercentage, d, G.BOSS_HP_PCT) end
+  pcall(G.cameraFollow, F)
   R.enemy_hp_pct = F.enemies[1] and try(Osi.GetHitpointsPercentage, F.enemies[1]) or nil
   local S = F.S
   if S.short_rest_every and G.round > 1 and (G.round - 1) % S.short_rest_every == 0 then
@@ -4571,6 +4572,13 @@ G.REC_LEAD_MS, G.HOSTILE_MS = 3000, 2000
 -- character is made the active (selected) one first: the camera follows the selected party member, and in game a
 -- camera set onto the character snapped back to the one the save had selected (parked in the Undercity).
 G.CAMERA_WAIT_MS = 4000
+-- At each own turn's start and after each move: the camera onto the middle between the character and the boss
+-- (the client, U.CameraFollow; no answer awaited). Set once at the start it stayed there while the evade's leave spots
+-- drifted to the room's edge, and walls hid the last quarter of the fight.
+function G.cameraFollow(F)
+  local b = resolveTarget(F, "@boss")
+  G.notify({ kind = "camera_follow", char = uuid(F.char), also = b and uuid(b) or nil })
+end
 function G.cameraOn(F, cb)
   F.camera = nil
   local okA = pcall(Osi.MakePlayerActive, F.char)
@@ -5027,6 +5035,7 @@ function G.step(F, t)
       if not G.moveSettled(F, t) then F.next = t + G.POLL_MS; return end
       local M = F.moving
       F.moving, F.progressT = nil, t
+      pcall(G.cameraFollow, F)
       doAction(F, M.a, M.R, M.rec)
       F.next = t + G.POLL_MS
       return

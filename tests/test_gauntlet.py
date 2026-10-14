@@ -1116,12 +1116,20 @@ def speed_tests(L):
       Osi.SetHitpointsPercentage = function(d, p) set[d] = p end
       G.reset(); G.round = 0
       F = base("wait"); G.F = F
+      local notify, sent = G.notify, {}
+      G.notify = function(m) sent[#sent + 1] = m end
       G._roundStart(F)
       T_hp99 = set.e1
       Osi.SetHitpointsPercentage = nil
+      G.notify = notify
+      -- each own turn: the camera onto the middle of the character and the boss
+      T_follow = nil
+      for _, m in ipairs(sent) do if m.kind == "camera_follow" then T_follow = m.char .. ">" .. tostring(m.also) end end
     """)
     g = L.globals()
     G = g.GAUNTLET
+    check("camera: each own turn starts with the camera onto the character and the boss", g.T_follow == "c1>e1",
+          str(g.T_follow))
     check("fail fast: a round without a confirmed action ends the run as its turn ends, invalid, with the round",
           g.T_idle == "done" and "round 2: no action confirmed" in str(g.T_idle_why) and g.T_idle_valid is False,
           f"{g.T_idle} {g.T_idle_why}")
@@ -6732,6 +6740,11 @@ MUTATIONS = [
      "  local d = math.sqrt((x - bx) ^ 2 + (z - bz) ^ 2)", "  local d = math.sqrt((x - bx) ^ 2 + (z - bz) ^ 2) - 0.6"),
     ("move: a hide spot ended short counted as reached", GL,
      '  if a.move_to ~= "@leave_spot" then return false, nil, "not a leave" end', "  if false then end"),
+    ("camera: not moved at each own turn", GL,
+     "G.BOSS_HP_PCT) end\n  pcall(G.cameraFollow, F)\n", "G.BOSS_HP_PCT) end\n"),
+    ("camera: onto the character alone (the boss not sent)", GL,
+     '  G.notify({ kind = "camera_follow", char = uuid(F.char), also = b and uuid(b) or nil })',
+     '  G.notify({ kind = "camera_follow", char = uuid(F.char) })'),
     ("sheath gate: the step loop ignores it", GL,
      "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
     ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",
