@@ -6,8 +6,9 @@ specs.json is tools/gauntlet/plan.py's output (one set's spec per side); the cha
 from the game stats (profile_from_spec). The search is exact, not sampled:
 
 - one attack: the d20 is enumerated (Advantage = best of two, Disadvantage = worst of two, both = one straight d20; a
-  natural 1 misses, a natural at or above the crit threshold is a critical hit), a Precision Attack die is enumerated
-  with it; damage is carried as its first two moments (dice means and variances, every die doubled on a critical hit);
+  natural 1 misses, a natural at or above the crit threshold is a critical hit; measured dice in place of the uniform
+  d20 where the records give them, BOSS_ODDS and OWN_ODDS), a Precision Attack die is enumerated with it; damage is
+  carried as its first two moments (dice means and variances, every die doubled on a critical hit);
 - one turn: the attacks in order with a branch state (Sneak Attack spent, superiority dice spent, boss Frightened or
   Prone, Gaping Wound, Ensnaring Strike), so Sneak Attack lands once, on the first hit with net Advantage;
 - the boss's turn: it walks up and attacks unless Frightened or restrained (not in round 1: it starts too far away to
@@ -54,10 +55,11 @@ def net_mode(adv, dis):
     return "straight" if adv == dis else ("adv" if adv else "dis")
 
 
-def attack_odds(bonus, ac, mode, crit_from=20, bonus_die=0):
-    """(miss, hit that is not critical, critical) of one attack roll; bonus_die: a die added to the roll (Precision)."""
+def attack_odds(bonus, ac, mode, crit_from=20, bonus_die=0, naturals=None):
+    """(miss, hit that is not critical, critical) of one attack roll; bonus_die: a die added to the roll (Precision);
+    naturals: measured ((roll mode, P(natural = 1..20)), ...), the uniform d20 for a mode not in it."""
     miss = hit = crit = 0.0
-    for nat, p in enumerate(d20_naturals(mode), 1):
+    for nat, p in enumerate(dict(naturals or ()).get(mode) or d20_naturals(mode), 1):
         if nat == 1:
             miss += p
         elif nat >= crit_from:
@@ -141,6 +143,7 @@ class Profile:
     conc_dc: int = 10               # the boss's hits (half damage in the gauntlet) stay below 20
     boss_first: float = 0.0         # P(the boss acts before the character in round 1)
     boss_odds: tuple = None         # measured ((roll mode, P(the boss's attack lands)), ...) in place of a uniform d20
+    own_odds: tuple = None          # measured ((roll mode, P(natural = 1..20)), ...) of the character's own d20
     boss_move: float = 9.0          # the boss's Movement (m)
     prone_stand: float = 0.5        # the share of its Movement standing up from Prone costs (PRONE's OnRemoveFunctors)
     prone_ai_move: float = 4.5      # Movement the AI loses as it stands up (AI_HELPER_PRONE's ActionResource(Movement))
@@ -215,6 +218,8 @@ def profile_from_spec(spec, stats):
     stand, ai_move = prone_movement(stats)
     char_ac, boss_atk = int(spec["expect"]["ac"]), int(E.get("atk", 9))
     odds = tuple(sorted(E["odds"].items())) if E.get("odds") else BOSS_ODDS.get((boss_atk, char_ac))
+    own = spec.get("own_odds")
+    own = tuple(sorted((m, shares(c)) for m, c in own.items())) if own else OWN_ODDS.get((boss_atk, char_ac))
     gear = spec["expect"].get("boss_gear") or spec["expect"].get("boss") or {}
     boss_init = 0
     first = sum(1 for a in range(1, 21) for b in range(1, 21) if b + boss_init > a + init) / 400 + \
@@ -239,7 +244,7 @@ def profile_from_spec(spec, stats):
         pierce_ranged="Projectile_PiercingShot" in ((stats.get(items.get("RangedMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
         ensnare=cl.get("Ranger", 0) >= 1, riposte=riposte, riposte_ts=riposte_ts,
         boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)), boss_atk=boss_atk,
-        char_ac=char_ac, boss_odds=odds, conc_save=(con - 10) // 2 + save_bonus, boss_first=first,
+        char_ac=char_ac, boss_odds=odds, own_odds=own, conc_save=(con - 10) // 2 + save_bonus, boss_first=first,
         taken_hit=gear.get("taken_hit"), taken_crit=gear.get("taken_crit") or 0.0,
         taken_heal=gear.get("taken_heal") or 0.0, boss_move=float(E.get("move", BOSS_MOVE_M)), prone_stand=stand,
         prone_ai_move=ai_move)
@@ -305,7 +310,7 @@ def _choose_ss(P, w, mode, precision, extra_dice=()):
     best = []
     for on in (False, True):
         miss, hit, crit = attack_odds(w.bonus - (pen if on else 0), P.boss_ac, mode, P.crit_from,
-                                      P.sup_die if precision else 0)
+                                      P.sup_die if precision else 0, P.own_odds)
         flat = w.flat + (dmg if on else 0)
         best.append(hit * landed(w.dice + extra_dice, flat, False)[0] + crit * landed(w.dice + extra_dice, flat, True)[0])
     return best[1] > best[0]
@@ -405,7 +410,7 @@ def run_turn(P, plan, start, parts=False):
                 pen = 0
             mode = net_mode(True, a.dis_any) if (prone and a.near) else a.mode
             miss, hit, crit = attack_odds(w.bonus - pen, P.boss_ac, mode, P.crit_from,
-                                          P.sup_die if a.precision else 0)
+                                          P.sup_die if a.precision else 0, P.own_odds)
             marked = marked0 and not ens
             dice = w.dice + a.extra_dice + ((P.mark_die,) if marked and P.mark_die else ()) + \
                 ((P.sup_die,) if a.maneuver else ())
@@ -500,7 +505,7 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=Fals
         if P.riposte:
             w = P.riposte
             rmode = net_mode(P.adv or held, False)
-            miss, hit, crit = attack_odds(w.bonus, P.boss_ac, rmode, P.crit_from)
+            miss, hit, crit = attack_odds(w.bonus, P.boss_ac, rmode, P.crit_from, naturals=P.own_odds)
             dice = w.dice + ((P.mark_die,) if conc_b == "mark" and P.mark_die else ())
             flat = w.flat + (w.adv_flat if rmode == "adv" else 0) + (P.gaping if gaping else 0)
             can_sneak = bool(P.sneak_dice) and rmode == "adv" and w.sneak
@@ -534,6 +539,24 @@ BOSS_MOVE_M = 9.0
 # against AC 22, where a uniform d20 gives 40% and 16% (the game's dice were high for the boss, not for the character).
 # A spec's enemy "odds" ({mode: chance}) overrides it; any other bonus or AC keeps the uniform d20.
 BOSS_ODDS = {(9, 22): (("straight", 73 / 136), ("dis", 19 / 51))}
+
+
+def shares(counts):
+    """Counts (or chances) of the faces 1..20 -> chances that sum to 1."""
+    total = sum(counts)
+    return tuple(c / total for c in counts)
+
+
+# The character's measured d20, by the same (boss attack bonus, character AC) as BOSS_ODDS: the gauntlet's own attack
+# rolls at net Advantage in every record without a roll edit (50 fights, rows of one roll counted once), 1234 rolls.
+# "adv" is the higher die per face 1..20: 197 at 19-20 (16.0%, a uniform pair gives 19.0%) and 34 at 1-4 (2.8%, uniform
+# 4.0%). "straight" is an assumption, no straight roll being in the records: one die's faces, both dice of each of
+# those rolls (2468 dice). Disadvantage and any other bonus or AC keep the uniform d20; a spec's "own_odds" ({mode:
+# 20 counts or chances}) overrides it.
+OWN_ODDS = {(9, 22): (
+    ("adv", shares((3, 6, 8, 17, 29, 33, 37, 54, 54, 69, 80, 68, 101, 104, 73, 94, 100, 107, 96, 101))),
+    ("straight", shares((103, 111, 115, 123, 114, 139, 134, 135, 129, 142, 136, 125, 151, 156, 99, 113, 117, 124,
+                         100, 102))))}
 # The least the boss walks to have the character in its reach again after a leave: the harness's leave spot is at least
 # 3.8 m from the boss (G.LEAVE_M 4.5 less its 0.7 m slack), less a melee reach of 1.5 m.
 LEAVE_GAP_M = 2.3
