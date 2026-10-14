@@ -1899,7 +1899,9 @@ local function onHit(e)
   end
   row.concentration = G.concentration(F.char)
   G.hits[#G.hits + 1] = row
-  if not G.results.hit_probe then G.results.hit_probe = try(function() return Ext.Types.Serialize(e.Hit) end) or "?" end
+  if not G.results.hit_probe then
+    G.results.hit_probe = G.jsonSafe(try(function() return Ext.Types.Serialize(e.Hit) end) or "?")
+  end
 end
 G._onHit = onHit
 -- A miss from an engine event (one-frame components SpellCastTargetHitEvent and HitResultEvent: comp.Hit = the hit
@@ -1922,8 +1924,24 @@ function G.onMissEvent(comp, via)
   row.concentration = F and F.char and G.concentration(F.char) or nil
   G.hits[#G.hits + 1] = row
   if not G.results.miss_probe then
-    G.results.miss_probe = try(function() return Ext.Types.Serialize(comp.Hit) end) or "?"
+    G.results.miss_probe = G.jsonSafe(try(function() return Ext.Types.Serialize(comp.Hit) end) or "?")
   end
+end
+
+-- A copy of v that Ext.Json.Stringify takes: tables copied, strings, numbers and booleans kept, anything else (an
+-- Entity, an enum or flag userdata) as its text. In game a miss's Serialize(Hit) held an Entity, the record's
+-- Stringify failed and the run ended with no record and no "over" marker.
+function G.jsonSafe(v, seen)
+  local t = type(v)
+  if t == "string" or t == "number" or t == "boolean" or t == "nil" then return v end
+  if t ~= "table" then return tostring(v) end
+  seen = seen or {}
+  if seen[v] then return "<cycle>" end
+  seen[v] = true
+  local o = {}
+  for k, x in pairs(v) do o[k] = G.jsonSafe(x, seen) end
+  seen[v] = nil
+  return o
 end
 
 -- Lanes: an event goes to the lane whose character or enemies it names (to each, when it names both lanes: one
@@ -4139,8 +4157,19 @@ local function finish(F, why)
       set_name = spec.set }, expect = spec.expect, results = G.results, rounds = G.rounds, dmg = G.dmg,
     hits = G.hits, log = G.log, valid = G.results.valid, invalid = G.results.invalid }
   rec.req.spec = nil
+  -- the record is written whatever it holds: a value Stringify refuses is kept as its text, and the record says so
+  local okj, text = pcall(Ext.Json.Stringify, rec)
+  if not okj then
+    G.results.record_error = tostring(text)
+    okj, text = pcall(Ext.Json.Stringify, G.jsonSafe(rec))
+  end
+  -- still refused (a NaN, an Entity as a key): a minimal record, so the "over" marker below is always written
+  if not okj then
+    text = Ext.Json.Stringify({ run = G.runSeq, valid = false, record_error = G.results.record_error,
+      record_error2 = tostring(text), invalid = { "record not writable: " .. tostring(text) } })
+  end
   try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d%s.json", F.started, G.runSeq,
-    F.lane and ("_" .. F.lane.id) or ""), Ext.Json.Stringify(rec))
+    F.lane and ("_" .. F.lane.id) or ""), text)
   G.dump()
   G.mark("over", F, G.results.ended)
   G.phase(F, "done", rec)
@@ -4378,10 +4407,14 @@ end
 G.ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
 G.REC_LEAD_MS, G.HOSTILE_MS = 3000, 2000
 -- The client (gauntlet_ui.lua U.CameraOn) moves the camera onto the character and answers on the "Gauntlet" channel
--- (onNet sets F.camera); without an answer within CAMERA_WAIT_MS the run goes on, results.camera saying so.
-G.CAMERA_WAIT_MS = 3000
+-- (onNet sets F.camera); without an answer within CAMERA_WAIT_MS the run goes on, results.camera saying so. The
+-- character is made the active (selected) one first: the camera follows the selected party member, and in game a
+-- camera set onto the character snapped back to the one the save had selected (parked in the Undercity).
+G.CAMERA_WAIT_MS = 4000
 function G.cameraOn(F, cb)
   F.camera = nil
+  local okA = pcall(Osi.MakePlayerActive, F.char)
+  G.results.camera_select = okA
   G.notify({ kind = "camera", char = uuid(F.char) })
   local polls = 0
   local function poll()

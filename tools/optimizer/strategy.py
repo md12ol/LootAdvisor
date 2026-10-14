@@ -820,7 +820,8 @@ def plan_steps(plan, A, evade_steps, evade_every_round=False):
     prec = set(order[:plan.n_precision])
     for i, (sp, why) in enumerate(kinds):
         group, req, base_why = ("action", None, "attack") if i == 0 else \
-            ("free", "action", "Extra Attack") if i == 1 else ("free", "surge", "Action Surge attack")
+            ("free", "action", "Extra Attack") if i == 1 else \
+            ("action" if i == 2 else "free", "surge", "Action Surge attack")   # the surge's first spends its action
         if i in prec:
             steps.append(A("Shout_PrecisionAttack", "free", "@self", "Precision Attack (superiority die)",
                            cost="SuperiorityDie:1"))

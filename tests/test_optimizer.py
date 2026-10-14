@@ -1027,6 +1027,10 @@ def test_strategy_harness_rounds():
         fails.append(f"manoeuvre costs {[(m.get('cost'), m.get('hit_cost')) for m in men]}")
     if [a.get("requires") for a in r[0] if a["spell"].endswith("MainHandAttack")][-2:] != ["surge", "surge"]:
         fails.append("surge attacks")
+    # booked as the engine charges them: the surge's first attack spends the surge's action, its Extra Attack is free
+    surge = [a.get("group") for a in r[0] if a.get("requires") == "surge"]
+    if surge != ["action", "free"]:
+        fails.append(f"surge attack groups {surge}")
     s2 = [a["spell"] for a in r[1]]
     if s2[:1] != ["Shout_PrecisionAttack"] or s2.count("Target_MainHandAttack") != 2:
         fails.append(f"round 2 {s2}")
@@ -2956,6 +2960,19 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: a manoeuvre counted with an off-hand half", m_strategy_halves_any))
+
+    def m_strategy_surge_free():
+        import strategy as G
+        old = G.plan_steps
+
+        def free(*a, **k):
+            return [dict(s, group="free") if s.get("requires") == "surge" else s for s in old(*a, **k)]
+        G.plan_steps = free
+        try:
+            return _ci_red(test_strategy_harness_rounds)
+        finally:
+            G.plan_steps = old
+    out.append(("strategy: Action Surge's first attack booked free", m_strategy_surge_free))
 
     def m_policy_likely_only():
         import strategy as G

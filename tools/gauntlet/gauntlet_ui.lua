@@ -220,21 +220,32 @@ local function showResult(m)
   end
 end
 
--- Before a recorded fight starts (the server's "camera" message): the camera onto the character the setup teleported
--- to the arena (it stays where it was until the combat moves it), and the answer how far its target point is from the
--- character (U.CAMERA_NEAR m or less: ok). Only the camera is touched, never the character.
-U.CAMERA_NEAR = 3.0
-function U.CameraOn(m)
-  local ok, d = pcall(function()
-    local p = Ext.Entity.Get(m.char).Transform.Transform.Translate
+-- Before a recorded fight starts (the server's "camera" message, after it made the character the selected one): the
+-- camera onto the character the setup teleported to the arena, and the answer how far the camera's target point is
+-- from the character U.CAMERA_SETTLE_MS later (U.CAMERA_NEAR m or less: ok). Read right after setting it, the target
+-- always matched, also when the game moved the camera back to another character a frame later. Only the camera is
+-- touched, never the character.
+U.CAMERA_NEAR, U.CAMERA_SETTLE_MS = 3.0, 1000
+local function cameraDist(char, set)
+  return pcall(function()
+    local p = Ext.Entity.Get(char).Transform.Transform.Translate
     local c = Ext.Entity.GetAllEntitiesWithComponent("GameCameraBehavior")[1].GameCameraBehavior
-    c.TargetDestination = { p[1], p[2], p[3] }
-    c.TargetCurrent = { p[1], p[2], p[3] }
+    if set then
+      c.TargetDestination = { p[1], p[2], p[3] }
+      c.TargetCurrent = { p[1], p[2], p[3] }
+    end
     local t = c.TargetCurrent
     return math.sqrt((t[1] - p[1]) ^ 2 + (t[3] - p[3]) ^ 2)
   end)
-  send({ cmd = "camera", ok = ok and type(d) == "number" and d <= U.CAMERA_NEAR, dist = ok and d or nil,
-    why = (not ok) and tostring(d) or nil })
+end
+function U.CameraOn(m)
+  local ok0, why0 = cameraDist(m.char, true)
+  Ext.Timer.WaitFor(U.CAMERA_SETTLE_MS, function()
+    local ok, d = cameraDist(m.char, false)
+    if not ok0 then ok, d = false, why0 end
+    send({ cmd = "camera", ok = ok and type(d) == "number" and d <= U.CAMERA_NEAR, dist = ok and d or nil,
+      why = (not ok) and tostring(d) or nil })
+  end)
 end
 
 local function onNet(e)
