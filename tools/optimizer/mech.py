@@ -285,6 +285,13 @@ def _tagged(c, a):
     return float(getattr(c.st, "enemy_types", {}).get(tag, 0.0))
 
 
+def _has_dis(c):
+    """HasDisadvantage(): the roll's net Disadvantage where the trigger code knows it (event "dis"), or one nothing in
+    the loadout or plan gives (5% in a day's fights; none in the boss fight, where no one else acts: OTHER_STATUS_P)."""
+    other = 0.05 if OTHER_STATUS_P else 0.0
+    return 1 - (1 - c.ev.get("dis", 0.0)) * (1 - other)
+
+
 PREDICATES = {
     # attack kind (event)
     "IsMeleeAttack": lambda c, a: _ev(c, "melee"),
@@ -341,7 +348,7 @@ PREDICATES = {
     # killing blow: damage of the hit over the enemy's HP (model.ENEMY_HP), set per event by the trigger code
     "IsKillingBlow": lambda c, a: c.ev.get("kill_p", 0.15),
     "HasAdvantage": lambda c, a: c.ev.get("adv", 0.0),
-    "HasDisadvantage": lambda c, a: 0.05,
+    "HasDisadvantage": lambda c, a: _has_dis(c),
     "IsReactionAttack": lambda c, a: 0.0,
     "IsLastConditionRollSuccess": lambda c, a: 0.5,
     "SavingThrow": lambda c, a: c.ev.get("p_fail", 0.4),

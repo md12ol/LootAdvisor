@@ -515,8 +515,9 @@ def test_buff_spells():
 
 
 def test_riposte():
-    """Riposte: per round min(dice kept, enemy misses in a fight) / rounds, each one attack's damage plus a die on a hit
-    (hand formula); none without dice kept for it or for a ranged build."""
+    """Riposte: per round min(dice kept, enemy misses in a fight) / rounds, the misses in the enemy turns played (the
+    boss fight: 15 of 16, none after the character's last turn), each one attack's damage plus a die on a hit (hand
+    formula); none without dice kept for it or for a ranged build."""
     import model
     st = type("St", (), {})()
     st.plan = {"mode": "melee"}
@@ -526,7 +527,7 @@ def test_riposte():
         ev, r = model.riposte_event(st, evs, res, {"riposte_dice": 10.0, "die": 5.5},
                                     {"enemy_attacks": 1.0, "enemy_ph": 0.6})
         few = model.riposte_event(st, evs, res, {"riposte_dice": 2.0, "die": 5.5}, {"enemy_attacks": 1.0, "enemy_ph": 0.6})
-    misses = 16 * 1.0 * 0.4
+    misses = 15 * 1.0 * 0.4
     want = min(10.0, misses) / 16 * (30.0 + 0.9 * 5.5)
     if abs(r["dmg"] - want) > 1e-9:
         fails.append(f"riposte {r['dmg']} want {want}")
@@ -545,7 +546,9 @@ def test_item_riposte():
     passives of the hand the weapon is in, not the other hand's; per round min(1 - Battle Master ripostes, enemy
     attacks x reach x miss chance), reach 1 for a melee build and the scenario's share otherwise, less the enemy turn
     after the last round in the boss fight (the gauntlet ends as the character's 16th turn ends; a day keeps it); the
-    melee main hand's attack with the mark on its hits and critical hits (hand formula)."""
+    melee main hand's attack with the mark's whole die on its hits and critical hits (up in every enemy turn) and the
+    weapon's on-damage passive (Crimson Mischief's Vicious: 7 a hit with net Advantage and no net Disadvantage, the
+    day's 5% Disadvantage from others kept) (hand formulas)."""
     import model
     S = {"Blade": {"PassivesOffHand": " Off_P", "PassivesMainHand": " Main_P"},
          "Off_P": {"Boosts": "UnlockInterrupt(Interrupt_R)"},
@@ -556,10 +559,15 @@ def test_item_riposte():
          "Interrupt_H": {"Conditions": "IsMeleeAttack() and IsHit()", "Properties": "UseSpell(SWAP,Target_H,true)"},
          "Hitter": {"PassivesOnEquip": "Hit_P"}}
 
-    def st_(mode, slot="OffHand", sid="Blade"):
+    vicious = {"hand": "m", "ctx": "OnDamage", "props": "", "functors": "DealDamage(7, Piercing,Magical)",
+               "cond": "AttackedWithPassiveSourceWeapon() and HasAdvantage() and not HasDisadvantage()"}
+
+    def st_(mode, slot="OffHand", sid="Blade", triggers=()):
         st = type("St", (), {})()
         st.plan, st.loadout, st.target_prone = {"mode": mode}, {slot: sid}, 0.0
         st.W = type("W", (), {"stats": S})()
+        st.mechs = {"MainHand": type("M", (), {"triggers": list(triggers)})()} if triggers else {}
+        st.class_passives, st.unknown, st.act = (), set(), 3
         return st
     fails = []
     found = [model.item_riposte(st_("melee", "OffHand")), model.item_riposte(st_("melee", "MainHand")),
@@ -567,10 +575,13 @@ def test_item_riposte():
     if found != ["Interrupt_R", "Interrupt_M", None]:
         fails.append(f"found {found}")
     old = model.eval_event
+    dis_net = [0.0]
     model.eval_event = lambda st, ev, b, nm, E, sp, adv=0.0, dis=0.0: dict(
-        dmg=ev["n"] * 20.0, hits=ev["n"] * 0.9, crits=ev["n"] * 0.1, ph=0.9, pc=0.1)
+        dmg=ev["n"] * 20.0, hits=ev["n"] * 0.9, crits=ev["n"] * 0.1, ph=0.9, pc=0.1, ph_adv=0.9, adv_net=1.0,
+        dis_net=dis_net[0])
     tgt = {"prone": 0.0, "adv": 0.0, "save_pen": 0.0}
-    spec = {"riposte_ev": {"name": "item riposte", "n": 0.0}, "mark": 3.0}
+    spec = {"riposte_ev": {"name": "item riposte", "n": 0.0, "slot": "MainHand"}, "mark": 2.0, "mark_die": 3.0}
+    vic = {}
     try:
         with model.scenario("boss"):
             ev, r = model.item_riposte_event(st_("melee"), [], [], spec, {"enemy_attacks": 1.0, "enemy_ph": 0.6},
@@ -581,10 +592,17 @@ def test_item_riposte():
                                               {"enemy_attacks": 3.0, "enemy_ph": 0.2}, [], {}, {}, tgt)
             none = model.item_riposte_event(st_("melee"), [], [], {"mark": 3.0},
                                             {"enemy_attacks": 1.0, "enemy_ph": 0.6}, [], {}, {}, tgt)
+            for d in (0.0, 0.5):
+                dis_net[0] = d
+                vic["boss", d] = model.item_riposte_event(st_("melee", triggers=[vicious]), [], [], spec,
+                                                          {"enemy_attacks": 1.0, "enemy_ph": 0.6}, [], {}, {}, tgt)
+            dis_net[0] = 0.0
         day_ev = None
         with model.scenario("day"):
             day_ev, _ = model.item_riposte_event(st_("melee"), [], [], spec, {"enemy_attacks": 1.0, "enemy_ph": 0.6},
                                                  [], {}, {}, tgt)
+            vic["day", 0.0] = model.item_riposte_event(st_("melee", triggers=[vicious]), [], [], spec,
+                                                       {"enemy_attacks": 1.0, "enemy_ph": 0.6}, [], {}, {}, tgt)
     finally:
         model.eval_event = old
     played = 15 / 16                                      # 16 enemy turns in reach, the last one not played
@@ -597,8 +615,50 @@ def test_item_riposte():
         fails.append(f"day n {day_ev['n']} (every enemy turn played)")
     if abs(evc["n"] - 0.75) > 1e-9:
         fails.append(f"reaction cap {evc['n']}")
+    for (scn, d), p_vic in ((("boss", 0.0), 1.0), (("boss", 0.5), 0.5), (("day", 0.0), 0.95)):
+        n = 0.4 * (played if scn == "boss" else 1.0)
+        got = vic[scn, d][1]["dmg"]
+        if abs(got - n * (20 + 3.0) - n * 0.9 * 7 * p_vic) > 1e-9:
+            fails.append(f"Vicious {scn} Disadvantage {d}: dmg {got} want {n * (20 + 3.0) + n * 0.9 * 7 * p_vic}")
     if none is not None or ev["kind"] != "reaction" or ev["spell_id"] != "Interrupt_R":
         fails.append(f"event {none} {ev}")
+    assert not fails, fails
+
+
+def test_boss_turns_taken():
+    """Damage taken in the boss fight: the boss attacks only from within reach, so in the enemy turns played there
+    (15 of 16 for a melee build: none after the character's last turn; 14 for a ranged one: none in round 1 either),
+    as its riposte counts them; a day's enemies attack in every round (hand formulas: the same character with every
+    enemy turn counted)."""
+    import model
+
+    def st_(mode):
+        st = type("St", (), {})()
+        st.sheet = {"ac": 18, "hp": 60, "res": []}
+        st.act, st.plan, st.shield, st.prof, st.exposure = 3, {"mode": mode}, False, 4, 1.0
+        st.mods = {k: 1 for k in ("STR", "DEX", "CON", "INT", "WIS", "CHA")}
+        st.BI, st.classes, st.raging, st.rages, st.unknown = {"seq": ["Rogue"]}, {"Rogue": 12}, False, 0, set()
+        return st
+    tgt = {"atk_pen": 0.0}
+    fails = []
+    got = {}
+    for scn in ("boss", "day"):
+        with model.scenario(scn):
+            for mode in ("melee", "ranged"):
+                d = model.durability(st_(mode), model.ENEMY[3], [], {}, tgt, 0.0)
+                keep = dict(model.ENEMY_TURNS)
+                model.ENEMY_TURNS["reach_only"] = False
+                try:
+                    every = model.durability(st_(mode), model.ENEMY[3], [], {}, tgt, 0.0)
+                finally:
+                    model.ENEMY_TURNS.update(keep)
+                got[scn, mode] = d["incoming"] / every["incoming"]
+                if abs(d["R"] * d["incoming"] - every["R"] * every["incoming"]) > 1e-9:
+                    fails.append(f"{scn} {mode}: R {d['R']} not hit points over the damage taken")
+    for k, want in ((("boss", "melee"), 15 / 16), (("boss", "ranged"), 14 / 16), (("day", "melee"), 1.0),
+                    (("day", "ranged"), 1.0)):
+        if abs(got[k] - want) > 1e-9:
+            fails.append(f"{k}: damage taken x {got[k]} want {want}")
     assert not fails, fails
 
 
@@ -1040,18 +1100,17 @@ def test_strategy_parts():
 GEAR_THX_EVADE = {"attacks": 3.188, "hits": 2.856, "crits": 0.606, "hit_rate": 0.8959, "crit_rate": 0.19,
                   "adv_rate": 1.0, "dis_rate": 0.0, "dis_any_rate": 0.0, "sneak": 4.24, "dmg_per_hit": 30.06,
                   "react_attacks": 0.525, "react_hits": 0.504, "react_crits": 0.1, "react_sneak": 4.23,
-                  "react_dmg": 18.72, "taken": 3.825}
+                  "react_dmg": 22.56, "taken": 3.347}
 
 
 def test_strategy_gear_crosscheck():
     """The strategy's evade parts against the gear model's (GEAR_THX_EVADE) under the gear model's assumptions (no
     concentration break, so Hunter's Mark is never recast; we act first; no superiority dice, no Piercing Shot): the
-    rolls, landed rolls, critical hits, their rates, the Advantage shares and the riposte's rolls, landed rolls,
-    critical hits and Sneak Attack are equal within rounding. Known differences, checked as such: the gear model's
-    own-turn Sneak Attack (the charge lost to the riposte as a share) within 1%; its damage per landed roll within 2%;
-    its riposte damage lower by about Vicious per landed riposte (the search counts Vicious on the riposte, seen in
-    game); its damage taken counts a boss attack in all 16 rounds, the gauntlet's boss attacks in 14 (none in round 1,
-    no turn after the 16th)."""
+    rolls, landed rolls, critical hits, their rates, the Advantage shares, the riposte's rolls, landed rolls, critical
+    hits, Sneak Attack and damage (Crimson Mischief's Vicious on it) and the damage taken (the boss attacks in 14 of the
+    16 rounds: none in round 1, no turn after the 16th) are equal within rounding. Known differences, checked as such:
+    the gear model's own-turn Sneak Attack (the charge lost to the riposte as a share) within 1%; its damage per landed
+    roll within 2%."""
     import strategy as G
     P = _thx_profile(riposte_ts=True, conc_save=30, sup_dice=0, pierce_melee=False, pierce_ranged=False,
                      taken_hit=9.0, taken_crit=4.5)
@@ -1059,21 +1118,19 @@ def test_strategy_gear_crosscheck():
     g = GEAR_THX_EVADE
     fails = [f"{k}: {e[k]} vs gear {g[k]}" for k in ("attacks", "hits", "crits", "hit_rate", "crit_rate", "adv_rate",
                                                      "dis_rate", "dis_any_rate", "react_attacks", "react_hits",
-                                                     "react_crits", "react_sneak")
+                                                     "react_crits", "react_sneak", "taken")
              if abs(e[k] - g[k]) > 0.0011]
     if abs(e["sneak"] / g["sneak"] - 1) > 0.01 or abs(e["dmg_per_hit"] / g["dmg_per_hit"] - 1) > 0.02:
         fails.append(f"Sneak Attack {e['sneak']} vs {g['sneak']}, per landed roll {e['dmg_per_hit']} vs {g['dmg_per_hit']}")
-    vicious = (e["react_dmg"] - g["react_dmg"]) / e["react_hits"]
-    if not 6.0 < vicious < 9.0:
-        fails.append(f"riposte damage {e['react_dmg']} vs {g['react_dmg']}: {vicious:.2f} per landed riposte")
-    if abs(e["taken"] - g["taken"] * 14 / 16) > 0.002:
-        fails.append(f"taken {e['taken']} vs gear {g['taken']} x 14 / 16")
+    if abs(e["react_dmg"] - g["react_dmg"]) > 0.011:
+        fails.append(f"riposte damage {e['react_dmg']} vs gear {g['react_dmg']}")
     assert not fails, fails
 
 
 CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
-            test_buff_spells, test_riposte, test_item_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
+            test_buff_spells, test_riposte, test_item_riposte, test_boss_turns_taken, test_wrath_storm,
+            test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
             test_strategy_true_strike, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck]
@@ -1649,9 +1706,10 @@ def check_scenario(out=None):
     """model.scenario("boss") scores the gauntlet's boss fight (expectations from its rules, not the code): one
     enemy, so an area spell (Fireball, radius read here from the stats) hits one target and nothing chains; one
     16-round fight with no short rest, so a Fighter 12's Action Surge adds its 3 attacks once in 16 rounds; Scabby
-    Pugilist Circlet's "2 enemies within 3 m" never holds; the enemy attacks once a round at half damage (17 -> 9,
-    one d20 enumerated here vs the model's AC); Markoheshkir's once-per-short-rest spells (cooldown read here) once
-    in 16 rounds; and the day's numbers are the same before and after the block."""
+    Pugilist Circlet's "2 enemies within 3 m" never holds; the enemy attacks once a round in reach (15 of 16 for a
+    melee build) at half damage (17 -> 9, one d20 enumerated here vs the model's AC); Markoheshkir's
+    once-per-short-rest spells (cooldown read here) once in 16 rounds; and the day's numbers are the same
+    before and after the block."""
     import mech
     import model
     W = _world()
@@ -1691,7 +1749,8 @@ def check_scenario(out=None):
     if day[1] < 2.0 - 1e-9:
         fails.append(f"day: Scabby Pugilist +2 read as {day[1]} for a melee build")
     ac = boss[3].dur["ac"]
-    want_taken = _enum_hit(model.ENEMY[3]["atk"], ac, 0) * 9 + 0.05 * 9 * 0.5
+    # a melee build: the boss attacks in 15 of the 16 rounds (no turn after the character's 16th)
+    want_taken = (_enum_hit(model.ENEMY[3]["atk"], ac, 0) * 9 + 0.05 * 9 * 0.5) * 15 / 16
     if abs(boss[3].dur["incoming"] - want_taken) > 1e-6:
         fails.append(f"boss damage taken {boss[3].dur['incoming']:.3f}, want {want_taken:.3f} (AC {ac})")
     if (day[0], day[1], day[2], day[3].dpr, day[3].score, day[4]) != (again[0], again[1], again[2], again[3].dpr,
@@ -2909,6 +2968,55 @@ def mutations():
         finally:
             model.reach_turns = old
     out.append(("model: the boss fight's enemy turn after the last round counted", m_model_last_turn))
+
+    def m_model_taken_every_round():
+        import model
+        old = dict(model.SCENARIOS["boss"])
+        model.SCENARIOS["boss"]["attacks_in_reach"] = False             # the boss attacks in all 16 rounds
+        try:
+            return _ci_red(test_boss_turns_taken)
+        finally:
+            model.SCENARIOS["boss"].update(old)
+    out.append(("model: the boss's damage taken counted in every round", m_model_taken_every_round))
+
+    def m_model_riposte_no_passive():
+        import model
+        old = model.run_triggers
+
+        def bad(st, evs, *a):
+            out = old(st, evs, *a)
+            # no on-damage passive on the riposte
+            return (0.0,) + out[1:] if evs and evs[0].get("name") == "item riposte" else out
+        model.run_triggers = bad
+        try:
+            return _ci_red(test_item_riposte)
+        finally:
+            model.run_triggers = old
+    out.append(("model: the riposte without the weapon's on-damage passive (Vicious)", m_model_riposte_no_passive))
+
+    def m_model_riposte_mark_share():
+        import model
+        old = model.item_riposte_event
+
+        def bad(st, evs, results, special, *rest):
+            # the mark's own-turn share (not up in round 1) on the riposte
+            return old(st, evs, results, dict(special, mark_die=special.get("mark")), *rest)
+        model.item_riposte_event = bad
+        try:
+            return _ci_red(test_item_riposte)
+        finally:
+            model.item_riposte_event = old
+    out.append(("model: the riposte's mark at its own-turn share", m_model_riposte_mark_share))
+
+    def m_mech_dis_constant():
+        import mech
+        old = mech.PREDICATES["HasDisadvantage"]
+        mech.PREDICATES["HasDisadvantage"] = lambda c, a: 0.05          # the roll's own Disadvantage ignored
+        try:
+            return _ci_red(test_item_riposte)
+        finally:
+            mech.PREDICATES["HasDisadvantage"] = old
+    out.append(("mech: HasDisadvantage a constant 5%", m_mech_dis_constant))
 
     def m_model_parts_merged():
         import model
