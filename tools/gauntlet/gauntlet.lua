@@ -2464,6 +2464,9 @@ end
 -- Leaving the boss: more than 3 m from it (a ranged attack on a target that close has Disadvantage) and out of its
 -- reach (Threatened), with slack.
 G.LEAVE_M = 4.5
+-- How near the goal a found route must end: the game's path stops at its own grid points, 1.1 to 2.3 m short of a goal
+-- on the ring around the boss in the House of Hope (12 of 12 routes), so a tighter limit found no spot at all.
+G.LEAVE_SNAP_M = 2.5
 -- The spot a move step goes to, nearest the character: "@leave_spot" = a spot G.LEAVE_M or more from the boss: the
 -- arena's surveyed "leave_spots", else one of 12 around the boss at G.LEAVE_M the character can walk to (G.route) within
 -- its movement; "@hide_spot" = the arena's "hide_spots" (surveyed in game as out of the boss's sight) outside its
@@ -2486,7 +2489,7 @@ function G.moveTarget(F, to)
       local a = 2 * math.pi * k / 12
       local g = { bx + G.LEAVE_M * math.cos(a), by, bz + G.LEAVE_M * math.sin(a) }
       local pts = G.route(F.char, g[1], g[2], g[3])
-      local poly = pts and G.cutAt({ x0, y0, z0 }, pts, g[1], g[2], g[3], 0.6, budget)
+      local poly = pts and G.cutAt({ x0, y0, z0 }, pts, g[1], g[2], g[3], G.LEAVE_SNAP_M, budget)
       if poly then list[#list + 1] = { poly[#poly][1], poly[#poly][2], poly[#poly][3] } end
     end
   end

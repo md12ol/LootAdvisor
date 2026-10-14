@@ -944,6 +944,9 @@ def evade_lua_tests(L):
       G.route = function(_, x, y, z) return { { x, y, z } } end
       local F = { char = "c1", enemies = { "b1" }, A = {} }
       T_leave = G.moveTarget(F, "@leave_spot")
+      -- the game's path stops short of the goal (in game 1.1 to 2.3 m): its end is the spot
+      G.route = function(_, x, y, z) return { { x, y, z + 1.3 } } end
+      T_short = G.moveTarget(F, "@leave_spot")
       G.route = function() return nil end
       T_noroute = G.moveTarget(F, "@leave_spot")
       F.A = { leave_spots = { { 3, 0, 0 }, { 8, 0, 0 } } }
@@ -953,6 +956,9 @@ def evade_lua_tests(L):
     lv = g.T_leave and lst(g.T_leave)
     check("evade: with no surveyed spot the harness finds one 4.5 m from the boss by path, nearest the character",
           lv is not None and abs(((lv[0] - 2) ** 2 + lv[2] ** 2) ** 0.5 - 4.5) < 1e-6 and lv[0] < 0, str(lv))
+    sh = g.T_short and lst(g.T_short)
+    check("evade: a path that ends 1.3 m short of the ring still gives a spot (its end), out of the boss's reach",
+          sh is not None and ((sh[0] - 2) ** 2 + sh[2] ** 2) ** 0.5 >= 3.8, str(sh))
     check("evade: no path, no spot", g.T_noroute is None, str(g.T_noroute))
     check("evade: a surveyed leave spot too close to the boss is not taken",
           g.T_surveyed is not None and g.T_surveyed[1] == 8, str(g.T_surveyed and lst(g.T_surveyed)))
@@ -5379,6 +5385,9 @@ MUTATIONS = [
      ""),
     ("impact wait: a confirmed player cast never remembered", GL,
      "    if P.player then F.lastCast = { P = P, t = t } end\n", ""),
+    ("evade: a path that stops short of the ring gives no spot", GL,
+     "G.cutAt({ x0, y0, z0 }, pts, g[1], g[2], g[3], G.LEAVE_SNAP_M, budget)",
+     "G.cutAt({ x0, y0, z0 }, pts, g[1], g[2], g[3], 0.6, budget)"),
     ("dual wield: the off-hand half never paid", GL, "    if G.offhandFired(P, G.dmg, G.hits) then\n", "    if false then\n"),
     ("dual wield: any Offhand row counted", GL, "    if d.source == P.who or d.owner == P.who then\n      local cause",
      "    if true then\n      local cause"),
