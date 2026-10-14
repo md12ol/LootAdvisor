@@ -4188,7 +4188,7 @@ G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES, G.ACT_MAX_MS
 G.COMBAT_LOST_MS = 3000
 -- pauses around the character's turn: after the turn starts (the engine refills the turn's resources) and after the
 -- last action (the cast has ended: G.step waits for casting() first). The combat's first turn needs longer: in game a
--- player-path request sent 200 ms after it started was refused (CastSpellFailed, 3 of 3), one sent 400 ms or later was
+-- player-path request sent 200 ms after it started was refused (CastSpellFailed, 4 of 4), one sent 400 ms or later was
 -- cast (5 of 5); in later turns 100-200 ms was cast (6 of 6).
 G.ACT_DELAY_MS, G.FIRST_ACT_DELAY_MS, G.END_DELAY_MS = 200, 1000, 100
 -- Out of combat for COMBAT_LOST_MS while waiting for the turn? (IsInCombat 0; an unknown answer is no evidence.) The
