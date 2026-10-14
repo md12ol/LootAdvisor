@@ -1152,7 +1152,7 @@ PARTS = [("attacks", "own turn: attack rolls per round", "attacks", "{:.2f}"),
          ("react_dmg", "reactions: damage per round", "react_dmg", "{:.2f}"),
          ("react_sneak", "reactions: Sneak Attack damage per round", "react_sneak", "{:.2f}"),
          ("hm_share", "Hunter's Mark on landed hits", None, "{:.0%}"),
-         ("sa_share", "Sneak Attack in turns with net Advantage", None, "{:.0%}"),
+         ("sa_share", "Sneak Attack in turns with the charge and net Advantage", None, "{:.0%}"),
          ("dpr", "damage per round (own turn and reactions)", "dpr", "{:.1f}")]
 # parts the model counts with the reactions in when its numbers come from before the split (no "split" in expect.boss):
 # not compared, the game's being the own turn's alone

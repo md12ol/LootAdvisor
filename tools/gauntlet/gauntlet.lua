@@ -2363,6 +2363,10 @@ function G.playerCastFor(req)
 end
 -- One scripted cast by u, on the run's path. -> true, or false and why it could not be asked for
 function G.castRequest(F, u, spell, tgt, atPos)
+  if u == F.char then
+    F.asked = F.asked or {}
+    F.asked[baseSpell(spell)] = true
+  end
   if F.playerCast then
     local req, why = G.playerRequest(F, u, spell, tgt, atPos)
     return req ~= nil, why
@@ -2401,6 +2405,16 @@ function G.bindSid(P, R)
     end
   end
   return nil
+end
+-- A cast the engine started and ended with a CastSpellFailed of its own id (sid) instead of a CastedSpell: Dread
+-- Ambusher after its hit (19 of 19 records), and enemy attacks a riposte cancelled. In the probe every started cast
+-- ended with exactly one of the two, after its last row; a refusal carries id 0 and has no UsingSpell.
+function G.failedAfterStart(P, R)
+  if not P.sid or P.sid == 0 then return false end
+  for _, list in ipairs({ R.cast_fails or {}, R.cast_fails_noise or {} }) do
+    for _, x in ipairs(list) do if x.who == P.who and x.sid == P.sid then return true end end
+  end
+  return false
 end
 function G.playerRefused(P, R, t)
   local f = G.castRefused(P, R.cast_fails)
@@ -3043,8 +3057,9 @@ function G.settle(F, R, t)
   local ev = G.castEvidence(P, R.casts, G.dmg, function(k, lv) return resAmount(F.char, k, lv) end)
   if ev and P.player and not P.ended then
     -- the engine spends at the cast's start: the check waits for its CastedSpell, when the damage rows are in
-    if ev ~= "cast" and t - (P.t0 or t) < G.CAST_MAX_MS then return false end
-    if ev ~= "cast" then P.rec.no_casted = ev end
+    local failedEnd = ev ~= "cast" and G.failedAfterStart(P, R)
+    if ev ~= "cast" and not failedEnd and t - (P.t0 or t) < G.CAST_MAX_MS then return false end
+    if failedEnd then P.rec.ended = "failed after start" elseif ev ~= "cast" then P.rec.no_casted = ev end
     P.ended = true
   end
   -- an attack's strikes: CastedSpell usually comes after its rows, but after a frozen cast it came 130 ms before them,
@@ -3753,12 +3768,18 @@ end
 G.ROLL_CAUSES = { Attack = true, Offhand = true }
 G.ROLL_MERGE_MS = 150
 G.ROLL_HIT_BEFORE, G.ROLL_HIT_AFTER = 300, 100
+-- The own turn's Sneak Attack: one in the enemy's turn (on a riposte, logged in the same round) is not the turn's.
 local function sneakTime(R, me)
+  local released = R.tm and R.tm.released
   for _, x in ipairs(R.reactions_seen or {}) do
-    if x.who == me and tostring(x.interrupt):find("SneakAttack", 1, true) then return x.t or false end
+    if x.who == me and x.phase ~= "enemy" and tostring(x.interrupt):find("SneakAttack", 1, true) then
+      return x.t or false
+    end
   end
   for _, c in ipairs(R.casts or {}) do
-    if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) then return c.t or false end
+    if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) and not (released and c.t and c.t > released) then
+      return c.t or false
+    end
   end
   return nil
 end
@@ -4070,13 +4091,16 @@ function G.hitRiders(rounds, hits, me)
     local adv, dis = flagAdv, false
     if R.rolls and (R.rolls.known or 0) > 0 then adv, dis = R.rolls.net_adv_any == true, R.rolls.dis_any == true end
     sa.turns = sa.turns + 1
-    if adv then sa.adv_turns = sa.adv_turns + 1 end
+    -- a turn that started without the charge (spent on the last riposte) had no Sneak Attack to land
+    local charged = not (R.policy and R.policy.state and R.policy.state.sneak == false)
+    if not charged then sa.no_charge = (sa.no_charge or 0) + 1 end
+    if adv and charged then sa.adv_turns = sa.adv_turns + 1 end
     if dis then sa.dis_turns = sa.dis_turns + 1 end
     if sneak then
       sa.rider = sa.rider + 1
       if adv then sa.rider_adv = sa.rider_adv + 1 end
     end
-    sa.per_turn[#sa.per_turn + 1] = { r = R.r, adv = adv, dis = dis, sneak = sneak }
+    sa.per_turn[#sa.per_turn + 1] = { r = R.r, adv = adv, dis = dis, sneak = sneak, charged = charged }
   end
   return out
 end
@@ -4635,6 +4659,13 @@ function G.sheathHeld(F, R, t)
     local l = ent(F.char).ServerUnsheathSpellAnimationLifetime
     return l and (l.Spell and l.Spell.Prototype or "?")
   end)
+  -- only a cast the harness did not ask for (a reaction: Riposte) holds the turn; the character's own last attack
+  -- sheathes ~5 s after a turn with no riposte and never froze a request (101 of 101 in the probe)
+  if spell and (F.asked or {})[baseSpell(spell)] then
+    R.tm = R.tm or {}
+    R.tm.sheath_own = spell
+    spell = nil
+  end
   if not spell then
     if F.sheathSince then R.tm = R.tm or {}; R.tm.sheath = { spell = F.sheathSpell, ms = t - F.sheathSince } end
     F.sheathSince, F.sheathSpell = nil, nil

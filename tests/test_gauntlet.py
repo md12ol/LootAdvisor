@@ -738,6 +738,16 @@ def engine_gate_tests(L):
       T_sh_step2 = planned
       G.planRound, G.F = plan, nil
       me.ServerUnsheathSpellAnimationLifetime = nil
+      -- the character's own last attack (a spell the harness asked for) holds nothing; recorded as such
+      local Fa, Ra = { char = "c1", asked = { Target_MainHandAttack = true } }, { tm = {} }
+      me.ServerUnsheathSpellAnimationLifetime = { Spell = { Prototype = "Target_MainHandAttack" } }
+      T_sh_own = G.sheathHeld(Fa, Ra, 100)
+      T_sh_own_rec = Ra.tm.sheath_own
+      me.ServerUnsheathSpellAnimationLifetime = nil
+      -- castRequest notes what the harness asked for
+      local Fc = { char = "c1" }
+      pcall(G.castRequest, Fc, "c1", "Target_MainHandAttack_2", "b1")
+      T_sh_asked = Fc.asked and Fc.asked.Target_MainHandAttack == true
       -- a move: standing still 1.5 s is no end; the engine's event is, read MOVE_SETTLE_MS later
       local t = 0
       Ext.Utils.MonotonicTime = function() return t end
@@ -776,6 +786,9 @@ def engine_gate_tests(L):
           f"{g.T_sh1} {g.T_sh2} {g.T_sh3} {g.T_sh_rec}")
     check("sheath gate: the step loop plans the round only once the sheath is gone",
           g.T_sh_step1 == 0 and g.T_sh_step2 == 1, f"{g.T_sh_step1} {g.T_sh_step2}")
+    check("sheath gate: the character's own last attack holds nothing (recorded); the harness notes what it asked for",
+          g.T_sh_own is False and g.T_sh_own_rec == "Target_MainHandAttack" and g.T_sh_asked is True,
+          f"{g.T_sh_own} {g.T_sh_own_rec} {g.T_sh_asked}")
     check("sheath gate: a sheath that never ends is given up at READY_MAX_MS, recorded",
           g.T_sh_cap is False and g.T_sh_gave is True, f"{g.T_sh_cap} {g.T_sh_gave}")
     check("move: standing still is no end; the engine's move event is, read MOVE_SETTLE_MS later",
@@ -1645,6 +1658,19 @@ def player_cast_tests(L):
       G.hits, G.dmg = {}, savedDmgL
       T_s_rec = { rec1.result, rec1.offhand_half, R1.cast_faults == nil, RES.BonusActionPoint,
         E.c1.DualWielding.RangedToggledOn }
+      -- a cast the engine ends with a CastSpellFailed of its own id after it hit (Dread Ambusher) is over at once; a
+      -- failure of another id is not its end
+      local savedD = G.dmg
+      G.dmg = { { source = "c1", target = "b1", cause = "Attack", amount = 20, t = 900 } }
+      G.hits = { { source = "c1", target = "b1", attack_flags = "FirstAttack,LastAttack", hit = true } }
+      local Fd, Rd, recd = pend("Target_MainHandAttack", false)
+      Fd.pending.sid = 77
+      Rd.cast_fails = { { who = "c1", spell = "Target_MainHandAttack", sid = 78 } }
+      T_fa_other = G.settle(Fd, Rd, 1200)
+      Rd.cast_fails[2] = { who = "c1", spell = "Target_MainHandAttack", sid = 77 }
+      T_fa_own = G.settle(Fd, Rd, 1300)
+      T_fa_rec = recd.ended
+      G.dmg, G.hits = savedD, {}
       -- no evidence yet past CONFIRM_MS: a cast the engine started (UsingSpell) is still waited for, one it did not
       -- start is a miss
       local savedDmg = G.dmg
@@ -1794,6 +1820,9 @@ def player_cast_tests(L):
     lr = seq(g.T_l_rec, 2)
     check("player cast: an off-hand half the engine dropped is waited for, then a 'lost half' fault",
           g.T_l_wait is False and g.T_l_done is True and lr == ["lost", "lost half"], f"{g.T_l_wait} {g.T_l_done} {lr}")
+    check("player cast: a CastSpellFailed of the cast's own id after it started ends it at once; another id's does not",
+          g.T_fa_other is False and g.T_fa_own is True and g.T_fa_rec == "failed after start",
+          f"{g.T_fa_other} {g.T_fa_own} {g.T_fa_rec}")
     check("player cast: no evidence yet, a cast the engine started (UsingSpell) waited for, one never started a miss",
           g.T_s_using is False and g.T_s_nouse is True, f"{g.T_s_using} {g.T_s_nouse}")
     check("player cast: a toggled shot that matches its costs is done, the harness pays nothing, the toggle put back",
@@ -4302,6 +4331,10 @@ def pointer_tests():
         check("pointer: moved off the hotbar before the Start", order[:2] == ["pointer", "start"], str(order))
         check("pointer: a share of the screen away from its edges",
               all(0.1 <= v <= 0.9 for v in E.POINTER_AT), str(E.POINTER_AT))
+        check("pointer: LA_POINTER_AT sets the spot; a bad or out-of-range value keeps the default",
+              E.pointer_at({"LA_POINTER_AT": "0.5,0.4"}) == (0.5, 0.4) and E.pointer_at({}) == E.POINTER_AT
+              and E.pointer_at({"LA_POINTER_AT": "x"}) == E.POINTER_AT
+              and E.pointer_at({"LA_POINTER_AT": "0.95,0.5"}) == E.POINTER_AT, str(E.pointer_at({"LA_POINTER_AT": "0.5,0.4"})))
     finally:
         E.pointer_off_ui, E.ev, E.write_test = old
 
@@ -5374,6 +5407,18 @@ def roll_tests(L):
       local hh = { { r = 2, source = me, hit = true, flags = "AttackAdvantage,Hit" },
         { r = 3, source = me, hit = true, flags = "AttackAdvantage,Hit" } }
       T_sa = G.hitRiders(rounds, hh, me).sneak_attack
+      -- a riposte's Sneak Attack (enemy phase, or a cast after the turn was released) is not the own turn's; a turn
+      -- that started without the charge is not counted as one that could have used it
+      local rr = {
+        { r = 5, rolls = { known = 1, net_adv_any = true }, status_log = {}, tm = { released = 1000 },
+          casts = { { who = me, spell = "Target_SneakAttack", t = 1500 } },
+          reactions_seen = { { who = me, interrupt = "Interrupt_SneakAttack_Critical", phase = "enemy" } },
+          policy = { state = { sneak = false } } },
+        { r = 6, rolls = { known = 1, net_adv_any = true }, status_log = {}, casts = {},
+          reactions_seen = { { who = me, interrupt = "Interrupt_SneakAttack", phase = "own" } },
+          policy = { state = { sneak = true } } } }
+      local sr = G.hitRiders(rr, {}, me).sneak_attack
+      T_sr = { sr.per_turn[1].sneak, sr.per_turn[2].sneak, sr.adv_turns, sr.rider_adv, sr.no_charge }
       -- the summary adds the rolls up
       G.rounds = { { r = 1, actions = {}, rolls = { n = 3, landed = 2, crit = 1, miss = 1, dmg = 73, rider = 6,
         sneak_dmg = 6, known = 2, adv = 2, dis = 1, net_adv = 1 } },
@@ -5425,6 +5470,9 @@ def roll_tests(L):
           sa.turns == 4 and sa.adv_turns == 2 and sa.dis_turns == 1 and sa.rider == 2 and sa.rider_adv == 1 and
           pt == [(1, True, False, True), (2, False, True, False), (3, True, False, False), (4, False, False, True)],
           f"{sa.turns} {sa.adv_turns} {sa.rider} {sa.rider_adv} {pt}")
+    srr = seq(g.T_sr, 5)
+    check("Sneak Attack per turn: a riposte's is not the own turn's; a turn without the charge not counted as one that could",
+          srr == [False, True, 1, 1, 1], str(srr))
     s = g.T_sum.rolls
     check("summary: the run's rolls added up", s.n == 5 and s.landed == 3 and s.crit == 1 and s.dmg == 98 and
           s.net_adv == 2 and s.sneak_dmg == 6, f"{s.n} {s.landed} {s.dmg}")
@@ -6621,10 +6669,25 @@ MUTATIONS = [
      '"MeleeOffHand": "PassivesOffHand", "RangedOffHand": "PassivesOffHand"}',
      '"MeleeOffHand": "PassivesMainHand", "RangedOffHand": "PassivesMainHand"}'),
     ("player cast: checked before the cast's end", GL,
-     '    if ev ~= "cast" and t - (P.t0 or t) < G.CAST_MAX_MS then return false end\n', ""),
+     '    if ev ~= "cast" and not failedEnd and t - (P.t0 or t) < G.CAST_MAX_MS then return false end\n', ""),
     ("player cast: a started cast with no evidence given up at CONFIRM_MS", GL,
      "  local started = casting(F.char) or (P.player and G.usingSeen(P, R))\n",
      "  local started = casting(F.char)\n"),
+    ("player cast: a CastSpellFailed of any id ends the cast", GL,
+     "    for _, x in ipairs(list) do if x.who == P.who and x.sid == P.sid then return true end end",
+     "    for _, x in ipairs(list) do if x.who == P.who then return true end end"),
+    ("player cast: a same-id CastSpellFailed waits the full cap", GL,
+     '    local failedEnd = ev ~= "cast" and G.failedAfterStart(P, R)', "    local failedEnd = false"),
+    ("sheath gate: the character's own last attack holds the turn", GL,
+     "  if spell and (F.asked or {})[baseSpell(spell)] then", "  if false then"),
+    ("sheath gate: what the harness asked for not noted", GL, "    F.asked[baseSpell(spell)] = true\n", ""),
+    ("Sneak Attack per turn: a riposte's (enemy phase) counted for the own turn", GL,
+     '    if x.who == me and x.phase ~= "enemy" and tostring(x.interrupt):find("SneakAttack", 1, true) then',
+     '    if x.who == me and tostring(x.interrupt):find("SneakAttack", 1, true) then'),
+    ("Sneak Attack per turn: a cast after the turn's release counted", GL,
+     " and not (released and c.t and c.t > released) then", " then"),
+    ("Sneak Attack per turn: a turn without the charge counted as one that could", GL,
+     "    if adv and charged then sa.adv_turns = sa.adv_turns + 1 end", "    if adv then sa.adv_turns = sa.adv_turns + 1 end"),
     ("sheath gate: the step loop ignores it", GL,
      "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
     ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",
