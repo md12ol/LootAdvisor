@@ -209,11 +209,17 @@ def A(spell, group, target="@boss", why=None, **kw):
     return d
 
 
+def step_lists(plan):
+    """Every step list the harness may play: the rounds, the steady round and a strategy policy's decisions."""
+    return list(plan.get("rounds") or []) + [plan.get("steady") or []] + \
+        [d["steps"] for d in ((plan.get("policy") or {}).get("decisions") or [])]
+
+
 def plan_spells(core):
     """Every spell the round plan may cast, fallbacks included (the sheet must know them all). A spell a status grants
     for the turn (Dread Ambusher's attack) is not in the book before the fight and is left out."""
     used = set()
-    for r in core["rounds"] + [core["steady"]]:
+    for r in step_lists(core):
         for a in r:
             while a:
                 if not a.get("granted_by") and not a.get("move_to"):
@@ -257,8 +263,8 @@ def _cost_kind(k):
 def with_hit_costs(plan, stats):
     """Puts each step's HitCosts (what its spell spends only when it hits: a manoeuvre's superiority die, Divine
     Smite's slot) in step["hit_cost"] and takes those resources out of an explicit use cost, so the harness owes them
-    after a hit and not after a miss. Walks the rounds, the steady round and every step's fallbacks; returns plan."""
-    for lst in list(plan.get("rounds") or []) + [plan.get("steady") or []]:
+    after a hit and not after a miss. Walks every step list (step_lists) and every step's fallbacks; returns plan."""
+    for lst in step_lists(plan):
         for a in lst:
             while a:
                 hc = (stats.get(a["spell"]) or {}).get("HitCosts") or ""
@@ -584,16 +590,22 @@ RIDER_STATUS = {"Target_HuntersMark": ("HUNTERS_MARK", "@boss", "Hunter's Mark")
                 "Target_DreadAmbusher": ("DREAD_AMBUSHER", "@self", "Dread Ambusher")}
 
 
+# the riders that hold while the caster keeps its concentration: checked again after every later turn
+CONCENTRATION_RIDERS = {"Target_HuntersMark"}
+
+
 def plan_riders(rounds):
-    """[{round, status, on, why, spell}]: per planned rider spell, the status the in-game check expects after that
-    round's turn (Hunter's Mark on the boss; Dread Ambusher's status on the character as its first turn starts)."""
+    """[{round, status, on, why, spell, conc}]: per planned rider spell, the status the in-game check expects after that
+    round's turn (Hunter's Mark on the boss; Dread Ambusher's status on the character as its first turn starts); conc:
+    a concentration rider, expected after every later turn too."""
     out, seen = [], set()
     for i, r in enumerate(rounds):
         for a in r:
             hit = RIDER_STATUS.get(a["spell"])
             if hit and (hit[0], hit[1]) not in seen:
                 seen.add((hit[0], hit[1]))
-                out.append({"round": i + 1, "status": hit[0], "on": hit[1], "why": hit[2], "spell": a["spell"]})
+                out.append({"round": i + 1, "status": hit[0], "on": hit[1], "why": hit[2], "spell": a["spell"],
+                            "conc": a["spell"] in CONCENTRATION_RIDERS})
     return out
 
 
@@ -1113,6 +1125,9 @@ def strategy_spec(spec, family, stats):
         dict(it, reason="the strategy's rounds do not use it") for it in plan.get("item_actions") or []]
     plan["item_actions"] = []
     plan["riders"] = plan_riders(plan["rounds"])
+    # the harness follows the policy (plan.policy) and checks each decision's riders after the turn that casts them
+    for d in (plan.get("policy") or {}).get("decisions") or []:
+        d["riders"] = [{k: v for k, v in r.items() if k != "round"} for r in plan_riders([d["steps"]])]
     plan["forecast"] = forecast(plan, out["slots"], (out.get("resources") or []) + (out.get("item_resources") or []),
                                 stats)
     plan["hotbar"] = hotbar_rows(plan, out.get("passives_add") or [], out.get("spells_add") or [],

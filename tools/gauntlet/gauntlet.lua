@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 7
+G.VERSION = 8
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1481,6 +1481,7 @@ function G.restSpells(plan)
   end
   for _, r in ipairs((plan or {}).rounds or {}) do for _, a in ipairs(r) do add(a) end end
   for _, a in ipairs((plan or {}).steady or {}) do add(a) end
+  for _, d in ipairs(((plan or {}).policy or {}).decisions or {}) do for _, a in ipairs(d.steps or {}) do add(a) end end
   return out
 end
 function G.setupCheck(F, spec, phase, extra)
@@ -1729,18 +1730,38 @@ end
 local function onCast(caster, spell)
   if not G.fighting then return end
   local R = G.rounds[#G.rounds]
-  if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell } end
+  if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 } end
 end
 -- The engine's refusals: CastSpellFailed names the caster and the spell (no reason), ReactionInterruptUsed the
 -- creature that reacted. In the pilot re-run 39 of the character's 40 refused casts came right after an enemy's
 -- Attack of Opportunity: the scripted cast walked the character to a new spot, the reaction interrupted the walk and
 -- the engine dropped the cast.
+-- Not every CastSpellFailed is a refusal: one logged after the same caster's UsingSpell of the spell, with no
+-- CastedSpell between, came from a cast the engine had started (the character's Dread Ambusher dealt its damage after
+-- such a fail; the boss's Unarmed Strike logs one on every miss, as the riposte interrupts it). Those go to
+-- R.cast_fails_noise with why; for the character only on the player path, whose refusal check (G.playerRefused) reads
+-- a UsingSpell the same way. -> why, or nil for a refusal
+function G.failNoise(F, R, f)
+  local mine = F and F.char and f.who == uuid(F.char)
+  if mine and not F.playerCast then return nil end
+  local function base(sp) return (tostring(sp or ""):gsub("_%d+$", "")) end
+  local same = function(x) return x.who == f.who and base(x.spell) == base(f.spell) end
+  local use
+  for _, u in ipairs(R.usings or {}) do if same(u) and (u.t or 0) <= f.t then use = u end end
+  if not use then return nil end
+  for _, c in ipairs(R.casts or {}) do if same(c) and c.t and c.t >= use.t then return nil end end
+  for _, x in ipairs(R.cast_fails_noise or {}) do if same(x) and x.t >= use.t then return nil end end
+  return mine and "logged after the cast had started (UsingSpell)" or "an enemy's cast that had started (UsingSpell)"
+end
 local function onCastFailed(caster, spell)
   if not G.fighting then return end
   local R = G.rounds[#G.rounds]
   if R then
-    R.cast_fails = R.cast_fails or {}
-    R.cast_fails[#R.cast_fails + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+    local f = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+    f.why = G.failNoise(G.F, R, f)
+    local list = f.why and "cast_fails_noise" or "cast_fails"
+    R[list] = R[list] or {}
+    R[list][#R[list] + 1] = f
   end
 end
 -- UsingSpell: the engine started a cast. On the player path it tells a refused request from one the engine casts
@@ -1799,10 +1820,11 @@ end
 -- critical), the roll where the hit description carries it (its first condition roll: the natural d20, the other d20
 -- when the roll had Advantage or Disadvantage, the total, the AC or DC it was rolled against, Advantage, Disadvantage,
 -- a saving throw), damage per type, the target's statuses and the character's concentration at the hit. The game
--- sends DealDamage for landed attack rolls only (no miss row in the real-roll runs so far), so a miss's natural roll
--- is not known: misses come from the damage log's 0 damage rows (G.rollTally); a miss row the game does send is
--- matched to its roll like a hit. The field names are read defensively; the first hit's whole description is
--- kept in results.hit_probe so the names can be checked against the game. At most HIT_LOG_MAX rows per run.
+-- sends DealDamage for landed attack rolls only, so the misses come from the engine's attack-roll events (G.onMissEvent:
+-- a spell cast's target hit, a hit result), the rest of which DealDamage covers; G.rollTally matches a miss row to the
+-- damage log's 0 damage row of its roll like a hit. The field names are read defensively; the first hit's and the
+-- first miss's whole descriptions are kept in results.hit_probe / miss_probe so the names can be checked against the
+-- game. At most HIT_LOG_MAX rows per run.
 G.HIT_LOG_MAX = 3000
 local function first(obj, paths)
   for _, path in ipairs(paths) do
@@ -1835,7 +1857,7 @@ function G.hitRow(e)
   local flags = flagText(first(hit, { "EffectFlags", "HitFlags", "Flags" }))
   local attack = flagText(first(hit, { "AttackFlags" }))
   local row = { r = G.round, t = now() - G.t0, source = src and uuid(src), target = tgt and uuid(tgt),
-    spell = first(e, { "SpellId.Prototype", "Hit.SpellId.Prototype", "SpellId.OriginatorPrototype" }),
+    spell = first(e, { "SpellId.Prototype", "Hit.SpellId.Prototype", "SpellId.OriginatorPrototype", "Hit.SpellId" }),
     total = first(hit, { "TotalDamageDone", "TotalDamage" }), type = flagText(first(hit, { "DamageType" })),
     flags = flags, attack_flags = attack, attack_type = flagText(first(e, { "AttackType", "Hit.AttackType" })),
     roll = first(hit, { "ConditionRolls.1.Roll.Result.NaturalRoll", "AttackRoll.Result.NaturalRoll",
@@ -1854,6 +1876,8 @@ function G.hitRow(e)
   row.crit = f:find("Critical", 1, true) ~= nil
   row.miss = f:find("Miss", 1, true) ~= nil or f:find("Dodge", 1, true) ~= nil
   row.hit = f:find("Hit", 1, true) ~= nil and not row.miss
+  -- a natural 1 ("Critical Miss") is a miss, never counted as a critical hit
+  if row.miss and row.crit then row.crit, row.crit_miss = false, true end
   local per = {}
   for _, dmg in ipairs(first(hit, { "DamageList", "Damage.DamageList" }) or {}) do
     per[#per + 1] = { type = tostring(try(function() return dmg.DamageType end)), amount = try(function() return dmg.Amount end) }
@@ -1878,6 +1902,29 @@ local function onHit(e)
   if not G.results.hit_probe then G.results.hit_probe = try(function() return Ext.Types.Serialize(e.Hit) end) or "?" end
 end
 G._onHit = onHit
+-- A miss from an engine event (one-frame components SpellCastTargetHitEvent and HitResultEvent: comp.Hit = the hit
+-- description, comp.Target, the caster from the cast or the hit's inflicter). Hits are left to DealDamage; one miss
+-- seen by both events within MISS_DEDUP_MS is logged once.
+G.MISS_DEDUP_MS = 60
+function G.onMissEvent(comp, via)
+  if not G.fighting or #G.hits >= G.HIT_LOG_MAX then return end
+  local caster = try(function() return comp.SpellCast.SpellCastState.Caster end)
+  local row = G.hitRow({ Hit = comp.Hit, Caster = caster, Target = comp.Target })
+  if not row.miss then return end
+  local F = G.F
+  if not G.member(F, row.source) and not G.member(F, row.target) then return end
+  for i = #G.hits, 1, -1 do
+    local h = G.hits[i]
+    if row.t - (h.t or 0) > G.MISS_DEDUP_MS then break end
+    if h.miss and h.source == row.source and h.target == row.target then return end
+  end
+  row.via, row.ac = via, try(function() return comp.AC end)
+  row.concentration = F and F.char and G.concentration(F.char) or nil
+  G.hits[#G.hits + 1] = row
+  if not G.results.miss_probe then
+    G.results.miss_probe = try(function() return Ext.Types.Serialize(comp.Hit) end) or "?"
+  end
+end
 
 -- Lanes: an event goes to the lane whose character or enemies it names (to each, when it names both lanes: one
 -- lane's spell hitting the other's enemies is a fault both must see); an event that names neither goes to every lane.
@@ -1943,6 +1990,20 @@ end
 if not G._listeners7 then
   local function on(k) return function(...) pcall(G._on[k], ...) end end
   G._listeners7 = { using = pcall(Ext.Osiris.RegisterListener, "UsingSpell", 5, "after", on("using")) }
+end
+-- added in version 8: the misses (attack-roll events)
+G._on.miss = function(via, comp)
+  local who = { n = 2, try(function() return comp.Hit.Inflicter.Uuid.EntityUuid end),
+    try(function() return comp.Target.Uuid.EntityUuid end) }
+  local ok, err = xpcall(G.dispatch, debug.traceback, G.onMissEvent, who, comp, via)
+  if not ok and G.results and not G.results.miss_error then G.results.miss_error = tostring(err) end
+end
+if not G._listeners8 then
+  local function on(via) return function(_e, _ty, comp) pcall(G._on.miss, via, comp) end end
+  G._listeners8 = {
+    target_hit = pcall(Ext.Entity.OnCreate, "SpellCastTargetHitEvent", on("target_hit")),
+    hit_result = pcall(Ext.Entity.OnCreate, "HitResultEvent", on("hit_result")),
+  }
 end
 
 -- ------------------------------------------------------------------------------------------------ real rolls
@@ -2149,6 +2210,7 @@ function G.precheck(F)
   local function chainOf(a) while a do check(a.spell, false); a = a.alt end end
   for _, r in ipairs(plan.rounds or {}) do for _, a in ipairs(r) do chainOf(a) end end
   for _, a in ipairs(plan.steady or {}) do chainOf(a) end
+  for _, d in ipairs((plan.policy or {}).decisions or {}) do for _, a in ipairs(d.steps or {}) do chainOf(a) end end
   for _, it in ipairs(plan.item_actions or {}) do check(it.spell, true) end
   return out
 end
@@ -3074,6 +3136,7 @@ function G.foreignCasts(rounds, me, plan)
   for _, r in ipairs(plan.rounds or {}) do for _, a in ipairs(r) do allow(a) end end
   for _, a in ipairs(plan.steady or {}) do allow(a) end
   for _, a in ipairs(plan.defence_opening or {}) do allow(a) end
+  for _, d in ipairs((plan.policy or {}).decisions or {}) do for _, a in ipairs(d.steps or {}) do allow(a) end end
   for _, it in ipairs(plan.item_actions or {}) do allowed[core(it.spell)] = true end
   for k, p in pairs(plan.reactions or {}) do if p == "auto" then allowed[core(k)] = true end end
   local out = {}
@@ -3146,6 +3209,12 @@ function G.judge(rounds, why, results, opts)
   end
   local refused = (results.summary or {}).cast_misses or 0
   if refused > 0 then causes[#causes + 1] = refused .. " planned cast(s) refused or never seen" end
+  for _, R in ipairs(rounds or {}) do
+    if R.policy and R.policy.outside then
+      causes[#causes + 1] = string.format("round %s: the state the turn started in is outside the strategy's policy "
+        .. "table: %s", tostring(R.r), tostring(R.policy.key))
+    end
+  end
   for _, R in ipairs(rounds or {}) do
     for _, f in ipairs(R.cast_faults or {}) do
       causes[#causes + 1] = string.format("round %s, %s: %s", tostring(f.r or R.r), tostring(f.spell), tostring(f.why))
@@ -3262,7 +3331,9 @@ end
 -- Enemy spots: around the character (melee, self-centred auras, the defence ring) or a line at the build's range,
 -- laid out along the arena's direction (default +x). A = an arena from arenas.json (start, dir, high): the character
 -- starts at A.start and a pack's fourth enemy stands on A.high, the arena's high ground.
-function G.arena(scn, mode, selfaoe, origin, A)
+-- far: the enemies' distance when the plan sets it (plan.boss_distance: a strategy's assumption, apart from its mode);
+-- then they stand in a line at that distance even for a melee plan.
+function G.arena(scn, mode, selfaoe, origin, A, far)
   local S = G.SCENARIOS[scn]
   if A and A.start then origin = A.start end
   local x0, y0, z0 = origin[1], origin[2], origin[3]
@@ -3272,10 +3343,10 @@ function G.arena(scn, mode, selfaoe, origin, A)
     if l > 0 then dx, dz = A.dir[1] / l, A.dir[2] / l end
   end
   local function at(f, side) return { x0 + f * dx - side * dz, 0, z0 + f * dz + side * dx } end
-  local d = G.RANGE[mode] or 6.0
+  local d = far or G.RANGE[mode] or 6.0
   local pts = {}
   local n = S.enemies
-  if S.ring or selfaoe or mode == "melee" then
+  if S.ring or selfaoe or (mode == "melee" and not far) then
     local r = selfaoe and 2.2 or 1.6
     for i = 1, n do
       local a = (i - 1) * (2 * math.pi / math.max(n, 1)) * (selfaoe and 1 or 0.35)
@@ -3415,6 +3486,70 @@ local function roundStart(F)
   F.queue, F.qi, F.pending, F.moving = ((F.manual or F.player) and {} or nil), 0, nil, nil
 end
 
+-- A strategy's policy (plan.policy, from plan.py --strategy): the decision for every state the strategy's policy
+-- reaches. Each turn the harness reads the state the fight is in (G.policyState), plays that state's decision and
+-- records both (R.policy), with the strategy's expectation for that state; a state outside the table makes the run
+-- invalid. The key is the text strategy.py's state_key builds.
+G.POLICY_FIELDS = { "rnd", "adjacent", "dice", "surge", "conc", "gaping", "pierce_m", "pierce_r", "dread", "sneak",
+  "ts" }
+-- True Strike from the character's riposte in the enemies' turn just before (a hit puts TRUE_STRIKE on the target):
+-- the status lasts two of the character's turns, so its being on is no proof it came from the last enemy turn.
+function G.trueStrikeBefore(F, R)
+  local prev = G.rounds[#G.rounds - 1]
+  if not prev or prev == R then return false end
+  local since = (prev.tm or {}).end_asked or (prev.tm or {}).acted or math.huge
+  local me = uuid(F.char)
+  for _, x in ipairs(prev.status_log or {}) do
+    if x.on and x.status == "TRUE_STRIKE" and x.cause == me and x.who ~= me and (x.t or 0) >= since then return true end
+  end
+  return false
+end
+function G.policyState(F, R)
+  local has = (F.plan.policy or {}).has or {}
+  local boss = resolveTarget(F, "@boss")
+  local function on(u, st) return u ~= nil and try(Osi.HasActiveStatus, u, st) == 1 end
+  local started = {}
+  for _, st in ipairs(R.turn_statuses or {}) do started[st] = true end
+  return { rnd = R.r, adjacent = boss ~= nil and dist(F.char, boss) <= G.REACH,
+    dice = math.floor(resAmount(F.char, "SuperiorityDie") or 0),
+    surge = has.surge == true and not onCooldown(F.char, "Shout_ActionSurge"),
+    conc = (on(boss, "HUNTERS_MARK") and "mark") or (on(boss, "ENSNARING_STRIKE") and "ensnare") or "none",
+    gaping = on(boss, "GAPING_WOUND"),
+    pierce_m = has.pierce_m == true and not onCooldown(F.char, "Target_PiercingThrust"),
+    pierce_r = has.pierce_r == true and not onCooldown(F.char, "Projectile_PiercingShot"),
+    dread = has.dread == true and started.DREAD_AMBUSHER == true,
+    -- without Sneak Attack the search keeps the charge "there" all fight
+    sneak = has.sneak ~= true or (resAmount(F.char, "SneakAttack_Charge") or 0) > 0,
+    ts = has.ts == true and G.trueStrikeBefore(F, R) }
+end
+function G.policyKey(st, fields)
+  local parts = {}
+  for _, f in ipairs(fields or G.POLICY_FIELDS) do
+    local v = st[f]
+    if type(v) == "boolean" then v = v and "1" or "0" end
+    parts[#parts + 1] = f .. "=" .. tostring(v)
+  end
+  return table.concat(parts, "|")
+end
+-- -> the decision's steps, or nil (R.policy.outside) when the table has no such state
+function G.policyPick(F, R)
+  local P = F.plan.policy
+  local st = G.policyState(F, R)
+  local key = G.policyKey(st, P.fields)
+  local e = (P.states or {})[key]
+  R.policy = { key = key, state = st }
+  if not e then
+    R.policy.outside = true
+    note("round %d: state outside the policy table: %s", R.r, key)
+    return nil
+  end
+  local d = (P.decisions or {})[(e.d or 0) + 1] or {}
+  local pol = R.policy
+  pol.d, pol.decision, pol.riders, pol.p = e.d, d.text, d.riders, e.p
+  pol.own, pol.own_sd, pol["round"], pol.round_sd = e.own, e.own_sd, e["round"], e.round_sd
+  return d.steps or {}
+end
+
 -- The round's queue from the character's real resources now: each entry of the round plan becomes the first
 -- affordable action of its priority chain (an L6 upcast while an L6 slot is left, then L5 ..., the base spell, the
 -- cantrip; Radiance of the Dawn while Channel Divinity lasts); the ones passed over go to R.plan_skips, not to the
@@ -3430,6 +3565,10 @@ function G.planRound(F, R)
   R.turn_statuses = {}
   for st in pairs(G.statusSet(F.char)) do R.turn_statuses[#R.turn_statuses + 1] = st end
   table.sort(R.turn_statuses)
+  if plan.policy and plan.policy.states and S.char_acts ~= false then
+    list = G.policyPick(F, R)
+    if not list then return {} end
+  end
   local has = {}
   for _, st in ipairs(R.turn_statuses) do has[st] = true end
   local out = {}
@@ -3477,7 +3616,8 @@ end
 -- A 0 damage row of a spell that rolls no attack (Hunter's Mark's Attack row, a save made) is no miss.
 -- Sets R.rolls = { n, landed, crit, miss, dmg, rider, sneak_dmg, known, adv, dis, net_adv, net_adv_any, dis_any,
 -- sneak, per_roll = { { t, cause, spell, target, hit, crit, dmg, rider, sneak, nat, nat2, total, against, adv, dis,
--- net_adv } } }: landed counts critical hits too; known counts the rolls whose Advantage state the hit log gave.
+-- net_adv, parts } } }: landed counts critical hits too; known counts the rolls whose Advantage state the hit log gave
+-- (a miss's too, from its miss row); parts = the roll's damage rows { t, amount, type }.
 G.ROLL_CAUSES = { Attack = true, Offhand = true }
 G.ROLL_MERGE_MS = 150
 G.ROLL_HIT_BEFORE, G.ROLL_HIT_AFTER = 300, 100
@@ -3489,6 +3629,32 @@ local function sneakTime(R, me)
     if c.who == me and tostring(c.spell):find("SneakAttack", 1, true) then return c.t or false end
   end
   return nil
+end
+-- Sneak Attack's damage in one landed roll: its rows of the weapon's damage type that come SNEAK_GAP_MS or more after
+-- the roll's first row (the reaction fires on the hit; in game its row came 55-60 ms after the hit's). The weapon's
+-- type is the one with the most damage among the first rows: a weapon's rider (Crimson Mischief's 1d4 necrotic) comes
+-- with them, in either order, and stays in the hit.
+G.SNEAK_GAP_MS = 20
+function G.sneakPart(x)
+  local burst, late = {}, {}
+  for _, p in ipairs(x.parts or {}) do
+    if (p.t or 0) - x.t < G.SNEAK_GAP_MS then
+      local k = tostring(p.type or "")
+      burst[k] = (burst[k] or 0) + (p.amount or 0)
+    else
+      late[#late + 1] = p
+    end
+  end
+  local wtype, most = nil, -1
+  for k, a in pairs(burst) do
+    if a > most or (a == most and k < wtype) then wtype, most = k, a end
+  end
+  local out = 0
+  for _, p in ipairs(late) do
+    local k = tostring(p.type or "")
+    if wtype == nil or wtype == "" or k == "" or k == wtype then out = out + (p.amount or 0) end
+  end
+  return out
 end
 function G.rollTally(R, hits, dmg, me, asked)
   local rows = {}
@@ -3531,6 +3697,7 @@ function G.rollTally(R, hits, dmg, me, asked)
     if amt > 0 and last and last.hit and last.target == d.target and t - last.t <= G.ROLL_MERGE_MS then
       last.dmg = last.dmg + amt
       if t > last.t then last.rider = last.rider + amt end
+      last.parts[#last.parts + 1] = { t = t, amount = amt, type = d.type }
     else
       local landed = amt > 0
       local hi = hitRowFor(t, landed)
@@ -3542,7 +3709,8 @@ function G.rollTally(R, hits, dmg, me, asked)
         if hi then used[hi] = true end
         local flags = h and tostring(h.flags or "") or ""
         local advFlag = nil
-        if h and flags ~= "" then advFlag = flags:find("AttackAdvantage", 1, true) ~= nil end
+        -- a miss row's flags need not carry AttackAdvantage: its roll's own Advantage field decides
+        if h and flags ~= "" and not h.miss then advFlag = flags:find("AttackAdvantage", 1, true) ~= nil end
         local adv, dis, net = nil, nil, nil
         if h then
           adv = h.advantage == "true" or advFlag == true
@@ -3556,7 +3724,8 @@ function G.rollTally(R, hits, dmg, me, asked)
         end
         last = { t = t, cause = d.cause, spell = spell, target = d.target, hit = landed, crit = crit, dmg = amt,
           rider = 0, nat = h and h.roll or nil, nat2 = h and h.roll2 or nil, total = h and h.roll_total or nil,
-          against = h and h.roll_against or nil, adv = adv, dis = dis, net_adv = net }
+          against = h and h.roll_against or nil, adv = adv, dis = dis, net_adv = net,
+          parts = { { t = t, amount = amt, type = d.type } } }
         list[#list + 1] = last
       else
         last = nil
@@ -3565,16 +3734,18 @@ function G.rollTally(R, hits, dmg, me, asked)
   end
   local T = { n = #list, landed = 0, crit = 0, miss = 0, dmg = 0, rider = 0, sneak_dmg = 0, known = 0, adv = 0, dis = 0,
     net_adv = 0, net_adv_any = false, dis_any = false, per_roll = list }
-  -- Sneak Attack (at most once a turn) lands as a rider row: it goes to the landed roll with a rider nearest the
-  -- trigger, so the report can take it out of the damage per hit
+  -- Sneak Attack (at most once a turn) lands as a row of its own: it goes to the landed roll with a late row nearest
+  -- the trigger (G.sneakPart), so the report can take it out of the damage per hit
   local st = sneakTime(R, me)
   T.sneak = st ~= nil
   if st ~= nil then
     local best
     for _, x in ipairs(list) do
-      if x.hit and x.rider > 0 and (not best or (st and math.abs(x.t - st) < math.abs(best.t - st))) then best = x end
+      if x.hit and G.sneakPart(x) > 0 and (not best or (st and math.abs(x.t - st) < math.abs(best.t - st))) then
+        best = x
+      end
     end
-    if best then best.sneak = best.rider end
+    if best then best.sneak = G.sneakPart(best) end
   end
   for _, x in ipairs(list) do
     if x.hit then T.landed = T.landed + 1 else T.miss = T.miss + 1 end
@@ -3634,8 +3805,24 @@ function G.castOutcomes(R, hits, dmg, me)
     end
   end
   R.attacks = tally
-  G.rollTally(R, hits, dmg, me, asked)
+  local T = G.rollTally(R, hits, dmg, me, asked)
+  G.actionRolls(asked, T.per_roll)
   return tally
+end
+-- Each confirmed cast's attack rolls (a toggled attack's off-hand half is a roll of its own): rec.rolls = { { cause,
+-- outcome = "hit" | "crit" | "miss", nat, total, adv, dis } } for the rolls between its cast and the next one asked for.
+function G.actionRolls(asked, per_roll)
+  for i, a in ipairs(asked) do
+    local t1 = asked[i + 1] and asked[i + 1].cast_t or math.huge
+    local out = {}
+    for _, x in ipairs(per_roll or {}) do
+      if x.t >= a.cast_t and x.t < t1 then
+        out[#out + 1] = { cause = x.cause, outcome = x.crit and "crit" or (x.hit and "hit" or "miss"), nat = x.nat,
+          total = x.total, adv = x.adv, dis = x.dis }
+      end
+    end
+    if #out > 0 then a.rolls = out end
+  end
 end
 
 -- A round's attack outcomes from the hit log alone (a player's turn has no planned actions): every row the
@@ -3644,8 +3831,8 @@ function G.hitTally(R, hits, me)
   local tally = { hit = 0, crit = 0, miss = 0 }
   for _, h in ipairs(hits or {}) do
     if h.r == R.r and h.source == me then
-      if h.crit then tally.crit = tally.crit + 1
-      elseif h.miss then tally.miss = tally.miss + 1
+      if h.miss then tally.miss = tally.miss + 1
+      elseif h.crit then tally.crit = tally.crit + 1
       elseif h.hit then tally.hit = tally.hit + 1 end
     end
   end
@@ -3663,16 +3850,48 @@ local function riderMissed(R, spell)
   end
   return false
 end
+-- A concentration rider (rd.conc: Hunter's Mark) is checked again after every later turn, on now: the boss's hit can
+-- break it in the enemies' turn. Following a policy (R.policy) the riders are the decision's plus the concentration the
+-- turn started with, all due this round; a plan without a policy that lost one notes it in R.rider_lost and
+-- results.rider_lost (the plan is off the course it assumed) instead of failing the run.
+function G.roundRiders(F, R)
+  if not R.policy then return (F.plan or {}).riders or {} end
+  local out, seen = {}, {}
+  for _, rd in ipairs(R.policy.riders or {}) do
+    out[#out + 1] = { round = R.r, status = rd.status, on = rd.on, why = rd.why, spell = rd.spell, conc = rd.conc }
+    seen[rd.status] = true
+  end
+  if (R.policy.state or {}).conc == "mark" and not seen.HUNTERS_MARK then
+    out[#out + 1] = { round = R.r, status = "HUNTERS_MARK", on = "@boss", conc = true,
+      why = "Hunter's Mark (concentration, on as the turn started)" }
+  end
+  return out
+end
 function G.riderCheck(F, R)
   if F.manual or F.player or R.downed then return end
-  for _, rd in ipairs((F.plan or {}).riders or {}) do
+  for _, rd in ipairs(G.roundRiders(F, R)) do
+    local held = rd.conc and rd.round < R.r
+    if held and not (F.riderLost or {})[rd.status] then
+      local who = resolveTarget(F, rd.on or "@boss")
+      if not (who ~= nil and try(Osi.HasActiveStatus, who, rd.status) == 1) then
+        F.riderLost = F.riderLost or {}
+        F.riderLost[rd.status] = R.r
+        local lost = { r = R.r, status = rd.status, on = rd.on, why = rd.why, since = rd.round }
+        R.rider_lost = R.rider_lost or {}
+        R.rider_lost[#R.rider_lost + 1] = lost
+        G.results.rider_lost = G.results.rider_lost or {}
+        G.results.rider_lost[#G.results.rider_lost + 1] = lost
+        note("rider lost by round %d: %s on %s (the plan is off its course)", R.r, rd.status, tostring(rd.on))
+      end
+    end
     if rd.round == R.r then
       local who = resolveTarget(F, rd.on or "@boss")
       local seen = who ~= nil and try(Osi.HasActiveStatus, who, rd.status) == 1
-      if not seen and who == F.char then
+      -- a concentration rider counts only when on now, as the turn ends
+      if not seen and who == F.char and not rd.conc then
         for _, st in ipairs(R.turn_statuses or {}) do if st == rd.status then seen = true end end
       end
-      for _, x in ipairs(R.status_log or {}) do
+      for _, x in ipairs(rd.conc and {} or R.status_log or {}) do
         if who and x.on and x.status == rd.status and x.who == uuid(who) then seen = true end
       end
       if not seen and riderMissed(R, rd.spell) then
@@ -3728,6 +3947,33 @@ function G.hitRiders(rounds, hits, me)
     sa.per_turn[#sa.per_turn + 1] = { r = R.r, adv = adv, dis = dis, sneak = sneak }
   end
   return out
+end
+
+-- The enemies' attack rolls at the character from the hit log (hits from DealDamage, misses from G.onMissEvent):
+-- { n, landed, crit, miss, known, adv, dis, per_roll = { { r, t, spell, outcome, nat, nat2, total, adv, dis } } };
+-- known counts the rolls whose Advantage state the row gave.
+function G.enemyRolls(hits, me, enemies)
+  local T = { n = 0, landed = 0, crit = 0, miss = 0, known = 0, adv = 0, dis = 0, per_roll = {} }
+  for _, h in ipairs(hits or {}) do
+    local rolled = (h.hit or h.crit or h.miss) and h.roll_type ~= "SavingThrowRoll"
+    if h.target == me and enemies[h.source or ""] and rolled then
+      local adv, dis
+      if h.advantage ~= nil then adv = h.advantage == "true" end
+      if h.disadvantage ~= nil then dis = h.disadvantage == "true" end
+      T.n = T.n + 1
+      if h.miss then T.miss = T.miss + 1 else T.landed = T.landed + 1 end
+      if h.crit then T.crit = T.crit + 1 end
+      if adv ~= nil or dis ~= nil then
+        T.known = T.known + 1
+        if adv then T.adv = T.adv + 1 end
+        if dis then T.dis = T.dis + 1 end
+      end
+      T.per_roll[#T.per_roll + 1] = { r = h.r, t = h.t, spell = h.spell,
+        outcome = h.miss and (h.crit_miss and "critical miss" or "miss") or (h.crit and "crit" or "hit"), nat = h.roll,
+        nat2 = h.roll2, total = h.roll_total, adv = adv, dis = dis }
+    end
+  end
+  return T
 end
 
 -- per-run numbers (the same for scripted and manual runs)
@@ -3792,11 +4038,17 @@ local function summarize(F)
     if R.downed then downed = downed + 1 end
   end
   for _, v in ipairs(summon) do total = total + v end
-  return { rounds = #G.rounds, dpr = mean(dealt), dealt = dealt, taken = taken, taken_per_round = tk, max_hp = hp,
+  -- per attack roll where the rounds counted them (a toggled attack and its off-hand half are two), as summary.rolls;
+  -- per confirmed cast in actions_outcome
+  local per_action = attacks
+  if rolls.n > 0 then attacks = { hit = rolls.landed - rolls.crit, crit = rolls.crit, miss = rolls.miss } end
+  return { rounds = #G.rounds, actions_outcome = per_action, dpr = mean(dealt), dealt = dealt,
+    taken = taken, taken_per_round = tk, max_hp = hp,
     turns_survived = tk > 0 and hp / tk or nil, actions_not_done = failed, cast_misses = misses, downed = downed,
     rounds_survived = F.downAt and (F.downAt - 1) or #G.rounds, went_down = F.downAt ~= nil,
     summon_dealt = summon, summon_damage = total, summon_misses = smisses, rider_misses = riders,
-    enemy_turns = turns, taken_before_round1 = pre, attacks = attacks, rolls = rolls }
+    enemy_turns = turns, taken_before_round1 = pre, attacks = attacks, rolls = rolls,
+    enemy_rolls = G.enemyRolls(G.hits, me, enemies) }
 end
 
 function G.difficulty()
@@ -4000,7 +4252,7 @@ function G.start(F)
       G.reset()
       G.results = { prep = prepRes }
       G.status = "fighting"
-      local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin, A)
+      local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin, A, F.plan.boss_distance)
       pcall(Osi.TeleportToPosition, u, cpos[1], cpos[2], cpos[3], "", 0, 0, 0, 0, 1)
       if not F.manual then
         -- lanes: the lane runner parked the rest of the party; each lane sets its own character's reactions
@@ -4119,12 +4371,38 @@ function G.spawnAndFight(F, pts, E, buffs, C)
   end)
 end
 
--- The popup's start of the fight, once the setup check passed: the "fight started" marker (a recorder watching the
--- marker files starts with it), REC_LEAD_MS for the recorder to come up, then the enemies join the hostile faction
--- and the fight starts. An enemy still not hostile after HOSTILE_MS stops the run before any turn.
+-- The popup's start of the fight, once the setup check passed: the camera onto the arena (G.cameraOn), then the
+-- "fight started" marker (a recorder watching the marker files starts with it, so the video opens on the arena),
+-- REC_LEAD_MS for the recorder to come up, then the enemies join the hostile faction and the fight starts. An enemy
+-- still not hostile after HOSTILE_MS stops the run before any turn.
 G.ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
 G.REC_LEAD_MS, G.HOSTILE_MS = 3000, 2000
+-- The client (gauntlet_ui.lua U.CameraOn) moves the camera onto the character and answers on the "Gauntlet" channel
+-- (onNet sets F.camera); without an answer within CAMERA_WAIT_MS the run goes on, results.camera saying so.
+G.CAMERA_WAIT_MS = 3000
+function G.cameraOn(F, cb)
+  F.camera = nil
+  G.notify({ kind = "camera", char = uuid(F.char) })
+  local polls = 0
+  local function poll()
+    if F.state == "done" then return end
+    if F.camera or polls * G.POLL_MS >= G.CAMERA_WAIT_MS then
+      local c = F.camera or { ok = false, why = "no answer from the client" }
+      c.waited_ms = polls * G.POLL_MS
+      return cb(c)
+    end
+    polls = polls + 1
+    wait(G.POLL_MS, poll)
+  end
+  poll()
+end
 function G.release(F)
+  G.cameraOn(F, function(cam)
+    G.results.camera = cam
+    G.startFight(F)
+  end)
+end
+function G.startFight(F)
   G.mark("started", F)
   G.phase(F, "starting")
   wait(G.REC_LEAD_MS, function()
@@ -4218,6 +4496,9 @@ end
 -- A round that already makes the run invalid (G.judge): with FAIL_FAST the run ends after it. -> the cause, or nil.
 function G.roundFault(F, R)
   if F.manual or F.player or not G.FAIL_FAST or R.downed then return nil end
+  if R.policy and R.policy.outside then
+    return string.format("round %d: state outside the policy table: %s", R.r, tostring(R.policy.key))
+  end
   local f = (R.cast_faults or {})[1]
   if f then return string.format("round %d: %s: %s", R.r, tostring(f.spell), tostring(f.why)) end
   if (R.cast_misses or 0) > 0 then
@@ -4913,6 +5194,9 @@ local function onNet(e)
   elseif m.cmd == "reset" then r = G.resetFight()
   elseif m.cmd == "abort" then r = G.abort()
   elseif m.cmd == "reload" then G.CAT = nil; r = G.catalog() and "catalogue loaded" or "no catalogue"
+  elseif m.cmd == "camera" then
+    if G.F then G.F.camera = { ok = m.ok == true, dist = m.dist, why = m.why } end
+    return
   end
   G.notify({ kind = "status", text = tostring(r) })
 end

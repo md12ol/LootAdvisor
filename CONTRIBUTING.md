@@ -109,11 +109,19 @@ python tools/gauntlet/engine.py start                      # the popup's Start
 ```
 `run.py` goes through the same Start: it sets Automatic right after loading, writes each run's request and spec to
 the test file and presses Start. A side runs until it has `--repeats` valid runs (default 4), and every run's turn
-list (round by round: the attack or spell, its target, its result) is written to `<results>_turns/` for a person to
-replay the run by hand. `--report` compares each set with the model's boss scenario part by part, per attack roll (a
+list (round by round: the attack or spell, its target, its result with each attack roll, a toggled attack's off-hand
+half and the misses included, the enemies' rolls) is written to `<results>_turns/` for a person to replay the run by
+hand. `--report` compares each set with the model's boss scenario part by part, per attack roll (a
 two-weapon shot rolls twice): rolls, hit and critical rates, Advantage and Disadvantage, damage per landed roll, the
 riders, then damage per round. It flags a part when the model's value is outside the game's 95% interval (exact
-binomial for rates, Student t for means), shows the +-10% band beside it, and gives one 95% interval of the mean of the run means per side and per pair; runs played by hand are listed apart. The
+binomial for rates, Student t for means), shows the +-10% band beside it, and gives one 95% interval of the mean of the run means per side and per pair; runs played by hand are listed apart. A spec from `plan.py --strategy <family>`
+carries the strategy's policy (`plan.policy`: its decision in every state its play can reach); each turn the harness
+reads the state the fight is in (round, boss in reach, superiority dice, Action Surge and once-per-rest attacks ready,
+concentration, Gaping Wound, Dread Ambusher, Sneak Attack's charge, True Strike from a riposte) and plays that state's
+decision, so a broken Hunter's Mark is recast when the strategy would; a state outside the table makes the run
+invalid. The turn list and the report then compare each round with the strategy's expectation for the state the turn
+started in, beside the round's expectation over every course of the fight and the most likely course's; a round cut
+short after its own turn is compared on its own turn only. The
 earlier method (early stopping, the control gate, two lanes, the day-score report) stays behind `--v1`.
 
 The **test mod** loads the harness with the save, with no eval hook: a developer-only pak of its own
@@ -195,10 +203,12 @@ sets them), every worn item's equip passives, statuses and unconditional boosts,
 dice, the item spells in the book and ready, no concentration or status left over from an earlier run (prep ends and
 removes them), and enemies that can be critically hit and carry no status; one mismatch fails the run. A rider the
 plan relies on (Hunter's Mark on the boss, Dread Ambusher's status) missing after its turn fails it too, unless the
-rider's own cast missed; riders that hang on a hit (Hunter's Mark's die, Sneak Attack) are counted over landed hits
+rider's own cast missed; a concentration rider is checked again after every later turn (lost without a policy to
+recast it, the record notes the plan is off its course in `rider_lost`); riders that hang on a hit (Hunter's Mark's die, Sneak Attack) are counted over landed hits
 only (`hit_riders` in the record). The
 character's summon attacks the boss on its own turn and its damage counts for the set. Every hit is recorded with its
-spell, flags (hit, miss, critical) and the target's statuses. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
+spell, flags (hit, miss, critical) and the target's statuses; misses (the character's and the enemies') come from the
+engine's attack-roll events with their natural roll, total, Advantage and Disadvantage. `run.py --report` leaves invalid runs out, and marks the whole report INVALID when a control pair differs in
 the game by more than `--control-tol` (default 15%). A control pair is two sets the model rates alike in damage and in
 damage taken (AC, hit points, saving throws, resistances, damage reduction; damage per round and damage taken within
 5%): `pairs.py --find-control char:build:act` searches for them, `--control` adds the chosen one.

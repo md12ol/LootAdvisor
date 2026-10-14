@@ -1033,6 +1033,74 @@ def test_strategy_harness_rounds():
     assert not fails, fails
 
 
+def test_strategy_policy_table():
+    """The policy the harness follows turn by turn (plan.policy): every state the chosen policy reaches, both starts
+    mixed, with that state's decision (the most likely course's among them; Hunter's Mark recast once concentration
+    broke) and expectation: the chance of each state times its round's expectation adds up to the fight's total
+    exactly, the own turn is the decision's own turn alone; the key reads back to the same state; a strategy spec
+    carries the table, plan.mode = melee for a melee family and the search's starting distance, and per round the
+    expectation over every course (mean = dmg) beside the most likely course (likely)."""
+    import strategy as G
+
+    def A(spell, group, target="@boss", why=None, **kw):
+        return dict(spell=spell, group=group, target=target, why=why, **kw)
+
+    def ev(hide):
+        return [A("Shout_Disengage_CunningAction", "bonus", "@self", when_adjacent=True), A("@move", "free")]
+    old = G.ROUNDS
+    G.ROUNDS = 4
+    G._turn_cached.cache_clear()
+    fails = []
+    try:
+        P = _thx_profile(boss_first=0.15, riposte_ts=True)
+        S, tot, _sd, _t = G.best_search(P, "melee", "crit")
+        reach = G.reachable(S)
+        T = G.policy_table(S, A, ev)
+        if set(T["states"]) != {G.state_key(s) for s in reach} or len(T["states"]) != len(reach):
+            fails.append(f"table {len(T['states'])} states, reachable {len(reach)}")
+        for r in range(1, G.ROUNDS + 1):
+            pr = sum(w for s, w in reach.items() if s.rnd == r)
+            if abs(pr - 1) > 1e-9:
+                fails.append(f"round {r}: states' chances add up to {pr}")
+        exact = sum(w * G.state_numbers(S, s)["round"][0] for s, w in reach.items())
+        if abs(exact - tot) > 1e-6:
+            fails.append(f"sum of chance x round expectation {exact} vs total {tot}")
+        for s in reach:
+            if G.parse_state_key(G.state_key(s)) != s:
+                fails.append(f"key round trip {G.state_key(s)}")
+                break
+            n, e = G.state_numbers(S, s), T["states"][G.state_key(s)]
+            own = G.turn_numbers(P, n["plan"], G.TurnStart(s.adjacent, s.conc, s.gaping, s.sneak, s.ts))
+            if abs(e["own"] - round(own[0], 2)) > 1e-9 or T["decisions"][e["d"]]["text"] != G.describe(n["plan"]):
+                fails.append(f"{G.state_key(s)}: own {e['own']} vs {own[0]}")
+                break
+        for s, plan, _m, _d in S.path():
+            if T["decisions"][T["states"][G.state_key(s)]["d"]]["text"] != G.describe(plan):
+                fails.append(f"most likely course round {s.rnd} not the table's decision")
+        broke = [k for k in T["states"] if "conc=none" in k and not k.startswith("rnd=1|")]
+        def dec(k):
+            return T["decisions"][T["states"][k]["d"]]
+        if not broke or not all("Target_HuntersMark" in [a["spell"] for a in dec(k)["steps"]] for k in broke[:2]):
+            fails.append(f"concentration broken: {[(k, dec(k)['text']) for k in broke[:2]]}")
+        spec = {"plan": {"rounds": [], "steady": [], "mode": "ranged"}, "expect": {"boss": {"dpr": 1.0}}}
+        out = G.apply_to_spec(spec, P, "melee", A, ev)
+        pl, rs = out["plan"], out["expect"]["strategy"]["rounds"]
+        if pl["mode"] != "melee" or pl["boss_distance"] != G.BOSS_START_M or \
+                set(pl["policy"]["states"]) != set(T["states"]):
+            fails.append(f"spec plan mode {pl['mode']} distance {pl.get('boss_distance')}")
+        fe = [round(m, 1) for m, _d in S.fight_parts()["rounds"]]
+        if [r["mean"] for r in rs] != fe or any(r["dmg"] != r["mean"] for r in rs) or \
+                [r["likely"] for r in rs] != [round(m, 1) for _s, _p, m, _d in S.path()]:
+            fails.append(f"rounds {rs}")
+        ev_out = G.apply_to_spec(spec, G.replace(P, sup_dice=0), "evade", A, ev)["plan"]
+        if ev_out["mode"] != "ranged":
+            fails.append(f"evade mode {ev_out['mode']}")
+    finally:
+        G.ROUNDS = old
+        G._turn_cached.cache_clear()
+    assert not fails, fails
+
+
 def _adv_odds(bonus, ac=19):
     """(non-critical hit, critical hit) of one roll with Advantage, natural 19-20 critical, natural 1 a miss: both d20s
     enumerated here, apart from the code under test."""
@@ -1149,7 +1217,7 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
             test_strategy_true_strike, test_strategy_halves, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
-            test_strategy_parts, test_strategy_gear_crosscheck]
+            test_strategy_parts, test_strategy_gear_crosscheck, test_strategy_policy_table]
 
 
 # ============================================================================================ local-only tests
@@ -2888,6 +2956,68 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: a manoeuvre counted with an off-hand half", m_strategy_halves_any))
+
+    def m_policy_likely_only():
+        import strategy as G
+        old = G.reachable
+
+        def bad(S):
+            return {s: 1.0 for s, _p, _m, _d in S.path()}                  # the most likely course only
+        G.reachable = bad
+        try:
+            return _ci_red(test_strategy_policy_table)
+        finally:
+            G.reachable = old
+    out.append(("strategy policy: only the most likely course's states", m_policy_likely_only))
+
+    def m_policy_own_is_round():
+        import strategy as G
+        old = G.state_numbers
+
+        def bad(S, s):
+            n = old(S, s)
+            return dict(n, own=n["round"])                                  # the boss's turn counted in the own turn
+        G.state_numbers = bad
+        try:
+            return _ci_red(test_strategy_policy_table)
+        finally:
+            G.state_numbers = old
+    out.append(("strategy policy: a state's own turn with the boss's turn in", m_policy_own_is_round))
+
+    def m_policy_key_no_sneak():
+        import strategy as G
+        old = G.POLICY_FIELDS
+        G.POLICY_FIELDS = tuple(f for f in old if f != "sneak")            # Sneak Attack's charge not in the key
+        try:
+            return _ci_red(test_strategy_policy_table)
+        finally:
+            G.POLICY_FIELDS = old
+    out.append(("strategy policy: Sneak Attack's charge left out of the state", m_policy_key_no_sneak))
+
+    def m_policy_rounds_likely():
+        import strategy as G
+        old = G.fight_expect
+
+        def bad(S):
+            fe = old(S)
+            path = S.path()
+            return dict(fe, rounds=[{"round": i + 1, "dmg": round(m, 1), "sd": round(d, 1)}
+                                    for i, (_s, _p, m, d) in enumerate(path)])  # the most likely course as "mean"
+        G.fight_expect = bad
+        try:
+            return _ci_red(test_strategy_policy_table)
+        finally:
+            G.fight_expect = old
+    out.append(("strategy policy: the most likely course given as the rounds' expectation", m_policy_rounds_likely))
+
+    def m_policy_mode_ranged():
+        import strategy as G
+        old = G.FAMILIES["melee"].pop("mode")                              # the gear model's ranged mode kept
+        try:
+            return _ci_red(test_strategy_policy_table)
+        finally:
+            G.FAMILIES["melee"]["mode"] = old
+    out.append(("strategy spec: a melee family's plan mode left ranged", m_policy_mode_ranged))
 
     def m_strategy_one_policy():
         import strategy as G
