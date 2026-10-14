@@ -200,16 +200,29 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
 
 # Where the mouse pointer goes before a Start, as a share of the primary screen (x, y): over the game world, away from
 # the hotbar (a "Repulsor" tooltip of the hotbar under a resting pointer covered half of a recorded fight), the party
-# portraits, the minimap and the turn order, and far enough from the edges not to pan the camera.
+# portraits, the minimap and the turn order, and far enough from the edges not to pan the camera. In game a pointer
+# over the world drew a move preview in idle own turns and an object's name tooltip in enemy turns; LA_POINTER_AT
+# ("x,y" shares) sets another spot for a run without a code change.
 POINTER_AT = (0.30, 0.18)
 
 
-def pointer_off_ui(at=POINTER_AT):
+def pointer_at(env=None):
+    """The pointer's spot: LA_POINTER_AT ("x,y", each 0.1-0.9) when set and valid, else POINTER_AT."""
+    raw = (os.environ if env is None else env).get("LA_POINTER_AT", "")
+    try:
+        x, y = (float(v) for v in raw.split(","))
+    except ValueError:
+        return POINTER_AT
+    return (x, y) if 0.1 <= x <= 0.9 and 0.1 <= y <= 0.9 else POINTER_AT
+
+
+def pointer_off_ui(at=None):
     """Moves the mouse pointer to `at` (no click), so no hotbar tooltip stays open in the recorded fight. -> (x, y), or
     None where the pointer cannot be set (not Windows)."""
     if os.name != "nt":
         return None
     import ctypes
+    at = at or pointer_at()
     u = ctypes.windll.user32
     x, y = int(u.GetSystemMetrics(0) * at[0]), int(u.GetSystemMetrics(1) * at[1])
     return (x, y) if u.SetCursorPos(x, y) else None
