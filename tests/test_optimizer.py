@@ -878,6 +878,122 @@ def test_strategy_halves():
     assert got == [2, 1, 2, 0], got
 
 
+def test_strategy_trip_prone():
+    """Trip Attack's Prone (boss STR save +4 vs DC 16 fails 55%): standing up costs half the boss's 9 m and the AI loses
+    4.5 m more (the game's PRONE / AI_HELPER_PRONE strings), so out of reach it stays out and attacks no one (as in
+    game), the next turn starting out of reach with the charge kept and no True Strike; in reach it stands and attacks
+    as before; a boss with movement to spare walks back. In the turn, rolls within 3 m of a Prone boss gain Advantage,
+    shots from further away do not (hand formulas)."""
+    import strategy as G
+    fails = []
+    stats = {"PRONE": {"OnRemoveFunctors": "IF(RemoveCause(StatusRemoveCause.Condition)):UseActionResource(Movement, "
+                                           "50%, 0, true);AI_ONLY:ApplyStatus(AI_HELPER_PRONE,100,2)"},
+             "AI_HELPER_PRONE": {"Boosts": "ActionResource(Movement,-4.5,0);Advantage(AttackTarget)"}}
+    if G.prone_movement(stats) != (0.5, 4.5) or G.prone_movement({}) != (0.5, 4.5):
+        fails.append(f"stats {G.prone_movement(stats)}")
+    P = _thx_profile(riposte_ts=True)
+    if G.prone_closes_in(P) or not G.prone_closes_in(G.replace(P, boss_move=14.0)):
+        fails.append("9 m boss closes in, or a 14 m one does not")
+    away = G.boss_turn(P, "mark", False, False, False, prone=True)
+    if away != [(1.0, 0.0, 0.0, "mark", False, True, False)]:
+        fails.append(f"prone out of reach {away}")
+    if G.boss_turn(P, "mark", True, False, False, prone=True) != G.boss_turn(P, "mark", True, False, False):
+        fails.append("prone in reach changed the boss's attack")
+    if G.boss_turn(G.replace(P, boss_move=14.0), "mark", False, False, False, prone=True) != \
+            G.boss_turn(P, "mark", False, False, False):
+        fails.append("a boss with movement to spare stayed away")
+    # one landed Trip in four (natural 1 misses with Advantage: 1/400), 55% fail
+    w = G.Weapon("x", 40, (6,), 0, ranged=True)
+    P2 = G.replace(P, ranged_main=w, ranged_off=w, sharpshooter=None, sneak_dice=(), mark_die=0, riposte=None)
+    S = G.Search(P2, "evade_nohold")
+    s = G.State(rnd=3, adjacent=True, dice=1, surge=False, conc="", pierce_m=False, pierce_r=False, dread=False,
+                boss_after=True)
+    br = S._branches(s, G.Plan("leave", maneuver="TripAttack", n_maneuver=1))
+    p_away = sum(b[0] for b in br if b[3] is not None and not b[3].adjacent)
+    want = (1 - 1 / 400) * 0.55
+    if abs(p_away - want) > 1e-12 or any(b[3].ts or not b[3].sneak for b in br if not b[3].adjacent):
+        fails.append(f"next turn out of reach {p_away} want {want}")
+    # straight rolls, +9 vs AC 19 (55%), no critical hits: the Trip (d6 + d8) then one plain d6 roll
+    w9 = G.Weapon("y", 9, (6,), 0)
+    P3 = G.replace(P2, melee_main=w9, ranged_main=G.replace(w9, ranged=True), adv=False, crit_from=21,
+                   bonus_actions=0)
+    start = G.TurnStart(True, "", False)
+    near, _ = G.turn_numbers(P3, G.Plan("melee", maneuver="TripAttack", n_maneuver=1), start)
+    far, _ = G.turn_numbers(P3, G.Plan("leave", maneuver="TripAttack", n_maneuver=1), start)
+    trip, pp = 0.55 * 8.0, 0.55 * 0.55
+    if abs(near - (trip + 3.5 * (pp * (1 - 0.45 ** 2) + (1 - pp) * 0.55))) > 1e-9 or \
+            abs(far - (trip + 3.5 * 0.55)) > 1e-9:
+        fails.append(f"in-turn Advantage: melee {near}, shot {far}")
+    assert not fails, fails
+
+
+def test_strategy_boss_odds():
+    """The boss's attack odds: a uniform d20 by default (+9 vs AC 22: 13+ lands 40%, with Disadvantage 16%, a natural
+    20 critical 5% / 0.25%); with measured odds (the pooled records' 73 / 136 and 19 / 51 at +9 vs AC 22) the boss's
+    landed rows of its turn add up to those, critical hits kept at the uniform share."""
+    import strategy as G
+    fails = []
+    P = _thx_profile()
+    M = G.replace(P, boss_odds=G.BOSS_ODDS[(9, 22)])
+    for prof, fr, want, crit in ((P, False, 0.40, 0.05), (P, True, 0.16, 0.0025), (M, False, 73 / 136, 0.05),
+                                 (M, True, 19 / 51, 0.0025)):
+        rows = G.boss_turn(prof, "mark", True, fr, False, parts=True)
+        land = sum(r[7][5] for r in rows)
+        crits = sum(r[7][6] for r in rows)
+        if abs(land - want) > 1e-12 or abs(crits - crit) > 1e-12 or abs(sum(r[0] for r in rows) - 1) > 1e-12:
+            fails.append(f"odds {prof.boss_odds} frightened {fr}: landed {land} critical {crits} want {want} {crit}")
+    assert not fails, fails
+
+
+def test_strategy_gaping_ends():
+    """Gaping Wound lasts the rest of its turn and the boss's turn (its +2 on the riposte), and is gone as the
+    character's next turn starts (in game it ends then): the next turn's value is that turn without it."""
+    import strategy as G
+    old = G.ROUNDS
+    G.ROUNDS = 2
+    fails = []
+    try:
+        P = G.replace(_thx_profile(), boss_save=-30, sup_dice=0, surge=False, dread_die=0, boss_first=0.0)
+        S = G.Search(P, "melee")
+        s = G.replace(S.start_state(), adjacent=True)
+        plan = G.Plan("melee", pierce=True)
+        rip_with = G.boss_turn(P, "", True, False, True)
+        rip_without = G.boss_turn(P, "", True, False, False)
+        if not sum(r[1] for r in rip_with) > sum(r[1] for r in rip_without):
+            fails.append("no Gaping Wound on the riposte")
+        for p, _m1, _m2, nx in S._branches(s, plan):
+            v, _, nplan = S.value(nx)
+            own, _ = G.turn_numbers(P, nplan, G.TurnStart(nx.adjacent, nx.conc, False, nx.sneak, nx.ts))
+            if abs(v - own) > 1e-9:
+                fails.append(f"next turn {v} vs without Gaping Wound {own}")
+                break
+    finally:
+        G.ROUNDS = old
+    assert not fails, fails
+
+
+def test_strategy_precision_halves():
+    """A Precision die adds to both rolls of a toggled attack: the off-hand half riding on a Precision attack rolls
+    with it, the other half does not; the turn gains the half's extra landed chance times its damage (hand formula)."""
+    import strategy as G
+    P = G.replace(_thx_profile(), sneak_dice=(), mark_die=0, adv=False, crit_from=21)
+    start = G.TurnStart(True, "", False)
+    atk = G.build_attacks(P, G.Plan("melee", n_precision=1), start)
+    flags = [(a.label, a.precision) for a in atk]
+    fails = []
+    if flags != [("plain", True), ("plain", False), ("off-hand", True), ("off-hand", False)]:
+        fails.append(f"flags {flags}")
+    with_die, _ = G.turn_numbers(P, G.Plan("melee", n_precision=1), start)
+    bare, _ = G.turn_numbers(P, G.Plan("melee"), start)
+    # straight rolls, +14 vs AC 19: natural 5+ lands; the die (k) lifts a natural 2-4 when k >= 5 - natural
+    gain_roll = (6 / 8 + 7 / 8 + 8 / 8) / 20
+    want = gain_roll * (P.melee_main.flat + sum((d + 1) / 2 for d in P.melee_main.dice)) + \
+        gain_roll * (P.melee_off.flat + sum((d + 1) / 2 for d in P.melee_off.dice))
+    if abs((with_die - bare) - want) > 1e-9:
+        fails.append(f"gain {with_die - bare} want {want}")
+    assert not fails, fails
+
+
 def test_strategy_policy():
     """The reaction policy: each family is searched under always / crit / never and keeps the best (its totals are the
     plain searches'); the plan's answers for the enemies' turns follow it; the fight ends as the 16th turn ends (no
@@ -897,7 +1013,7 @@ def test_strategy_policy():
             t2, _ = G.Search(G.replace(P, riposte_sneak=pol), "evade").total()
             if pol not in totals or abs(t2 - totals[pol]) > 1e-9:
                 fails.append(f"{pol}: {totals.get(pol)} vs search {t2}")
-        last = G.State(rnd=3, adjacent=True, dice=0, surge=False, conc="mark", gaping=False, pierce_m=False,
+        last = G.State(rnd=3, adjacent=True, dice=0, surge=False, conc="mark", pierce_m=False,
                        pierce_r=False, dread=False, boss_after=False)
         v, _, plan = G.Search(P, "evade").value(last)
         own, _ = G.turn_numbers(P, plan, G.TurnStart(True, "mark", False))
@@ -1074,7 +1190,7 @@ def test_strategy_policy_table():
                 fails.append(f"key round trip {G.state_key(s)}")
                 break
             n, e = G.state_numbers(S, s), T["states"][G.state_key(s)]
-            own = G.turn_numbers(P, n["plan"], G.TurnStart(s.adjacent, s.conc, s.gaping, s.sneak, s.ts))
+            own = G.turn_numbers(P, n["plan"], G.TurnStart(s.adjacent, s.conc, False, s.sneak, s.ts))
             if abs(e["own"] - round(own[0], 2)) > 1e-9 or T["decisions"][e["d"]]["text"] != G.describe(n["plan"]):
                 fails.append(f"{G.state_key(s)}: own {e['own']} vs {own[0]}")
                 break
@@ -1220,7 +1336,9 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_buff_spells, test_riposte, test_item_riposte, test_boss_turns_taken, test_wrath_storm,
             test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
-            test_strategy_true_strike, test_strategy_halves, test_strategy_policy, test_reaction_sneak, test_attack_parts_split,
+            test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_boss_odds,
+            test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
+            test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck, test_strategy_policy_table]
 
 
@@ -2960,6 +3078,72 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: a manoeuvre counted with an off-hand half", m_strategy_halves_any))
+
+    def m_strategy_prone_ignored():
+        import strategy as G
+        old = G.boss_turn
+        G.boss_turn = lambda *a, **k: old(*a, **dict(k, prone=False))          # the boss always walks back
+        try:
+            return _ci_red(test_strategy_trip_prone)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy: a Prone boss walks back into reach", m_strategy_prone_ignored))
+
+    def m_strategy_prone_stand_free():
+        import strategy as G
+        old = G.prone_closes_in
+        G.prone_closes_in = lambda P: P.boss_move * (1 - P.prone_stand) >= G.LEAVE_GAP_M   # the AI's loss left out
+        try:
+            return _ci_red(test_strategy_trip_prone)
+        finally:
+            G.prone_closes_in = old
+    out.append(("strategy: standing up costs only half the boss's movement", m_strategy_prone_stand_free))
+
+    def m_strategy_prone_no_adv():
+        import strategy as G
+        old = G.build_attacks
+        G.build_attacks = lambda P, plan, state: [G.replace(a, near=False) for a in old(P, plan, state)]
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_trip_prone)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: no Advantage within 3 m of a Prone boss", m_strategy_prone_no_adv))
+
+    def m_strategy_boss_odds_ignored():
+        import strategy as G
+        old = G.boss_attack
+        G.boss_attack = lambda P, mode: old(G.replace(P, boss_odds=None), mode)    # the uniform d20 always
+        try:
+            return _ci_red(test_strategy_boss_odds)
+        finally:
+            G.boss_attack = old
+    out.append(("strategy: the boss's measured odds ignored", m_strategy_boss_odds_ignored))
+
+    def m_strategy_gaping_next_turn():
+        import strategy as G
+        old = G._turn_cached
+        # the search's turns start with Gaping Wound still on
+        G._turn_cached = lambda P, plan, start: G.run_turn(P, plan, G.replace(start, gaping=True))
+        try:
+            return _ci_red(test_strategy_gaping_ends)
+        finally:
+            G._turn_cached = old
+    out.append(("strategy: Gaping Wound credited in the next turn", m_strategy_gaping_next_turn))
+
+    def m_strategy_precision_main_only():
+        import strategy as G
+        old = G.build_attacks
+        G.build_attacks = lambda P, plan, state: [G.replace(a, precision=False) if a.label == "off-hand" else a
+                                                  for a in old(P, plan, state)]
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_precision_halves)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: Precision's die on the main-hand roll only", m_strategy_precision_main_only))
 
     def m_strategy_surge_free():
         import strategy as G
