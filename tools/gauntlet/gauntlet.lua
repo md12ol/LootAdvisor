@@ -2724,6 +2724,7 @@ function G.castFault(R, spell, kind, why)
 end
 -- The player path's end of a cast: CastedSpell (after its damage rows), or PLAYER_END_MS after the first evidence.
 G.PLAYER_END_MS = 3000
+G.SURGE_STATUS = "ACTION_SURGE"
 -- Did the pending cast's main hand land a row (hit or miss) on its target: a damage row from the character since the
 -- cast that is not the off-hand half's.
 function G.mainFired(P, dmg)
@@ -2863,6 +2864,16 @@ function G.settle(F, R, t)
     P.tConf = P.tConf or t
     if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end
     P.ended = true
+  end
+  -- Action Surge's extra action comes with its status, 35-70 ms after its CastedSpell: a request sent before it reads
+  -- the action points without it, and the surge's action shows up as spent by the wrong attack
+  if ev and P.player and P.spell == "Shout_ActionSurge" and not P.effectSeen then
+    P.tEff = P.tEff or t
+    if try(Osi.HasActiveStatus, F.char, G.SURGE_STATUS) == 1 or t - P.tEff >= G.PLAYER_END_MS then
+      P.effectSeen = true
+    else
+      return false
+    end
   end
   if ev and P.dual and not P.dualDone and not P.player then
     -- a main-hand attack that can fire the off-hand half: wait up to OFFHAND_MS after the confirmation for its row
