@@ -521,6 +521,22 @@ def watchdog_tests(L):
       for _ = 1, G.END_TURN_TRIES + 1 do t = t + G.END_TURN_MS + 1; G.step(F2, t) end
       T_end2, T_why2 = F2.state, G.results.ended
       Ext.Entity.Get = function() return nil end
+      -- the turn guard counts from the last progress: a cast requested 40 s into the turn and still held by the engine
+      -- is not cut at 95 s; with no progress for ACT_MAX_MS the turn is ended
+      G.reset(); G.round = 2
+      G.rounds = { { r = 2, done = {}, actions = {}, casts = {} } }
+      local settle = G.settle
+      G.settle = function() return false end
+      local F3 = { char = "c1", enemies = { "e1" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {}, rounds = 16,
+                   started = 1, state = "act", next = 0, turnStart = 0, progressT = 40000,
+                   pending = { rec = { result = "pending" }, t0 = 40000 } }
+      G.F = F3
+      G.step(F3, 95000)
+      T_guard1 = F3.state
+      F3.next = 0
+      G.step(F3, 40000 + G.ACT_MAX_MS + 1)
+      T_guard2 = F3.state
+      G.settle = settle
       -- a run start returns at once; the work runs on timers
       local queue = {}
       Ext.Timer.WaitFor = function(_, f) queue[#queue + 1] = f end
@@ -551,6 +567,8 @@ def watchdog_tests(L):
           g.T_end == "done" and g.T_valid is False and "turn never came" in str(g.T_why), str(g.T_why))
     check("watchdog: an own turn that will not end is retried, then the run ends invalid",
           g.T_end2 == "done" and "could not be ended" in str(g.T_why2), str(g.T_why2))
+    check("turn guard: a cast still held 55 s after its request is not cut; no progress for ACT_MAX_MS ends the turn",
+          g.T_guard1 == "act" and g.T_guard2 == "ending", f"{g.T_guard1} {g.T_guard2}")
     check("run start: returns at once, prep not yet started", g.T_run == "started" and g.T_status == "starting",
           f"{g.T_run} {g.T_status}")
     check("run start: a bad request still ends in an invalid run record",
@@ -558,7 +576,7 @@ def watchdog_tests(L):
     check("run start: prep that never finishes -> invalid run, not a hang",
           "prep timed out" in str(g.T_prep) and g.T_prep_valid is False, str(g.T_prep))
     # Action Surge on the player path: done only once its extra action point is in (in game it came ~70 ms after the
-    # status), or SURGE_MAX_MS after the request (after a riposte the cast itself came 6 s late)
+    # status), or CAST_MAX_MS after the request (after a riposte the cast itself came 6 s late)
     L.execute(r"""
       local G = GAUNTLET
       G.reset(); G.t0 = 0
@@ -586,7 +604,7 @@ def watchdog_tests(L):
       ap, has = 1, 0
       local F2, R2 = pending()
       T_c1 = G.settle(F2, R2, 6100)
-      T_c2 = G.settle(F2, R2, 8000)
+      T_c2 = G.settle(F2, R2, 60000)
       Osi.HasActiveStatus, Osi.GetActionResourceValuePersonal = hs, ar
     """)
     g = L.globals()
@@ -1373,11 +1391,42 @@ def player_cast_tests(L):
       RES.ActionPoint, RES.BonusActionPoint = 0, 1
       G.dmg = { { source = "c1", target = "b1", cause = "Attack", amount = 9 } }
       T_s_wait = G.settle(F1, R1, 100)
+      -- after a riposte the attack itself came 6 s after the engine spent: still waited for at 5.9 s
+      T_s_late = G.settle(F1, R1, 5900)
       G.dmg[#G.dmg + 1] = { source = "c1", target = "b1", cause = "Offhand", amount = 4 }
       R1.casts[1] = { who = "c1", spell = "Projectile_MainHandAttack" }
-      T_s_done = G.settle(F1, R1, 1500)
+      -- CastedSpell in, the strikes not yet marked done: still waiting; the off-hand half's LastAttack row ends it
+      G.hits = { { source = "c1", target = "b1", attack_flags = "FirstAttack", hit = true } }
+      T_s_strikes = G.settle(F1, R1, 6000)
+      G.hits[2] = { source = "c1", target = "b1", attack_flags = "LastAttack", hit = true }
+      T_s_done = G.settle(F1, R1, 6100)
+      G.hits = {}
+      -- a toggled melee attack after a frozen cast: main hand struck (FirstAttack only), the off-hand half never came
+      -- but its bonus action was taken -> waited STRIKES_MAX_MS, then a "lost half" fault; a riposte's row is no strike
+      RES.ActionPoint, RES.BonusActionPoint = 1, 2
+      local Fl, Rl, recl = pend("Target_MainHandAttack", true)
+      RES.ActionPoint, RES.BonusActionPoint = 0, 1
+      local savedDmgL = G.dmg
+      G.dmg = { { source = "c1", target = "b1", cause = "Attack", amount = 12, t = 50 } }
+      G.hits = { { source = "c1", target = "b1", attack_flags = "FirstAttack", hit = true },
+                 { source = "c1", target = "b1", attack_flags = "FirstAttack,LastAttack,Reaction", hit = true } }
+      Rl.casts[1] = { who = "c1", spell = "Target_MainHandAttack" }
+      T_l_wait = G.settle(Fl, Rl, 1000)
+      T_l_done = G.settle(Fl, Rl, 1000 + G.STRIKES_MAX_MS)
+      T_l_rec = { recl.offhand_half, Rl.cast_faults and Rl.cast_faults[1] and Rl.cast_faults[1].kind }
+      G.hits, G.dmg = {}, savedDmgL
       T_s_rec = { rec1.result, rec1.offhand_half, R1.cast_faults == nil, RES.BonusActionPoint,
         E.c1.DualWielding.RangedToggledOn }
+      -- no evidence yet past CONFIRM_MS: a cast the engine started (UsingSpell) is still waited for, one it did not
+      -- start is a miss
+      local savedDmg = G.dmg
+      G.dmg = {}
+      local Fu, Ru = pend("Target_MainHandAttack", false)
+      Ru.usings = { { who = "c1", spell = "Target_MainHandAttack" } }
+      T_s_using = G.settle(Fu, Ru, G.CONFIRM_MS + 1000)
+      local Fn, Rn = pend("Target_MainHandAttack", false)
+      T_s_nouse = G.settle(Fn, Rn, G.CONFIRM_MS + 1000)
+      G.dmg = savedDmg
       -- a melee attack sent the wrong way: AP and BA gone, nothing hit
       RES.ActionPoint, RES.BonusActionPoint = 1, 2
       local F2, R2, rec2 = pend("Target_MainHandAttack", true)
@@ -1385,6 +1434,7 @@ def player_cast_tests(L):
       G.dmg = {}
       R2.casts[1] = { who = "c1", spell = "Target_MainHandAttack" }
       G.settle(F2, R2, 1500)
+      G.settle(F2, R2, 1500 + G.STRIKES_MAX_MS)
       T_bug = { rec2.result, R2.cast_faults and R2.cast_faults[1].kind, R2.cast_faults and R2.cast_faults[1].why,
         G.roundFault({ S = {} }, R2) }
       T_bug_judge = G.judge({ R2 }, "rounds done", { summary = {}, prep = {} }, {})
@@ -1429,6 +1479,7 @@ def player_cast_tests(L):
         G.hits, G.dmg = rows, {}
         Rm.casts[1] = { who = "c1", spell = "Target_MenacingAttack" }
         G.settle(Fm, Rm, 1500)
+        G.settle(Fm, Rm, 1500 + G.STRIKES_MAX_MS)
         return { recm.result, recm.hit_cost, Rm.cast_faults and Rm.cast_faults[1].why or "" }
       end
       local HIT = { { source = "c1", target = "b1", spell = "Target_MenacingAttack", hit = true } }
@@ -1510,7 +1561,13 @@ def player_cast_tests(L):
     check("spent: a spell slot paid with a pact slot counts", g.T_cc_pact == 0, str(g.T_cc_pact))
     sr = seq(g.T_s_rec, 5)
     check("player cast: settle waits for the cast's end (CastedSpell), not the resource drop",
-          g.T_s_wait is False and g.T_s_done is True, f"{g.T_s_wait} {g.T_s_done}")
+          g.T_s_wait is False and g.T_s_late is False and g.T_s_strikes is False and g.T_s_done is True,
+          f"{g.T_s_wait} {g.T_s_late} {g.T_s_strikes} {g.T_s_done}")
+    lr = seq(g.T_l_rec, 2)
+    check("player cast: an off-hand half the engine dropped is waited for, then a 'lost half' fault",
+          g.T_l_wait is False and g.T_l_done is True and lr == ["lost", "lost half"], f"{g.T_l_wait} {g.T_l_done} {lr}")
+    check("player cast: no evidence yet, a cast the engine started (UsingSpell) waited for, one never started a miss",
+          g.T_s_using is False and g.T_s_nouse is True, f"{g.T_s_using} {g.T_s_nouse}")
     check("player cast: a toggled shot that matches its costs is done, the harness pays nothing, the toggle put back",
           sr[0] == "done" and sr[1] == "fired" and sr[2] is True and sr[3] == 1 and sr[4] is False, str(sr))
     bug = seq(g.T_bug, 4)
@@ -2601,12 +2658,14 @@ def offhand_melee_tests(L):
       RES.ActionPoint, RES.BonusActionPoint = 0, 1
       G.dmg = { row(1000, "Attack", 8, "Piercing"), row(1560, "Attack", 6, "Piercing") }
       G.settle(F1, R1, 2000)
+      G.settle(F1, R1, 2000 + G.STRIKES_MAX_MS)
       T_os_ok = { rec1.result, rec1.offhand_half, R1.cast_faults == nil }
       -- both halves struck and no bonus action spent: the off-hand half's bonus action is owed
       RES.ActionPoint, RES.BonusActionPoint = 1, 2
       local F2, R2, rec2 = pend()
       RES.ActionPoint, RES.BonusActionPoint = 0, 2
       G.settle(F2, R2, 2000)
+      G.settle(F2, R2, 2000 + G.STRIKES_MAX_MS)
       T_os_owed = { rec2.offhand_half, R2.cast_faults and R2.cast_faults[1].kind,
         R2.cast_faults and R2.cast_faults[1].why }
       G.dmg, G.hits = {}, {}
@@ -6195,13 +6254,11 @@ MUTATIONS = [
     ("first turn: the combat's first request sent as early as any other", GL,
      "t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t", "t + G.ACT_DELAY_MS, t"),
     ("Action Surge: done before its action point is in", GL,
-     "    if (resAmount(F.char, \"ActionPoint\") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.SURGE_MAX_MS then",
+     "    if (resAmount(F.char, \"ActionPoint\") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.CAST_MAX_MS then",
      "    if true then"),
     ("Action Surge: done once its status is on (the action point comes later)", GL,
      "    if (resAmount(F.char, \"ActionPoint\") or 0) > (P.ap0 or 0) or",
      "    if try(Osi.HasActiveStatus, F.char, \"ACTION_SURGE\") == 1 or"),
-    ("Action Surge: the wait capped at 3 s (a cast after a riposte came 6 s late)", GL,
-     "G.SURGE_STATUS, G.SURGE_MAX_MS = \"ACTION_SURGE\", 8000", "G.SURGE_STATUS, G.SURGE_MAX_MS = \"ACTION_SURGE\", 3000"),
     ("strategy spec: the item rule keeps its item spells", PL, '    plan["item_actions"] = []\n', ""),
     ("record: the JSON-safe copy's Stringify unprotected", GL,
      "    okj, text = pcall(Ext.Json.Stringify, G.jsonSafe(rec))\n",
@@ -6269,7 +6326,7 @@ MUTATIONS = [
      '  return t or "Projectile"'),
     ("player cast: no rolls asked for anyway", GL, "  if F and F.realRolls == false then opts", "  if false then opts"),
     ("player cast: the CastSpellFailed before an accepted cast counted as a refusal", GL,
-     "    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return nil end\n", ""),
+     "  if G.usingSeen(P, R) then return nil end\n", ""),
     ("player cast: a refusal not waited for", GL, "  if t - P.failAt < G.PLAYER_FAIL_MS then return nil end\n", ""),
     ("player cast: a refusal asked for again", GL, "  if refused and not P.player and tries < G.CAST_RETRIES",
      "  if refused and tries < G.CAST_RETRIES"),
@@ -6301,7 +6358,20 @@ MUTATIONS = [
      '"MeleeOffHand": "PassivesOffHand", "RangedOffHand": "PassivesOffHand"}',
      '"MeleeOffHand": "PassivesMainHand", "RangedOffHand": "PassivesMainHand"}'),
     ("player cast: checked before the cast's end", GL,
-     '    if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end\n', ""),
+     '    if ev ~= "cast" and t - (P.t0 or t) < G.CAST_MAX_MS then return false end\n', ""),
+    ("player cast: a started cast with no evidence given up at CONFIRM_MS", GL,
+     "  local started = casting(F.char) or (P.player and G.usingSeen(P, R))\n",
+     "  local started = casting(F.char)\n"),
+    ("turn guard: counted from the turn's start, not the last progress", GL,
+     "    if t - (F.progressT or F.turnStart or t) > G.ACT_MAX_MS then", "    if t - (F.turnStart or t) > G.ACT_MAX_MS then"),
+    ("player cast: costs checked at CastedSpell, before the attack's last strike", GL,
+     "    if not G.strikesDone(P, G.hits) and t - P.tCast < G.STRIKES_MAX_MS then return false end\n", ""),
+    ("player cast: an off-hand half the engine dropped passes as a possible half", GL,
+     "  if P.toggled and P.dual and not fired and G.mainFired(P, G.dmg) and not G.strikesDone(P, G.hits)\n",
+     "  if false\n"),
+    ("player cast: a riposte's row taken for the cast's last strike", GL,
+     ' and not f:find("Reaction", 1, true) then return true end', " then return true end"),
+    ("player cast: a fixed 3 s wait for the cast's end", GL, "G.CAST_MAX_MS = 60000", "G.CAST_MAX_MS = 3000"),
     ("player cast: an attack that hit nothing may owe the off-hand half", GL,
      "elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end", "elseif P.toggled then maybe = P.dual end"),
     ("spent: a bonus action not owed may be spent", GL,
