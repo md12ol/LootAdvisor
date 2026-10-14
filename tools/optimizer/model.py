@@ -765,6 +765,21 @@ def make_weapon_events(st):
                         base_dice=ond * (osides + 1) / 2 + sum(mech.dice_part(e) for e in (ow.get("extra_damage") or []))))
         free_ba -= n
     special["free_ba"] = free_ba
+    # the melee main hand's attack, for a weapon's riposte reaction (item_riposte_event) in any plan mode
+    mrow = weapon_row(st, "MainHand") if item_riposte(st) else None
+    if mrow and plan["mode"] == "melee":
+        special["riposte_ev"] = dict(main, n=0.0, name="item riposte")
+    elif mrow:
+        (mnd, msides), mrec = weapon_dice(st, "MainHand")
+        mw = mrec.get("weapon") or {}
+        keep = {k: v for k, v in base.items() if k not in ("throw_penalty", "any_dmg", "returning", "thrown", "unarmed",
+                                                           "rider_flat", "rider_dice")}
+        special["riposte_ev"] = dict(
+            keep, slot="MainHand", n=0.0, name="item riposte", kind="weapon", weapon=True, melee=True, ranged=False,
+            attack_type="MeleeWeaponAttack", base_hit=mrow["hit"], base_dmg=mrow["avg"], die=(mnd, msides),
+            heavy="Heavy" in (mw.get("properties") or []) or "Twohanded" in (mw.get("properties") or []),
+            dtypes={mrow.get("dt") or "Slashing"}, main_dtype=mrow.get("dt"),
+            base_dice=mnd * (msides + 1) / 2 + sum(mech.dice_part(e) for e in (mw.get("extra_damage") or [])))
     return evs, special
 
 
@@ -1588,6 +1603,12 @@ def _evaluate_tactic(W, cid, bid, act, loadout, switches, detail, choice, respec
             offence += rx[1]["dmg"]
             evs.append(rx[0])
             results.append(rx[1])
+    rx = item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt)
+    if rx:
+        dmg += rx[1]["dmg"]
+        offence += rx[1]["dmg"]
+        evs.append(rx[0])
+        results.append(rx[1])
     return Result(st, offence, dmg, ctrl, dur, evs, results, extra, sa, tgt, detail)
 
 
@@ -1650,6 +1671,45 @@ def riposte_event(st, evs, results, special, dur):
     per = r0["dmg"] / ev0["n"] + r0["ph"] * special.get("die", 0.0)
     return (dict(name="Riposte", spell_id="Target_Riposte", n=n, kind="reaction", cost="reaction"),
             dict(dmg=n * per, hits=n * r0["ph"], crits=0.0, ph=r0["ph"], pc=r0["pc"], casts=n))
+
+
+def item_riposte(st):
+    """The riposte a worn melee weapon unlocks, or None: an interrupt in the Boosts of its PassivesOnEquip or of the
+    passives of the hand it is in (Blade of the First Blood in the off hand: MAG_TheClover_OffHand_Passive ->
+    Interrupt_TheClover_TrueStrike_Riposte) that fires on an enemy's missed melee attack and casts an attack spell."""
+    S = st.W.stats
+    for slot, key in (("MainHand", "PassivesMainHand"), ("OffHand", "PassivesOffHand")):
+        rec = S.get(st.loadout.get(slot) or "") or {}
+        for p in [x.strip() for k in ("PassivesOnEquip", key) for x in (rec.get(k) or "").split(";") if x.strip()]:
+            for intr in re.findall(r"UnlockInterrupt\((\w+)\)", (S.get(p) or {}).get("Boosts") or ""):
+                it = S.get(intr) or {}
+                cond = it.get("Conditions") or ""
+                if "IsMiss()" in cond and "IsMeleeAttack()" in cond and "UseSpell(" in (it.get("Properties") or ""):
+                    return intr
+    return None
+
+
+def item_riposte_event(st, evs, results, special, dur, boosts, names, E, tgt):
+    """A weapon's riposte reaction (item_riposte): a melee main-hand attack when an enemy's melee attack within 2 m
+    misses, counted as the strategy search counts it (optimizer strategy.py): the reaction once a round at most, on
+    the enemy attacks made from within reach (every one for a melee build, REACH["share"] otherwise: the riposte comes
+    from the melee set whichever set the plan attacks with) that miss, with the melee main hand's damage and the mark,
+    no Sneak Attack (not known whether it is back on the enemy's turn). A Battle Master Riposte takes the reaction
+    first. -> (event, result) or None"""
+    ev = special.get("riposte_ev")
+    if not ev:
+        return None
+    reach = 1.0 if st.plan["mode"] == "melee" else REACH["share"]
+    taken = sum(e.get("n") or 0.0 for e in evs if e.get("name") == "Riposte")
+    n = max(0.0, min(1.0 - taken, dur.get("enemy_attacks", 0.0) * reach * (1 - dur.get("enemy_ph", 1.0))))
+    if n <= 0:
+        return None
+    ev = dict(ev, n=n, spell_id=item_riposte(st), kind="reaction", cost="reaction")
+    adv_x = 1 - (1 - max(tgt["prone"], st.target_prone)) * (1 - tgt["adv"])
+    r = eval_event(st, dict(ev, kind="weapon"), boosts, names, E, tgt["save_pen"], adv_x, 0.0)
+    if special.get("mark"):
+        r["dmg"] += special["mark"] * (r["hits"] + r["crits"])
+    return ev, r
 
 
 def wrath_event(st, E, boosts, names, tgt, dur):

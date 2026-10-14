@@ -155,6 +155,26 @@ local function spellCosts(spell)
   local st = try(Ext.Stats.Get, spell)
   return parseCosts(st and try(function() return st.UseCosts end))
 end
+-- Cost lists added up per resource (kind and level).
+local function costKey(c) return tostring(c.kind) .. ":" .. tostring(c.level or 0) end
+local function addCosts(...)
+  local out, at = {}, {}
+  for i = 1, select("#", ...) do
+    for _, c in ipairs(select(i, ...) or {}) do
+      local k = costKey(c)
+      if at[k] then at[k].n = at[k].n + c.n
+      else at[k] = { kind = c.kind, level = c.level, n = c.n }; out[#out + 1] = at[k] end
+    end
+  end
+  return out
+end
+-- What a step spends only when its attack hits (the spell's HitCosts: a manoeuvre's superiority die, Divine Smite's
+-- slot), from the plan's hit_cost or else the spell's data. The game needs it there to cast the spell all the same.
+function G.hitCosts(a)
+  if a.hit_cost ~= nil then return parseCosts(a.hit_cost) end
+  local st = try(Ext.Stats.Get, a.spell)
+  return parseCosts(st and try(function() return st.HitCosts end))
+end
 -- What the off-hand half of a main-hand attack costs (DualWieldingUseCosts: the bonus action), or nil. The game takes
 -- it when the Dual Wielding Attacks toggle fires that half; a script's cast that skips cost checks does not.
 function G.dualCosts(spell)
@@ -210,7 +230,7 @@ function G.afford(F, a)
   if F.unusable and F.unusable[a.spell] then return false, "unusable: " .. F.unusable[a.spell] end
   if F.afford then return F.afford(a) end
   local costs = a.cost == "free" and {} or (a.cost and parseCosts(a.cost) or spellCosts(a.spell))
-  local ok, why = canPay(F.char, costs)
+  local ok, why = canPay(F.char, addCosts(costs, G.hitCosts(a)))
   if not ok then return false, "no resource " .. tostring(why) end
   if a.per and F.cooldown[a.spell] then return false, "used this rest" end
   if onCooldown(F.char, a.spell) then return false, "on cooldown" end
@@ -2210,24 +2230,11 @@ function G.playerRefused(P, R, t)
   if t - P.failAt < G.PLAYER_FAIL_MS then return nil end
   return f
 end
--- Cost lists added up per resource (kind and level).
-local function costKey(c) return tostring(c.kind) .. ":" .. tostring(c.level or 0) end
-local function addCosts(...)
-  local out, at = {}, {}
-  for i = 1, select("#", ...) do
-    for _, c in ipairs(select(i, ...) or {}) do
-      local k = costKey(c)
-      if at[k] then at[k].n = at[k].n + c.n
-      else at[k] = { kind = c.kind, level = c.level, n = c.n }; out[#out + 1] = at[k] end
-    end
-  end
-  return out
-end
 -- Why the engine refused a player-path cast (it gives no reason), checked in this order: resources (the costs, and the
 -- off-hand half's when the toggle was on), range, line of sight. -> kind ("resources" | "range" | "line of sight" |
 -- nil when none of them), text
 function G.playerFailReason(F, P)
-  local ok, why = canPay(F.char, addCosts(P.costs, P.toggled and P.dual or nil))
+  local ok, why = canPay(F.char, addCosts(P.costs, P.hit, P.toggled and P.dual or nil))
   if not ok then return "resources", "no resource " .. tostring(why) end
   if P.target and P.target ~= P.who then
     local d = dist(F.char, P.target)
@@ -2596,6 +2603,7 @@ local function doAction(F, a, R, rec0)
   -- the off-hand half's cost: the game takes it on the player path; on the old path the harness pays it once its
   -- damage row shows it fired (G.settle)
   local dual = G.dualCosts(a.spell)
+  local hit = G.hitCosts(a)
   local toggled, togglePrev, toggleField
   if dual then
     toggled, togglePrev, toggleField = G.dualToggle(F, a)
@@ -2603,10 +2611,12 @@ local function doAction(F, a, R, rec0)
   end
   local dualBefore = {}
   for i, c in ipairs(dual or {}) do dualBefore[i] = resAmount(F.char, c.kind, c.level) end
+  local hitBefore = {}
+  for i, c in ipairs(hit) do hitBefore[i] = resAmount(F.char, c.kind, c.level) end
   local P = { a = a, rec = rec, costs = costs, before = before, res = res, who = uuid(F.char), spell = a.spell,
-    dual = dual, dualBefore = dualBefore, toggled = toggled, togglePrev = togglePrev, toggleField = toggleField,
+    hit = hit, hitBefore = hitBefore, dual = dual, dualBefore = dualBefore, toggled = toggled, togglePrev = togglePrev, toggleField = toggleField,
     player = F.playerCast == true, range = range, using0 = #(R.usings or {}),
-    snap0 = F.playerCast and G.costSnapshot(F.char, addCosts(costs, dual)) or nil,
+    snap0 = F.playerCast and G.costSnapshot(F.char, addCosts(costs, dual, hit)) or nil,
     target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, hits0 = #(G.hits or {}), t0 = now(),
     fails0 = #(R.cast_fails or {}), reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
   local okc, err = G.castRequest(F, F.char, a.spell, tgt, a.at_target_pos)
@@ -2692,7 +2702,15 @@ function G.checkSpent(F, R, P)
   P.rec.offhand_half = P.dual and (fired and "fired" or "none") or nil
   local owed, maybe = P.costs, nil
   if fired then owed = addCosts(P.costs, P.dual) elseif P.toggled and G.mainFired(P, G.dmg) then maybe = P.dual end
-  local bad = G.costCheck(owed, maybe, P.snap0 or {}, G.costSnapshot(F.char, addCosts(P.costs, P.dual)))
+  -- the hit costs: owed after a hit, owed as none after a miss, either when the outcome was not seen
+  if P.hit and #P.hit > 0 then
+    local landed = G.castLanded(P, G.hits, G.dmg)
+    P.rec.hit_cost = landed == nil and "unseen" or (landed and "owed" or "none")
+    if landed then owed = addCosts(owed, P.hit)
+    elseif landed == false then owed = addCosts(owed, G.noCosts(P.hit))
+    else maybe = addCosts(maybe, P.hit) end
+  end
+  local bad = G.costCheck(owed, maybe, P.snap0 or {}, G.costSnapshot(F.char, addCosts(P.costs, P.dual, P.hit)))
   if #bad == 0 then return end
   P.rec.cost_mismatch = bad
   local parts = {}
@@ -2700,6 +2718,32 @@ function G.checkSpent(F, R, P)
     parts[#parts + 1] = string.format("%s spent %s, owed %s", m.cost, tostring(m.got), tostring(m.want))
   end
   G.castFault(R, P.spell, "costs", "spent other than its costs: " .. table.concat(parts, "; "))
+end
+-- The same resources at amount 0: owed as none, so spending them is a mismatch.
+function G.noCosts(costs)
+  local out = {}
+  for _, c in ipairs(costs or {}) do out[#out + 1] = { kind = c.kind, level = c.level, n = 0 } end
+  return out
+end
+-- Did the pending cast's main-hand attack hit: its first hit-log row from the character on the target (true for a hit
+-- or a critical hit, false for a miss), else its first damage row there that is not the off-hand half's (a miss
+-- shows as a 0 damage row); nil when neither came.
+function G.castLanded(P, hits, dmg)
+  for i = (P.hits0 or 0) + 1, #(hits or {}) do
+    local h = hits[i]
+    if h.source == P.who and (not P.target or h.target == P.target)
+      and (h.spell == nil or baseSpell(h.spell) == baseSpell(P.spell)) and (h.miss or h.hit or h.crit) then
+      return not h.miss
+    end
+  end
+  for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
+    local d = dmg[i]
+    if (d.source == P.who or d.owner == P.who) and d.target == P.target
+      and not tostring(d.cause or ""):find("Offhand", 1, true) and d.cause ~= "StatusEnter" then
+      return (d.amount or 0) > 0
+    end
+  end
+  return nil
 end
 -- The off-hand half's damage row comes about 0.4 s after the main hand's.
 G.OFFHAND_MS = 900
@@ -2755,7 +2799,10 @@ function G.settle(F, R, t)
   if ev then
     F.pending = nil
     G.restoreToggle(F, P)
-    if P.player then G.checkSpent(F, R, P) else pay(F.char, P.costs, P.before) end
+    if P.player then G.checkSpent(F, R, P) else
+      pay(F.char, P.costs, P.before)
+      if P.hit and #P.hit > 0 and G.castLanded(P, G.hits, G.dmg) then pay(F.char, P.hit, P.hitBefore) end
+    end
     P.rec.result, P.rec.confirmed, P.rec.ms = "done", ev, t - P.t0
     local a = P.a
     R.done[a.done_key or a.group or "free"] = true

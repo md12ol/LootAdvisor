@@ -250,6 +250,28 @@ def parse_costs(s):
     return out
 
 
+def _cost_kind(k):
+    return "SpellSlot" if k == "SpellSlotsGroup" else k
+
+
+def with_hit_costs(plan, stats):
+    """Puts each step's HitCosts (what its spell spends only when it hits: a manoeuvre's superiority die, Divine
+    Smite's slot) in step["hit_cost"] and takes those resources out of an explicit use cost, so the harness owes them
+    after a hit and not after a miss. Walks the rounds, the steady round and every step's fallbacks; returns plan."""
+    for lst in list(plan.get("rounds") or []) + [plan.get("steady") or []]:
+        for a in lst:
+            while a:
+                hc = (stats.get(a["spell"]) or {}).get("HitCosts") or ""
+                kinds = {k for k, _, _ in parse_costs(hc)}
+                if kinds:
+                    a["hit_cost"] = hc
+                    if a.get("cost") and a["cost"] != "free":
+                        a["cost"] = ";".join(x for x in a["cost"].split(";")
+                                             if x.strip() and _cost_kind(x.split(":")[0].strip()) not in kinds)
+                a = a.get("alt")
+    return plan
+
+
 TURN_RESOURCES = {"ActionPoint": 1, "BonusActionPoint": 1, "ReactionActionPoint": 1, "Movement": 9}
 
 
@@ -269,6 +291,8 @@ def forecast(plan, slots, resources, stats, n_rounds=16):
             while a:
                 spec = (stats.get(a["spell"]) or {}).get("UseCosts")
                 costs = [] if a.get("cost") == "free" else parse_costs(a.get("cost") or spec)
+                # a cost spent only on a hit must be there to cast: counted as if every such step hits
+                costs += parse_costs(a.get("hit_cost"))
                 ok = all((turn[k] if k in turn else pool.get((k, lv), 0)) >= n for k, n, lv in costs)
                 if ok:
                     for k, n, lv in costs:
@@ -286,21 +310,28 @@ def forecast(plan, slots, resources, stats, n_rounds=16):
     return out
 
 
-def granted_interrupts(passives, item_stats, stats):
+# the passives a weapon gives only in its hand (Blade of the First Blood's riposte comes with PassivesOffHand)
+HAND_PASSIVES = {"MeleeMainHand": "PassivesMainHand", "RangedMainHand": "PassivesMainHand",
+                 "MeleeOffHand": "PassivesOffHand", "RangedOffHand": "PassivesOffHand"}
+
+
+def granted_interrupts(passives, items, stats):
     """Interrupts (reactions) the build's passives and the set's items unlock: UnlockInterrupt in their Boosts, also
-    through an item's PassivesOnEquip."""
+    through an item's PassivesOnEquip and, for a weapon, the passives of the hand it is worn in. items: stats ids, or
+    (stats id, game slot) pairs for the hand passives."""
     out = []
 
-    def scan(sid, depth=0):
+    def scan(sid, keys=()):
         st_ = stats.get(sid) or {}
         out.extend(re.findall(r"UnlockInterrupt\((\w+)", st_.get("Boosts") or ""))
-        if depth == 0:
-            for p in _split(st_.get("PassivesOnEquip")):
-                scan(p, 1)
+        for key in keys:
+            for p in _split(st_.get(key)):
+                scan(p)
     for p in passives:
-        scan(p, 1)
-    for sid in item_stats:
-        scan(sid)
+        scan(p)
+    for it in items:
+        sid, slot = it if isinstance(it, (tuple, list)) else (it, None)
+        scan(sid, ("PassivesOnEquip",) + ((HAND_PASSIVES[slot],) if slot in HAND_PASSIVES else ()))
     return list(dict.fromkeys(out))
 
 
@@ -389,11 +420,12 @@ def core_plan(model, st, stats, choices=None, known=None, maneuvers=None):
             trip = "Projectile_MenacingAttack" if "MenacingAttack" in maneuvers else None
         if plan.get("superiority") and fighter >= 3 and trip and ch["adv"] < model.ADV_SURE:
             main[0] = A(trip, "action", "@boss", "manoeuvre (superiority die)",
-                        cost="ActionPoint:1;SuperiorityDie:1", alt=A(spell, "action", "@boss", "attack"),
+                        cost="ActionPoint:1", hit_cost="SuperiorityDie:1", alt=A(spell, "action", "@boss", "attack"),
                         value=main[0].get("value"))
         if plan.get("smite") and cl.get("Paladin", 0) >= 2:
             main[0] = A("Target_Smite_Divine", "action", "@boss", "Divine Smite",
-                        cost="ActionPoint:1;SpellSlotsGroup:1:1:1", alt=A(spell, "action", "@boss", "attack"))
+                        cost="ActionPoint:1", hit_cost="SpellSlotsGroup:1:1:1",
+                        alt=A(spell, "action", "@boss", "attack"))
         opening = list(main)
         steady = list(main)
         if fighter >= 2:
@@ -1007,7 +1039,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
     slots = {str(i + 1): n for i, n in enumerate(model.slots(bare.classes))}
     # what the worn items add on top of the class levels (kind SpellSlot: slots of that level)
     item_res = item_resources(stats, [it["stats"] for it in items if not it.get("use")])
-    set_interrupts = granted_interrupts([], [it["stats"] for it in items], stats)
+    set_interrupts = granted_interrupts([], [(it["stats"], it["slot"]) for it in items], stats)
     toggles, toggles_from = model_toggles(g["passives"], pred, plan_toggles)
     checks = item_checks(stats, items, st.sheet.get("attacks"))
     build_interrupts = list(dict.fromkeys(g["interrupts"] + granted_interrupts(g["passives"], [], stats)))
@@ -1026,7 +1058,7 @@ def spec_for(W, model, mech, G, cid, bid, act, setrec, stats, templates, respec=
         "resources": g["resources"], "item_resources": item_res, "boosts": g["boosts"], "items": items,
         "statuses": sorted(set(choice.values())),
         "toggles": toggles, "toggles_from": toggles_from, **checks,
-        "plan": dict(core, item_actions=acts, item_skipped=skipped,
+        "plan": dict(with_hit_costs(core, stats), item_actions=acts, item_skipped=skipped,
                      hotbar=hotbar_rows(core, g["passives"], g["spells"], acts, stats),
                      reactions=reaction_policy(build_interrupts, set_interrupts), reactions_default="never",
                      forecast=forecast(core, slots, g["resources"] + item_res, stats)),
@@ -1091,6 +1123,7 @@ def main(argv=None):
                 import strategy as SG
                 P = SG.profile_from_spec(row["specs"][side], stats)
                 row["specs"][side] = SG.apply_to_spec(row["specs"][side], P, a.strategy, A, evade_steps)
+                with_hit_costs(row["specs"][side]["plan"], stats)
         row.pop("a", None), row.pop("b", None)
         out.append(row)
         print(p["char"], p["build"], p["act"], "->", " / ".join(sp["set"] for sp in row["specs"].values()))

@@ -540,6 +540,60 @@ def test_riposte():
     assert not fails, fails
 
 
+def test_item_riposte():
+    """A weapon's riposte (Blade of the First Blood's, counted as the strategy search counts it): found through the
+    passives of the hand the weapon is in, not the other hand's; per round min(1 - Battle Master ripostes, enemy
+    attacks x reach x miss chance), reach 1 for a melee build and the scenario's share otherwise; the melee main hand's
+    attack with the mark on its hits and critical hits (hand formula)."""
+    import model
+    S = {"Blade": {"PassivesOffHand": " Off_P", "PassivesMainHand": " Main_P"},
+         "Off_P": {"Boosts": "UnlockInterrupt(Interrupt_R)"},
+         "Main_P": {"Boosts": "UnlockInterrupt(Interrupt_M)"},
+         "Interrupt_R": {"Conditions": "IsMeleeAttack() and IsMiss()", "Properties": "UseSpell(SWAP,Target_R,true)"},
+         "Interrupt_M": {"Conditions": "IsMeleeAttack() and IsMiss()", "Properties": "UseSpell(SWAP,Target_M,true)"},
+         "Hit_P": {"Boosts": "UnlockInterrupt(Interrupt_H)"},
+         "Interrupt_H": {"Conditions": "IsMeleeAttack() and IsHit()", "Properties": "UseSpell(SWAP,Target_H,true)"},
+         "Hitter": {"PassivesOnEquip": "Hit_P"}}
+
+    def st_(mode, slot="OffHand", sid="Blade"):
+        st = type("St", (), {})()
+        st.plan, st.loadout, st.target_prone = {"mode": mode}, {slot: sid}, 0.0
+        st.W = type("W", (), {"stats": S})()
+        return st
+    fails = []
+    found = [model.item_riposte(st_("melee", "OffHand")), model.item_riposte(st_("melee", "MainHand")),
+             model.item_riposte(st_("melee", "OffHand", "Hitter"))]
+    if found != ["Interrupt_R", "Interrupt_M", None]:
+        fails.append(f"found {found}")
+    old = model.eval_event
+    model.eval_event = lambda st, ev, b, nm, E, sp, adv=0.0, dis=0.0: dict(
+        dmg=ev["n"] * 20.0, hits=ev["n"] * 0.9, crits=ev["n"] * 0.1, ph=0.9, pc=0.1)
+    tgt = {"prone": 0.0, "adv": 0.0, "save_pen": 0.0}
+    spec = {"riposte_ev": {"name": "item riposte", "n": 0.0}, "mark": 3.0}
+    try:
+        with model.scenario("boss"):
+            ev, r = model.item_riposte_event(st_("melee"), [], [], spec, {"enemy_attacks": 1.0, "enemy_ph": 0.6},
+                                             [], {}, {}, tgt)
+            evr, rr = model.item_riposte_event(st_("ranged"), [], [], spec, {"enemy_attacks": 1.0, "enemy_ph": 0.6},
+                                               [], {}, {}, tgt)
+            evc, _ = model.item_riposte_event(st_("melee"), [{"name": "Riposte", "n": 0.25}], [], spec,
+                                              {"enemy_attacks": 3.0, "enemy_ph": 0.2}, [], {}, {}, tgt)
+            none = model.item_riposte_event(st_("melee"), [], [], {"mark": 3.0},
+                                            {"enemy_attacks": 1.0, "enemy_ph": 0.6}, [], {}, {}, tgt)
+    finally:
+        model.eval_event = old
+    if abs(ev["n"] - 0.4) > 1e-9 or abs(r["dmg"] - (0.4 * 20 + 3.0 * 0.4)) > 1e-9:
+        fails.append(f"melee n {ev['n']} dmg {r['dmg']}")
+    share = model.SCENARIOS["boss"]["melee_contact"]      # the boss fight's reach share (REACH_SHARE["boss"])
+    if abs(evr["n"] - 0.4 * share) > 1e-9:
+        fails.append(f"ranged n {evr['n']} want {0.4 * share}")
+    if abs(evc["n"] - 0.75) > 1e-9:
+        fails.append(f"reaction cap {evc['n']}")
+    if none is not None or ev["kind"] != "reaction" or ev["spell_id"] != "Interrupt_R":
+        fails.append(f"event {none} {ev}")
+    assert not fails, fails
+
+
 def test_wrath_storm():
     """Wrath of the Storm: casts per round min(1, enemy attacks x the share in reach x their hit chance), the share
     15/16 in the boss fight, REACH_SHARE["day"] in a day's fights and 1 for a melee build; the save DC on Wisdom with
@@ -730,6 +784,9 @@ def test_strategy_harness_rounds():
     men = [a for a in r[0] if a["spell"] == "Projectile_MenacingAttack"]
     if not men or men[0]["alt"]["spell"] != "Projectile_MainHandAttack":
         fails.append(f"manoeuvre alt {men}")
+    # the manoeuvre's die is a hit cost (HitCosts), never part of the step's use cost
+    if not men or any(m.get("hit_cost") != "SuperiorityDie:1" or "SuperiorityDie" in str(m.get("cost")) for m in men):
+        fails.append(f"manoeuvre costs {[(m.get('cost'), m.get('hit_cost')) for m in men]}")
     if [a.get("requires") for a in r[0] if a["spell"].endswith("MainHandAttack")][-2:] != ["surge", "surge"]:
         fails.append("surge attacks")
     s2 = [a["spell"] for a in r[1]]
@@ -740,7 +797,7 @@ def test_strategy_harness_rounds():
 
 CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_average, test_die_gains, test_float_averages,
             test_situational_uptimes, test_projectile_totals, test_party_solver, test_party_threshold, test_target_hp,
-            test_buff_spells, test_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
+            test_buff_spells, test_riposte, test_item_riposte, test_wrath_storm, test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds]
 
 
@@ -2158,6 +2215,42 @@ def mutations():
             model.riposte_event = old
     out.append(("riposte: not capped by the enemy's misses", m_riposte_cap))
 
+    def m_item_riposte_cap():
+        old = model.item_riposte_event
+
+        def bad(st, evs, results, special, dur, *rest):
+            return old(st, evs, results, special, dict(dur, enemy_ph=0.0), *rest)   # every enemy attack a miss
+        model.item_riposte_event = bad
+        try:
+            return _ci(test_item_riposte)
+        finally:
+            model.item_riposte_event = old
+    out.append(("item riposte: not capped by the enemy's misses", m_item_riposte_cap))
+
+    def m_item_riposte_hand():
+        old = model.item_riposte
+
+        def bad(st):
+            S = {k: (dict(v, PassivesOffHand=v.get("PassivesMainHand"), PassivesMainHand=v.get("PassivesOffHand"))
+                     if isinstance(v, dict) and "PassivesOffHand" in v else v) for k, v in st.W.stats.items()}
+            st2 = type("St", (), dict(vars(st), W=type("W", (), {"stats": S})()))()
+            return old(st2)                                    # the other hand's passives
+        model.item_riposte = bad
+        try:
+            return _ci(test_item_riposte)
+        finally:
+            model.item_riposte = old
+    out.append(("item riposte: the other hand's passives", m_item_riposte_hand))
+
+    def m_item_riposte_reach():
+        old = dict(model.REACH_SHARE)
+        model.REACH_SHARE["boss"] = 1.0                          # a ranged build ripostes as a melee one
+        try:
+            return _ci(test_item_riposte)
+        finally:
+            model.REACH_SHARE.update(old)
+    out.append(("item riposte: a ranged build always in reach", m_item_riposte_reach))
+
     def m_wrath_dc():
         old = model.wrath_event
 
@@ -2382,6 +2475,25 @@ def mutations():
         finally:
             G.run_turn = old
     out.append(("strategy: Sneak Attack on more than one hit a turn", m_strategy_sneak_every_hit))
+
+    def m_strategy_hit_cost():
+        import strategy as G
+        old = G.harness_rounds
+
+        def bad(*a, **k):
+            rounds = old(*a, **k)
+            for r in rounds:
+                for s in r:
+                    if s.get("hit_cost"):                       # the die back in the step's use cost
+                        s["cost"] = ";".join(x for x in (s.get("cost") if s.get("cost") != "free" else "",
+                                                          s.pop("hit_cost")) if x)
+            return rounds
+        G.harness_rounds = bad
+        try:
+            return _ci_red(test_strategy_harness_rounds)
+        finally:
+            G.harness_rounds = old
+    out.append(("strategy: a manoeuvre's die in its use cost", m_strategy_hit_cost))
 
     def m_party_greedy():
         old = party._local
