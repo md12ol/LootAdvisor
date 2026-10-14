@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 8
+G.VERSION = 9
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1721,16 +1721,19 @@ end
 
 -- ------------------------------------------------------------------------------------------------ events
 -- Damage log from Osiris AttackedBy (one row per damage type per hit) and the spell log from CastedSpell, registered
--- once per game session (re-loading this file keeps them).
-local function onAttacked(def, ownerAtt, att, dtype, amount, cause, _sid)
+-- once per game session (re-loading this file keeps them). Every row keeps the engine's storyActionID as sid: one
+-- action's cast events, damage rows and hit rows share it, a reaction has its own.
+local function onAttacked(def, ownerAtt, att, dtype, amount, cause, sid)
   if not G.fighting then return end
+  G.noteActivity(def, att)
   G.dmg[#G.dmg + 1] = { r = G.round, t = now() - G.t0, target = uuid(def), source = uuid(att), owner = uuid(ownerAtt),
-    type = dtype, amount = amount, cause = cause }
+    type = dtype, amount = amount, cause = cause, sid = sid }
 end
-local function onCast(caster, spell)
+local function onCast(caster, spell, _type, _school, sid)
   if not G.fighting then return end
+  G.noteActivity(caster)
   local R = G.rounds[#G.rounds]
-  if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 } end
+  if R then R.casts[#R.casts + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid } end
 end
 -- The engine's refusals: CastSpellFailed names the caster and the spell (no reason), ReactionInterruptUsed the
 -- creature that reacted. In the pilot re-run 39 of the character's 40 refused casts came right after an enemy's
@@ -1753,11 +1756,12 @@ function G.failNoise(F, R, f)
   for _, x in ipairs(R.cast_fails_noise or {}) do if same(x) and x.t >= use.t then return nil end end
   return mine and "logged after the cast had started (UsingSpell)" or "an enemy's cast that had started (UsingSpell)"
 end
-local function onCastFailed(caster, spell)
+local function onCastFailed(caster, spell, _type, _school, sid)
   if not G.fighting then return end
+  G.noteActivity(caster)
   local R = G.rounds[#G.rounds]
   if R then
-    local f = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+    local f = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid }
     f.why = G.failNoise(G.F, R, f)
     local list = f.why and "cast_fails_noise" or "cast_fails"
     R[list] = R[list] or {}
@@ -1766,12 +1770,39 @@ local function onCastFailed(caster, spell)
 end
 -- UsingSpell: the engine started a cast. On the player path it tells a refused request from one the engine casts
 -- (G.playerRefused).
-local function onUsing(caster, spell)
+local function onUsing(caster, spell, _type, _school, sid)
   if not G.fighting then return end
+  G.noteActivity(caster)
   local R = G.rounds[#G.rounds]
   if R then
     R.usings = R.usings or {}
-    R.usings[#R.usings + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0 }
+    R.usings[#R.usings + 1] = { who = uuid(caster), spell = spell, t = now() - G.t0, sid = sid }
+    local P = G.F and G.F.pending
+    if P and P.sid == nil then G.bindSid(P, R) end
+  end
+end
+-- TurnStarted / TurnEnded of the fight's creatures, per round in R.turns. The character's TurnEnded is also kept in
+-- F.turnEndedAt: the engine took the request to end the turn, so it is not asked again (G.step, state "ended").
+local function onTurn(started, who)
+  if not G.fighting then return end
+  local F = G.F
+  local m = G.member(F, who)
+  if not m then return end
+  G.noteActivity(who)
+  if m == "char" and not started then F.turnEndedAt = now() end
+  local R = G.rounds[#G.rounds]
+  if R then
+    R.turns = R.turns or {}
+    R.turns[#R.turns + 1] = { who = uuid(who), ev = started and "started" or "ended", t = now() - G.t0 }
+  end
+end
+-- The time of the last engine event of the fight's creatures (the character, its enemies, its summons) in F.activeAt:
+-- the turn watchdog recovers a turn only once they have been idle for HOLDER_IDLE_MS.
+function G.noteActivity(...)
+  local F = G.F
+  if not F then return end
+  for i = 1, select("#", ...) do
+    if G.member(F, (select(i, ...))) then F.activeAt = now(); return end
   end
 end
 local function onReaction(who, interrupt)
@@ -1869,7 +1900,8 @@ function G.hitRow(e)
     advantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Advantage", "AttackRoll.Advantage" })),
     disadvantage = flagText(first(hit, { "ConditionRolls.1.Roll.Roll.Disadvantage", "AttackRoll.Disadvantage" })),
     roll2 = first(hit, { "ConditionRolls.1.Roll.Result.DiscardedDiceTotal", "AttackRoll.Result.DiscardedDiceTotal",
-      "AttackRoll.DiscardedDiceTotal" }) }
+      "AttackRoll.DiscardedDiceTotal" }),
+    sid = first(e, { "Hit.StoryActionId", "StoryActionId" }), cast_guid = first(hit, { "SpellCastGuid" }) }
   -- the other d20 of a roll with Advantage or Disadvantage; a single roll leaves it 0 (a d20 never shows 0)
   if type(row.roll2) ~= "number" or row.roll2 <= 0 then row.roll2 = nil end
   local f = tostring(flags or "") .. "," .. tostring(attack or "")
@@ -1973,6 +2005,8 @@ G._on = {
   failed = function(caster, spell, ...) G.dispatch(onCastFailed, { n = 1, caster }, caster, spell, ...) end,
   using = function(caster, spell, ...) G.dispatch(onUsing, { n = 1, caster }, caster, spell, ...) end,
   reaction = function(who, interrupt, ...) G.dispatch(onReaction, { n = 1, who }, who, interrupt, ...) end,
+  turn_started = function(who) G.dispatch(onTurn, { n = 1, who }, true, who) end,
+  turn_ended = function(who) G.dispatch(onTurn, { n = 1, who }, false, who) end,
   status_on = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, true, obj, status, causee) end,
   status_off = function(obj, status, causee) G.dispatch(onStatus, { n = 2, obj, causee }, false, obj, status, causee) end,
   crit = function(def, ownerAtt, att, ...) G.dispatch(onCrit, { n = 3, def, att, ownerAtt }, def, ownerAtt, att, ...) end,
@@ -2021,6 +2055,14 @@ if not G._listeners8 then
   G._listeners8 = {
     target_hit = pcall(Ext.Entity.OnCreate, "SpellCastTargetHitEvent", on("target_hit")),
     hit_result = pcall(Ext.Entity.OnCreate, "HitResultEvent", on("hit_result")),
+  }
+end
+-- added in version 9: the turns' start and end
+if not G._listeners9 then
+  local function on(k) return function(...) pcall(G._on[k], ...) end end
+  G._listeners9 = {
+    turn_started = pcall(Ext.Osiris.RegisterListener, "TurnStarted", 1, "after", on("turn_started")),
+    turn_ended = pcall(Ext.Osiris.RegisterListener, "TurnEnded", 1, "after", on("turn_ended")),
   }
 end
 
@@ -2336,6 +2378,19 @@ function G.usingSeen(P, R)
     if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then return true end
   end
   return false
+end
+-- The pending cast's storyActionID, from the first UsingSpell of its spell by the character since the request: kept
+-- in P.sid and in the action's record.
+function G.bindSid(P, R)
+  for i = (P.using0 or 0) + 1, #(R.usings or {}) do
+    local x = R.usings[i]
+    if x.who == P.who and baseSpell(x.spell) == baseSpell(P.spell) then
+      P.sid = x.sid
+      if P.rec then P.rec.sid = x.sid end
+      return x.sid
+    end
+  end
+  return nil
 end
 function G.playerRefused(P, R, t)
   local f = G.castRefused(P, R.cast_fails)
@@ -4532,7 +4587,7 @@ function G.goFight(F)
   G.enterCombat(F)
   if not F.manual then G.endIdleTurns(F) end
   F.inCombatAt = now()
-  F.state, F.deadline = "wait", now() + G.TURN_WAIT_MS
+  F.state, F.deadline, F.waitAt = "wait", now() + G.TURN_WAIT_MS, now()
   if F.manual then
     local rows = G.hotbarRows(F.spec, (G.results.prep or {}).consumables)
     G.hotbarFill(F.char, rows)
@@ -4543,12 +4598,16 @@ function G.goFight(F)
   G.phase(F, "fighting")
 end
 
--- Turn watchdog. Waiting for the character's turn: after TURN_WAIT_MS without it, a recovery is tried (back into
--- combat if the character left it, else the turn of whoever holds it is ended); after TURN_RECOVERIES tries the run
--- ends, invalid. Ending the character's own turn is retried until the engine lets go of it.
--- The longest enemy turn of the pilot took 9.5 s: 20 s and one recovery (45 s and two cost 135 s per hung run). A combat
--- that ended (out of combat for COMBAT_LOST_MS while waiting) is reacted to at once instead.
-G.TURN_WAIT_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES = 20000, 1, 4000, 3
+-- Turn watchdog. Waiting for the character's turn, a recovery is tried (back into combat if the character left it,
+-- else the turn of whoever holds it is ended) once the character and the turn's holder have shown no engine activity
+-- for HOLDER_IDLE_MS and the holder is not casting, or after TURN_WAIT_MS whatever happens; after TURN_RECOVERIES tries
+-- the run ends, invalid. Recovering ends the boss's turn, so a clock alone would cut a slow attack or a riposte short
+-- and bias the damage taken; the longest enemy turn of the pilot took 9.5 s. A combat that ended (out of combat for
+-- COMBAT_LOST_MS while waiting) is reacted to at once instead.
+-- Ending the character's own turn waits for the engine to let go of it: the request is sent again only when the engine
+-- dropped it (TurnBased.RequestedEndTurn reads false and no TurnEnded came), checked every END_TURN_MS, END_TURN_TRIES
+-- times before the run ends.
+G.TURN_WAIT_MS, G.HOLDER_IDLE_MS, G.TURN_RECOVERIES, G.END_TURN_MS, G.END_TURN_TRIES = 120000, 15000, 1, 10000, 3
 -- An own turn is ended when it makes no progress (no request sent, no cast settled, no move done) for ACT_MAX_MS:
 -- longer than a pending cast's own cap, so a cast the engine holds is settled by the cast's rules, not cut here.
 G.ACT_MAX_MS = G.CAST_MAX_MS + 10000
@@ -4591,6 +4650,15 @@ function G.roundFault(F, R)
     return string.format("round %d: no action confirmed", R.r)
   end
   return nil
+end
+-- Have the character and the turn's holders been idle for HOLDER_IDLE_MS (since the wait began or their last event)?
+-- A holder still casting counts as activity.
+function G.turnIdle(F, t, holdersOf)
+  if t - math.max(F.waitAt or t, F.activeAt or 0) <= G.HOLDER_IDLE_MS then return false end
+  for _, h in ipairs(holdersOf(F)) do
+    if casting(h) then F.activeAt = t; return false end
+  end
+  return true
 end
 function G.recoverTurn(F, inCombat, holders)
   if not inCombat then
@@ -4785,6 +4853,14 @@ function G.resetFight()
   return "resetting"
 end
 
+-- Did the engine drop the request to end the character's turn? No TurnEnded since it was asked, and the request flag
+-- reads false (unreadable is no evidence).
+function G.endTurnDropped(F)
+  if F.turnEndedAt and F.turnEndedAt >= (F.endAskedAt or 0) then return false end
+  local e = ent(F.char)
+  return e ~= nil and try(function() return e.TurnBased.RequestedEndTurn end) == false
+end
+
 local lastTick = 0
 -- One step of the fight loop at time t (the Tick handler calls it every 100 ms; the tests call it directly).
 function G.step(F, t)
@@ -4817,8 +4893,8 @@ function G.step(F, t)
       G.results.turn_recoveries[#G.results.turn_recoveries + 1] = { r = G.round,
         what = "the character was out of combat: entered it again" }
       note("combat lost (round %d): entered it again", G.round)
-      F.inCombatAt, F.deadline = t, t + G.TURN_WAIT_MS
-    elseif t > F.deadline then
+      F.inCombatAt, F.deadline, F.waitAt = t, t + G.TURN_WAIT_MS, t
+    elseif t > F.deadline or (not F.manual and G.turnIdle(F, t, turnHolders)) then
       F.recoveries = (F.recoveries or 0) + 1
       if F.recoveries > G.TURN_RECOVERIES then
         return finish(F, "the character's turn never came (round " .. G.round .. ")")
@@ -4828,7 +4904,7 @@ function G.step(F, t)
       G.results.turn_recoveries = G.results.turn_recoveries or {}
       G.results.turn_recoveries[#G.results.turn_recoveries + 1] = { r = G.round, what = what }
       note("turn watchdog (round %d): %s", G.round, what)
-      F.deadline = t + G.TURN_WAIT_MS
+      F.deadline, F.waitAt = t + G.TURN_WAIT_MS, t
     end
   elseif F.state == "player" then
     if not activeTurn(F.char) then
@@ -4844,7 +4920,7 @@ function G.step(F, t)
           return finish(F)
         end
       end
-      F.state, F.deadline = "wait", t + (F.player and G.TURN_WAIT_MS or 600000)
+      F.state, F.deadline, F.waitAt = "wait", t + (F.player and G.TURN_WAIT_MS or 600000), t
     end
   elseif F.state == "act" and t >= F.next then
     local R = G.rounds[#G.rounds]
@@ -4896,7 +4972,7 @@ function G.step(F, t)
     G.endTurn(F.char)
     G.endIdleTurns(F)
     if R and R.tm then R.tm.end_asked = t - G.t0 end
-    F.state, F.endTries, F.next = "ended", 1, t + G.END_TURN_MS
+    F.state, F.endTries, F.next, F.endAskedAt = "ended", 1, t + G.END_TURN_MS, now()
   elseif F.state == "ended" then
     if not activeTurn(F.char) then
       local R = G.rounds[#G.rounds]
@@ -4907,7 +4983,7 @@ function G.step(F, t)
         F.lastCut = true
         return finish(F)
       end
-      F.state, F.deadline = "wait", t + G.TURN_WAIT_MS
+      F.state, F.deadline, F.waitAt = "wait", t + G.TURN_WAIT_MS, t
     else
       -- a summon whose turn comes while the character's is still open (Spiritual Weapon: the character's turn was
       -- never released, every run) is driven here too; asking the character to end its turn waits for it
@@ -4916,7 +4992,7 @@ function G.step(F, t)
     end
     if activeTurn(F.char) and t >= F.next then
       if F.endTries >= G.END_TURN_TRIES then return finish(F, "the character's turn could not be ended") end
-      G.endTurn(F.char)
+      if G.endTurnDropped(F) then G.endTurn(F.char) end
       F.endTries, F.next = F.endTries + 1, t + G.END_TURN_MS
     end
   end
