@@ -2741,7 +2741,8 @@ local function doAction(F, a, R, rec0)
     player = F.playerCast == true, range = range, using0 = #(R.usings or {}),
     snap0 = F.playerCast and G.costSnapshot(F.char, addCosts(costs, dual, hit)) or nil,
     target = uuid(tgt), casts0 = #R.casts, dmg0 = #G.dmg, hits0 = #(G.hits or {}), t0 = now(),
-    fails0 = #(R.cast_fails or {}), reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) } }
+    fails0 = #(R.cast_fails or {}), reacts0 = #(R.reactions_seen or {}), pos0 = { xyz(F.char) },
+    ap0 = a.spell == "Shout_ActionSurge" and resAmount(F.char, "ActionPoint") or nil }
   local okc, err = G.castRequest(F, F.char, a.spell, tgt, a.at_target_pos)
   if not okc then
     G.restoreToggle(F, P)
@@ -2804,7 +2805,7 @@ function G.castFault(R, spell, kind, why)
 end
 -- The player path's end of a cast: CastedSpell (after its damage rows), or PLAYER_END_MS after the first evidence.
 G.PLAYER_END_MS = 3000
-G.SURGE_STATUS = "ACTION_SURGE"
+G.SURGE_STATUS, G.SURGE_MAX_MS = "ACTION_SURGE", 8000
 -- Did the pending cast's main hand land a row (hit or miss) on its target: a damage row from the character since the
 -- cast that is not the off-hand half's.
 function G.mainFired(P, dmg)
@@ -2945,11 +2946,12 @@ function G.settle(F, R, t)
     if ev ~= "cast" and t - P.tConf < G.PLAYER_END_MS then return false end
     P.ended = true
   end
-  -- Action Surge's extra action comes with its status, 35-70 ms after its CastedSpell: a request sent before it reads
-  -- the action points without it, and the surge's action shows up as spent by the wrong attack
+  -- Action Surge's extra action point comes ~100 ms after its CastedSpell, after its status (on at +33 ms): a request
+  -- sent before it reads the action points without it, and the surge's action shows up as spent by the wrong attack.
+  -- So it settles once the action points rise above their amount at the request. After a riposte the CastedSpell came
+  -- 6 s after UsingSpell, hence the cap SURGE_MAX_MS from the request.
   if ev and P.player and P.spell == "Shout_ActionSurge" and not P.effectSeen then
-    P.tEff = P.tEff or t
-    if try(Osi.HasActiveStatus, F.char, G.SURGE_STATUS) == 1 or t - P.tEff >= G.PLAYER_END_MS then
+    if (resAmount(F.char, "ActionPoint") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.SURGE_MAX_MS then
       P.effectSeen = true
     else
       return false

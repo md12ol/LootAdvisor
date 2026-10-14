@@ -557,30 +557,44 @@ def watchdog_tests(L):
           g.T_after == "done" and "bad request" in str(g.T_bad) and g.T_saved >= 1, str(g.T_bad))
     check("run start: prep that never finishes -> invalid run, not a hang",
           "prep timed out" in str(g.T_prep) and g.T_prep_valid is False, str(g.T_prep))
-    # Action Surge on the player path: done only once its status (the extra action) is on the character
+    # Action Surge on the player path: done only once its extra action point is in (in game it came ~70 ms after the
+    # status), or SURGE_MAX_MS after the request (after a riposte the cast itself came 6 s late)
     L.execute(r"""
       local G = GAUNTLET
       G.reset(); G.t0 = 0
-      local has = 0
-      local hs = Osi.HasActiveStatus
-      Osi.HasActiveStatus = function(u, s) if s == G.SURGE_STATUS then return has end return 0 end
-      local F = { char = "c1", enemies = {}, cooldown = {}, plan = {} }
-      local R = { r = 6, actions = {}, casts = { { who = "c1", spell = "Shout_ActionSurge" } }, done = {} }
-      local rec = { spell = "Shout_ActionSurge" }
-      R.actions[1] = rec
-      F.pending = { a = { spell = "Shout_ActionSurge", group = "free" }, rec = rec, spell = "Shout_ActionSurge",
-                    who = "c1", target = "c1", player = true, casts0 = 0, dmg0 = 0, t0 = 0, costs = {}, res = {},
-                    before = {}, snap0 = {} }
+      local has, ap = 0, 1
+      local hs, ar = Osi.HasActiveStatus, Osi.GetActionResourceValuePersonal
+      Osi.HasActiveStatus = function(u, s) if s == "ACTION_SURGE" then return has end return 0 end
+      Osi.GetActionResourceValuePersonal = function(u, kind) if kind == "ActionPoint" then return ap end return 0 end
+      local function pending()
+        local rec = { spell = "Shout_ActionSurge" }
+        local R = { r = 6, actions = { rec }, casts = { { who = "c1", spell = "Shout_ActionSurge" } }, done = {} }
+        local F = { char = "c1", enemies = {}, cooldown = {}, plan = {} }
+        F.pending = { a = { spell = "Shout_ActionSurge", group = "free" }, rec = rec, spell = "Shout_ActionSurge",
+                      who = "c1", target = "c1", player = true, casts0 = 0, dmg0 = 0, t0 = 0, costs = {}, res = {},
+                      before = {}, snap0 = {}, ap0 = 1 }
+        return F, R
+      end
+      local F, R = pending()
       T_s1 = G.settle(F, R, 100)
-      T_d1 = R.done.surge == true
       has = 1
       T_s2 = G.settle(F, R, 150)
       T_d2 = R.done.surge == true
-      Osi.HasActiveStatus = hs
+      ap = 2
+      T_s3 = G.settle(F, R, 250)
+      T_d3 = R.done.surge == true
+      ap, has = 1, 0
+      local F2, R2 = pending()
+      T_c1 = G.settle(F2, R2, 6100)
+      T_c2 = G.settle(F2, R2, 8000)
+      Osi.HasActiveStatus, Osi.GetActionResourceValuePersonal = hs, ar
     """)
-    check("Action Surge: not done before its status gives the extra action, done once it is on",
-          g.T_s1 is False and g.T_d1 is False and g.T_s2 is True and g.T_d2 is True,
-          str((g.T_s1, g.T_d1, g.T_s2, g.T_d2)))
+    g = L.globals()
+    check("Action Surge: not done before its action point is in (status on is not enough), done once it is",
+          g.T_s1 is False and g.T_s2 is False and g.T_d2 is False and g.T_s3 is True and g.T_d3 is True,
+          str((g.T_s1, g.T_s2, g.T_d2, g.T_s3, g.T_d3)))
+    check("Action Surge: a cast that comes 6 s late is still waited for, the wait capped",
+          g.T_c1 is False and g.T_c2 is True, str((g.T_c1, g.T_c2)))
     # a record is written whatever the probes hold: values Stringify refuses (an Entity) kept as text
     L.execute(r"""
       local f = function() end
@@ -6180,9 +6194,14 @@ MUTATIONS = [
      "    local clear = true"),
     ("first turn: the combat's first request sent as early as any other", GL,
      "t + (G.round == 1 and G.FIRST_ACT_DELAY_MS or G.ACT_DELAY_MS), t", "t + G.ACT_DELAY_MS, t"),
-    ("Action Surge: done before its status is on", GL,
-     "    if try(Osi.HasActiveStatus, F.char, G.SURGE_STATUS) == 1 or t - P.tEff >= G.PLAYER_END_MS then",
+    ("Action Surge: done before its action point is in", GL,
+     "    if (resAmount(F.char, \"ActionPoint\") or 0) > (P.ap0 or 0) or t - (P.t0 or t) >= G.SURGE_MAX_MS then",
      "    if true then"),
+    ("Action Surge: done once its status is on (the action point comes later)", GL,
+     "    if (resAmount(F.char, \"ActionPoint\") or 0) > (P.ap0 or 0) or",
+     "    if try(Osi.HasActiveStatus, F.char, \"ACTION_SURGE\") == 1 or"),
+    ("Action Surge: the wait capped at 3 s (a cast after a riposte came 6 s late)", GL,
+     "G.SURGE_STATUS, G.SURGE_MAX_MS = \"ACTION_SURGE\", 8000", "G.SURGE_STATUS, G.SURGE_MAX_MS = \"ACTION_SURGE\", 3000"),
     ("strategy spec: the item rule keeps its item spells", PL, '    plan["item_actions"] = []\n', ""),
     ("record: the JSON-safe copy's Stringify unprotected", GL,
      "    okj, text = pcall(Ext.Json.Stringify, G.jsonSafe(rec))\n",
