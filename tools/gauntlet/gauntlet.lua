@@ -355,7 +355,7 @@ end
 -- ------------------------------------------------------------------------------------------------ probe
 function G.probe()
   G.reset()
-  local out = { api = {}, party = {}, difficulty = {} }
+  local out = { api = {}, party = {} }
   for _, f in ipairs({ "CreateAt", "Equip", "Unequip", "GetEquippedItem", "AddBoosts", "RemoveBoosts", "AddPassive",
     "RemovePassive", "AddSpell", "UseSpell", "UseSpellAtPosition", "EndTurn", "ApplyStatus", "SetFaction",
     "EnterCombat", "SetHitpointsPercentage", "TeleportToPosition", "RequestDelete", "GetDifficulty",
@@ -365,7 +365,7 @@ function G.probe()
   end
   out.api.OsirisListener = G._listeners and G._listeners.attacked
   out.api.DealDamage = Ext.Events.DealDamage ~= nil
-  out.difficulty.osi = try(Osi.GetDifficulty)
+  out.difficulty = G.difficulty()
   out.host = try(Osi.GetHostCharacter)
   out.pos = { pos(out.host) }
   out.region = try(Osi.GetRegion, out.host)
@@ -4560,8 +4560,32 @@ local function summarize(F)
     enemy_rolls = G.enemyRolls(G.hits, me, enemies) }
 end
 
+-- The game's rule settings (Osi.GetDifficulty returns nothing): one entity's Ruleset component names the difficulty
+-- in its rulesets, another entity's RulesetModifiers component holds the options, Karmic Dice among them under its
+-- internal name.
+G.DIFFICULTY_NAMES = { DIFFICULTY_EASY = "explorer", DIFFICULTY_MEDIUM = "balanced", DIFFICULTY_HARD = "tactician",
+  RULESET_HONOUR = "honour" }
+G.KARMIC_DICE = "c8234320-35f5-44ff-85a2-4e4366de02f2"   -- the STABLE_RANDOMNESS ruleset modifier
+
+-- { name = "balanced" | ..., rulesets = { names }, karmic_dice = true | false | nil }; nil where the game says nothing.
 function G.difficulty()
-  return { osi = try(Osi.GetDifficulty), note = G.difficultyNote }
+  local out = { rulesets = {} }
+  local e = (try(Ext.Entity.GetAllEntitiesWithComponent, "Ruleset") or {})[1]
+  local rs = e and try(function() return e.Ruleset end)
+  if not rs then return out end
+  for _, id in ipairs(rs.Rulesets or {}) do
+    local def = try(Ext.StaticData.Get, id, "Ruleset")
+    local n = def and def.Name or tostring(id)
+    out.rulesets[#out.rulesets + 1] = n
+    -- Honour mode lists the hard difficulty too: Honour wins
+    if G.DIFFICULTY_NAMES[n] and out.name ~= "honour" then out.name = G.DIFFICULTY_NAMES[n] end
+  end
+  local m = (try(Ext.Entity.GetAllEntitiesWithComponent, "RulesetModifiers") or {})[1]
+  local mods = m and try(function() return m.RulesetModifiers.Modifiers end) or rs.Modifiers or {}
+  for k, v in pairs(mods) do
+    if tostring(k) == G.KARMIC_DICE and type(v) == "boolean" then out.karmic_dice = v end
+  end
+  return out
 end
 
 -- The run's own boosts on the test character (carry limit, no Attack of Opportunity, HP buffer), taken off when it ends.
