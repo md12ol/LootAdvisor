@@ -1447,6 +1447,23 @@ def evade_lua_tests(L):
       T_noroute = G.moveTarget(F, "@leave_spot")
       F.A = { leave_spots = { { 3, 0, 0 }, { 8, 0, 0 } } }
       T_surveyed = G.moveTarget(F, "@leave_spot")
+      -- with the arena's centre known: the clear spot nearest the centre within the turn's movement (9 m), not the
+      -- nearest one; a spot nearer the centre but out of the movement's reach is not taken
+      F.A = { center = { -10, 0, 0 }, leave_spots = { { 2, 0, 4 }, { -6, 0, 0 }, { -12, 0, 0 } } }
+      T_centre = G.moveTarget(F, "@leave_spot")
+      -- far: history, not place: a boss back on its start spot after leaving it is not far again
+      local Fs = { boss_start = { 0, 0, 0 } }
+      P.b1 = { 0, 0, 0 }
+      T_far1 = G.bossAtStart(Fs, "b1")
+      P.b1 = { 5, 0, 0 }
+      T_far2 = G.bossAtStart(Fs, "b1")
+      P.b1 = { 0, 0, 0 }
+      T_far3 = G.bossAtStart(Fs, "b1")
+      -- a new fight with the same table: its start spot recorded again, far again
+      Fs.char, Fs.enemies = "c1", { "b1" }
+      G.bossStartSpot(Fs)
+      T_far4 = G.bossAtStart(Fs, "b1")
+      P.b1 = { 2, 0, 0 }
       Osi.GetPosition, Osi.IsDead, G.route, Osi.GetActionResourceValuePersonal = gp, dead, route, mv
     """)
     lv = g.T_leave and lst(g.T_leave)
@@ -1458,6 +1475,11 @@ def evade_lua_tests(L):
     check("evade: no path, no spot", g.T_noroute is None, str(g.T_noroute))
     check("evade: a surveyed leave spot too close to the boss is not taken",
           g.T_surveyed is not None and g.T_surveyed[1] == 8, str(g.T_surveyed and lst(g.T_surveyed)))
+    check("leave: the clear spot nearest the arena's centre within the turn's movement, not the nearest one",
+          g.T_centre is not None and g.T_centre[1] == -6, str(g.T_centre and lst(g.T_centre)))
+    check("far: a boss back on its start spot after leaving it is not far again",
+          g.T_far1 is True and g.T_far2 is False and g.T_far3 is False and g.T_far4 is True,
+          f"{g.T_far1} {g.T_far2} {g.T_far3} {g.T_far4}")
     dual_cost_tests(L)
 
 
@@ -5616,7 +5638,7 @@ def policy_tests(L):
       -- the boss's start spot: out of reach and not moved (within G.START_SPOT_M) -> far; in reach, moved, or no
       -- start recorded -> not
       local function far(at, start)
-        pos.b1, F.boss_start = at, start
+        pos.b1, F.boss_start, F.boss_left = at, start, nil
         return G.policyState(F, { r = 2, turn_statuses = {} }).far
       end
       T_far = { far({ 9, 0, 0 }, { 9.6, 0, 0 }), far({ 9, 0, 0 }, { 10.5, 0, 0 }), far({ 1.5, 0, 0 }, { 1.5, 0, 0 }),
@@ -6830,6 +6852,11 @@ MUTATIONS = [
     ("camera: onto the character alone (the boss not sent)", GL,
      '  G.notify({ kind = "camera_follow", char = uuid(F.char), also = b and uuid(b) or nil })',
      '  G.notify({ kind = "camera_follow", char = uuid(F.char) })'),
+    ("leave: the nearest clear spot taken (the centre ignored)", GL,
+     "  local c = to == \"@leave_spot\" and A.center or nil", "  local c = nil"),
+    ("leave: a spot beyond the turn's movement preferred for the centre", GL,
+     "    local dc = (c and d <= budget) and", "    local dc = c and"),
+    ("far: back on the start spot counts as far again", GL, "  if not at then F.boss_left = true end\n", ""),
     ("sheath gate: the step loop ignores it", GL,
      "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
     ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",
@@ -7126,13 +7153,15 @@ MUTATIONS = [
     ("pointer: left on the hotbar at the Start", EN,
      '            raise RunInvalid("mouse button held down before the Start: " + ", ".join(stuck))\n        pointer_off_ui()\n',
      '            raise RunInvalid("mouse button held down before the Start: " + ", ".join(stuck))\n'),
-    ("policy: the boss's start spot never compared", GL, "  if not (boss and s) then return false end",
+    ("policy: the boss's start spot never compared", GL, "  if not (boss and s) or F.boss_left then return false end",
      "  if true then return false end"),
-    ("policy: far even after the boss moved", GL, " <= G.START_SPOT_M\nend", " <= 1e9\nend"),
-    ("policy: far with the boss in reach", GL, "far = boss ~= nil and dist(F.char, boss) > G.REACH and",
-     "far = boss ~= nil and"),
-    ("policy: the boss's start spot not recorded", GL, "  F.boss_start = bx and { bx, by, bz } or nil\n",
-     "  F.boss_start = nil\n"),
+    ("policy: far even after the boss moved", GL, " ^ 2) <= G.START_SPOT_M\n", " ^ 2) <= 1e9\n"),
+    ("policy: far with the boss in reach", GL, "    far = G.bossAtStart(F, boss) and dist(F.char, boss) > G.REACH }",
+     "    far = G.bossAtStart(F, boss) }"),
+    ("policy: the boss's start spot not recorded", GL,
+     "  F.boss_start, F.boss_left = bx and { bx, by, bz } or nil, nil\n", "  F.boss_start, F.boss_left = nil, nil\n"),
+    ("far: a new fight keeps the last fight's left flag", GL,
+     "  F.boss_start, F.boss_left = bx and { bx, by, bz } or nil, nil\n", "  F.boss_start = bx and { bx, by, bz } or nil\n"),
     ("strategy spec: decisions without riders", PL,
      '        d["riders"] = [{k: v for k, v in r.items() if k != "round"} for r in plan_riders([d["steps"]])]',
      "        pass"),

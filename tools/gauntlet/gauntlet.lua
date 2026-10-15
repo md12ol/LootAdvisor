@@ -2694,12 +2694,18 @@ function G.moveTarget(F, to)
       if poly then list[#list + 1] = { poly[#poly][1], poly[#poly][2], poly[#poly][3] } end
     end
   end
-  local best, bd
+  -- a leave goes to the clear spot nearest the arena's centre among those the turn's movement reaches (else the
+  -- nearest clear one): always taking the nearest walked the fight to the room's edge, where every short leave and the
+  -- walls in the video came from (0 of 37 leaves ended short before the path first went 10 m from the centre)
+  local c = to == "@leave_spot" and A.center or nil
+  local budget = resAmount(F.char, "Movement")
+  local best, bd, bc
   for _, s in ipairs(list) do
     local p = s.at or s
     local clear = not bx or math.sqrt((p[1] - bx) ^ 2 + (p[3] - bz) ^ 2) >= need - 0.7
     local d = x0 and math.sqrt((p[1] - x0) ^ 2 + (p[3] - z0) ^ 2) or 0
-    if clear and (not bd or d < bd) then best, bd = { p[1], p[2], p[3] }, d end
+    local dc = (c and d <= budget) and math.sqrt((p[1] - c[1]) ^ 2 + (p[3] - c[3]) ^ 2) or 1e9
+    if clear and (not best or dc < bc or (dc == bc and d < bd)) then best, bd, bc = { p[1], p[2], p[3] }, d, dc end
   end
   return best
 end
@@ -3668,14 +3674,18 @@ G.START_SPOT_M = 1.0
 -- as the fight starts, before anyone has moved
 function G.bossStartSpot(F)
   local bx, by, bz = xyz(resolveTarget(F, "@boss"))
-  F.boss_start = bx and { bx, by, bz } or nil
+  F.boss_start, F.boss_left = bx and { bx, by, bz } or nil, nil
 end
+-- The model's "far" is history: the boss has not moved since the start. Once it is seen away from its start spot it
+-- has left for good (F.boss_left), so a boss held back on that spot later is not "far" again.
 function G.bossAtStart(F, boss)
   local s = F.boss_start
-  if not (boss and s) then return false end
+  if not (boss and s) or F.boss_left then return false end
   local x, y, z = xyz(boss)
   if not x then return false end
-  return math.sqrt((x - s[1]) ^ 2 + (y - s[2]) ^ 2 + (z - s[3]) ^ 2) <= G.START_SPOT_M
+  local at = math.sqrt((x - s[1]) ^ 2 + (y - s[2]) ^ 2 + (z - s[3]) ^ 2) <= G.START_SPOT_M
+  if not at then F.boss_left = true end
+  return at
 end
 -- True Strike from the character's riposte in the enemies' turn just before (a hit puts TRUE_STRIKE on the target):
 -- the status lasts two of the character's turns, so its being on is no proof it came from the last enemy turn.
@@ -3706,7 +3716,7 @@ function G.policyState(F, R)
     -- without Sneak Attack the search keeps the charge "there" all fight
     sneak = has.sneak ~= true or (resAmount(F.char, "SneakAttack_Charge") or 0) > 0,
     ts = has.ts == true and G.trueStrikeBefore(F, R),
-    far = boss ~= nil and dist(F.char, boss) > G.REACH and G.bossAtStart(F, boss) }
+    far = G.bossAtStart(F, boss) and dist(F.char, boss) > G.REACH }
 end
 function G.policyKey(st, fields)
   local parts = {}
