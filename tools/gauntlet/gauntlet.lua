@@ -4638,7 +4638,7 @@ local function finish(F, why)
   G.status = "done"
   G.runSeq = (G.runSeq or 0) + 1
   local spec = F.spec or {}
-  local rec = { run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
+  local rec = { version = G.VERSION, run = G.runSeq, label = F.req.label, req = F.req, mode = F.manual and "manual" or "scripted",
     lane = F.lane and F.lane.id, lanes_run = F.lane and F.lane.run, first_lane = F.lane and F.lane.first,
     difficulty = G.difficulty(), scenario = F.req.scenario, haste = false, run_id = F.req.run_id,
     test_mode = F.popup and (F.player and "manual" or "automatic") or nil,
@@ -4655,8 +4655,9 @@ local function finish(F, why)
   end
   -- still refused (a NaN, an Entity as a key): a minimal record, so the "over" marker below is always written
   if not okj then
-    text = Ext.Json.Stringify({ run = G.runSeq, valid = false, record_error = G.results.record_error,
-      record_error2 = tostring(text), invalid = { "record not writable: " .. tostring(text) } })
+    text = Ext.Json.Stringify({ version = G.VERSION, run = G.runSeq, valid = false,
+      record_error = G.results.record_error, record_error2 = tostring(text),
+      invalid = { "record not writable: " .. tostring(text) } })
   end
   try(Ext.IO.SaveFile, string.format("LootAdvisor_gauntlet/run_%d_%03d%s.json", F.started, G.runSeq,
     F.lane and ("_" .. F.lane.id) or ""), text)

@@ -3857,6 +3857,7 @@ def real_roll_tests(L):
       G._finish(F, "aborted")
       T_end = G.realCasters.c1 == nil
       T_rec = saved and saved.real_rolls
+      T_ver = saved and saved.version
       local F2 = { char = "c1", enemies = { "e1" }, req = { scenario = "boss", label = "y", real_rolls = false },
                    plan = {}, S = {}, started = 1, cooldown = {}, tRun = 0,
                    realRolls = G.realRollsFor({ real_rolls = false }) }
@@ -3872,6 +3873,7 @@ def real_roll_tests(L):
     g = L.globals()
     check("rolls: the character rolls from the fight's start, not after its end", g.T_start is True and g.T_end is True
           and g.T_res is True, f"{g.T_start} {g.T_end}")
+    check("record: every run record names the harness version", g.T_ver == g.GAUNTLET.VERSION, str(g.T_ver))
     check("rolls: every run record says whether the run rolled", g.T_rec is True and g.T_rec2 is False and
           g.T_start2 is False, f"{g.T_rec} {g.T_rec2}")
     # a record Stringify refuses even as a JSON-safe copy: a minimal record is written and the run still ends
@@ -6640,6 +6642,8 @@ GL, PL, RN, EN, PA = "gauntlet.lua", "plan.py", "run.py", "engine.py", "pairs.py
 TL = "gauntlet_test.lua"
 TB = "testmod/LootAdvisorGauntletTest/Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/BootstrapServer.lua"
 MUTATIONS = [
+    ("record: no harness version", GL, "  local rec = { version = G.VERSION, run = G.runSeq,",
+     "  local rec = { run = G.runSeq,"),
     ("lanes: one state for all lanes", GL, "  for _, k in ipairs(G.LANE_FIELDS) do G[k] = nxt[k] end\n",
      "  for _, k in ipairs({}) do G[k] = nxt[k] end\n"),
     ("lanes: a timer loses its lane", GL, "    local ok, err = pcall(G.inLane, lane, fn)",
