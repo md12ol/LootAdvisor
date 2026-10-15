@@ -3454,9 +3454,8 @@ def hit_log_tests(L):
 def record_gap_tests(L):
     """The record carries what a gap rule needs: the boss's floor position at each of the character's turn starts and
     at the end of each of the boss's turns (another enemy's turn left out), the floor gap after every leave (not only
-    one that ended short), and the enemies' saving throws (d20, total, DC, ability, the event's own outcome; settled
-    from the statuses: a failed save takes the status its source put on right after it, a made one none; the saves
-    among a hit's condition rolls too)."""
+    one that ended short), and the enemies' saving throws (d20, total, DC, ability, the outcome and the bonus the
+    engine used, one row per cast; the saves among a hit's condition rolls too)."""
     L.execute(r"""
       local G = GAUNTLET
       G.reset(); G.round = 0
@@ -3490,28 +3489,18 @@ def record_gap_tests(L):
       where.c1 = { 0, 0, 4 }
       T_gap_short = leave("ended short")
       T_gap_hide = leave("there", "@hide_spot")
-      -- saves: a failed one, its status just after; a made one; the status before a failed save (the other order);
-      -- the character's own save left out; a rider that came with the hit is no save's status
-      local function save(tgt, src, ok, nat, total, dc, ab)
+      -- saves: a failed one, a made one, the character's own left out, another failed one; each its own cast
+      local function save(tgt, src, ok, nat, total, dc, ab, cast)
         G.onSave({ Target = { Uuid = { EntityUuid = tgt } }, Source = { Uuid = { EntityUuid = src } }, Success = ok,
-          Total = total, Ability = ab, RollBonus = 4, Advantage = false, Disadvantage = false, SpellCastUuid = "g1",
+          Total = total, Ability = ab, RollBonus = 4, Advantage = false, Disadvantage = false, SpellCastUuid = cast,
           ConditionRoll = { Difficulty = dc, Roll = { Result = { NaturalRoll = nat, Total = total } } } })
       end
       Ext.Types = { Serialize = function() return { probe = true } end }
-      t = 1000; save("b1", "c1", false, 7, 11, 16, "Wisdom")
-      t = 1010; G._on.status_on("b1", "HUNTERS_MARK", "c1")
-      t = 1070; G._on.status_on("b1", "INSURFACE", "c1")
-      t = 1080; G._on.status_on("b1", "FRIGHTENED", "c1")
-      t = 2000; save("b1", "c1", true, 15, 19, 16, "Wisdom")
-      t = 2050; G._on.status_on("b1", "PRONE", "c1")
-      t = 3000; G._on.status_on("b1", "PRONE", "c1")
-      t = 3020; save("b1", "c1", false, 3, 7, 16, "Strength")
-      t = 3500; save("c1", "b1", false, 2, 6, 10, "Constitution")
-      t = 5000; save("b1", "c1", false, 9, 13, 18, "Constitution")
-      t = 5000 + G.SAVE_STATUS_MS + 1; G._on.status_on("b1", "GAPING_WOUND", "c1")
-      t = 6000; save("b1", "c1", false, 4, 8, 16, "Strength")
-      t = 6050; G._on.status_on("b1", "PRONE", "x9")
-      G.settleSaves(G.rounds, 7000)
+      t = 1000; save("b1", "c1", false, 7, 11, 16, "Wisdom", "g1")
+      t = 2000; save("b1", "c1", true, 15, 19, 16, "Wisdom", "g2")
+      t = 3500; save("c1", "b1", false, 2, 6, 10, "Constitution", "g3")
+      t = 5000; save("b1", "c1", false, 9, 13, 18, "Constitution", "g4")
+      G.settleSaves(G.rounds, {})
       T_saves, T_save_probe = R.saves, G.results.save_probe
       T_hit_saves = G.hitRow({ Hit = { EffectFlags = { "Hit" }, ConditionRolls = {
         { RollType = "AttackRoll", AttackRoll = true, Difficulty = 19, Roll = { Result = { NaturalRoll = 12, Total = 26 } } },
@@ -3530,16 +3519,12 @@ def record_gap_tests(L):
           g.T_gap_there is not None and abs(g.T_gap_there - math.hypot(4, 1)) < 1e-9 and g.T_gap_short is not None
           and abs(g.T_gap_short - math.hypot(4, 3)) < 1e-9 and g.T_gap_hide is None,
           f"{g.T_gap_there} {g.T_gap_short} {g.T_gap_hide}")
-    sv = [(x.roll, x.total, x.dc, x.ability, x.success_event, x.status, x.success) for x in
+    sv = [(x.roll, x.total, x.dc, x.ability, x.success, x.bonus_used, x.condition) for x in
           (g.T_saves[i + 1] for i in range(len(g.T_saves or {})))]
-    check("record: the boss's saves with d20, total, DC, ability and the event's outcome; the character's own left out",
-          [r[:5] for r in sv] == [(7, 11, 16, "Wisdom", False), (15, 19, 16, "Wisdom", True),
-                                  (3, 7, 16, "Strength", False), (9, 13, 18, "Constitution", False),
-                                  (4, 8, 16, "Strength", False)], str(sv))
-    check("record: a save failed when its source put a status on next (a rider skipped, before or after the save, "
-          "within the window, whatever the event said); made with another source's status or one too late",
-          [r[5:] for r in sv] == [("FRIGHTENED", False), ("PRONE", False), ("PRONE", False), (None, True),
-                                  (None, True)], str([r[5:] for r in sv]))
+    check("record: the boss's saves with d20, total, DC, ability, the event's outcome and the bonus used; the "
+          "character's own left out",
+          sv == [(7, 11, 16, "Wisdom", False, 4, 1), (15, 19, 16, "Wisdom", True, 4, 1),
+                 (9, 13, 18, "Constitution", False, 4, 1)], str(sv))
     check("record: the first save event kept as a probe", g.T_save_probe is not None and g.T_save_probe.probe is True)
     hs_ = g.T_hit_saves
     check("record: a hit's saving throws from its condition rolls, the attack roll left out",
@@ -3548,13 +3533,12 @@ def record_gap_tests(L):
 
 
 def save_log_tests(L):
-    """The enemies' rolls from the Osiris RollResult event (roll type, roller, source, the raw result, criticality),
-    filled from the SavingThrowRolledEvent component of the same roll whichever comes first (its roller in Target, or in
-    Source when an Osiris roll claims it); every component counted and the first kept before any filter. The outcome is
-    settled from the statuses at the fight's end: the save status its source tried just before the roll (a rider or a
-    surface status never) or with the cast id of the source's next UsingSpell, and whether it went on; a status of the
-    source in the window only when no try was recorded; made only once the cast ended or the window closed, else
-    left open. The status rows keep the cast id; the registrations' outcome is recorded."""
+    """The enemies' saving throws, one row per cast and condition, keyed by the cast's SpellCastUuid: the engine's
+    cast-start event gives the row (d20, total, the outcome, the bonus used) and its impact event only the condition's
+    result, whichever event the Osiris RollResult (roller, raw result, criticality) comes with; a component whose enemy
+    is only its Source waits for an Osiris roll that claims its whole cast. Piercing Shot rolls its save twice and the
+    first row decides. The statuses only cross-check the outcome, linked by the story action id of the cast's hit,
+    never by time. Every component counted and the first kept before any filter; the registrations' outcome recorded."""
     L.execute(r"""
       local G = GAUNTLET
       G.reset()
@@ -3566,66 +3550,78 @@ def save_log_tests(L):
       local R1, R2 = { casts = {} }, { casts = {} }
       G.fighting, G.rounds = true, { R1 }
       Ext.Types = { Serialize = function() return { probe = true } end }
-      local function comp(tgt, src, ok, nat, total, dc, ab)
+      -- the boss's saves against the character's casts name the boss as Source, as the engine does
+      local function comp(tgt, src, cast, ok, nat, total, dc)
         G._on.save({ Target = { Uuid = { EntityUuid = tgt } }, Source = { Uuid = { EntityUuid = src } }, Success = ok,
-          Total = total, Ability = ab, RollBonus = 3, Advantage = false, Disadvantage = true, SpellCastUuid = "g7",
-          ConditionRoll = { Difficulty = dc, Roll = { Result = { NaturalRoll = nat, Total = total } } } })
+          Total = total, Ability = "Constitution", RollBonus = 4, Advantage = false, Disadvantage = true,
+          SpellCastUuid = cast, ConditionRoll = { Difficulty = dc, Roll = { Result = { NaturalRoll = nat, Total = total } } } })
       end
-      local function rr(who, src, res, crit)
-        G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", who, src, res, 0, crit)
-      end
-      -- 1 failed: the status tried just before the roll, applied later with its cast id; a rider of the cast skipped
-      t = 1000; G._on.status_try("b1", "GAPING_WOUND", "c1", 101)
-      G._on.status_try("b1", "INSURFACE", "00000000-0000-0000-0000-000000000000", 101)
-      G._on.status_try("b1", "BLEEDING", "x9", 101)
-      t = 1005; rr("b1", "c1", 1, "NONE"); comp("b1", "c1", false, 6, 10, 15, "Constitution")
-      t = 1600; G._on.status_on("b1", "PASSIVE_HUNTERS_MARK", "c1", 101)
-      G._on.status_on("b1", "INSURFACE", "00000000-0000-0000-0000-000000000000", 101)
-      G._on.status_on("b1", "BLEEDING", "x9", 101)
-      t = 1700; G._on.status_on("b1", "GAPING_WOUND", "c1", 101)
-      -- 2 made: the roll just before its cast's UsingSpell, only a rider with the cast id, the cast ended
-      t = 2000; rr("b1", "c1", 1, "SUCCESS")
-      t = 2100; G._on.using("c1", "Projectile_TripAttack", "Projectile", "None", 102)
-      t = 2900; G._on.status_try("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
-      t = 3000; G._on.status_on("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
-      t = 3200; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 102)
-      -- 3 and 4: one failed save with an early row before the cast as well; both rows failed
-      t = 4000; rr("b1", "c1", 1, "NONE")
-      t = 4100; G._on.using("c1", "Projectile_PiercingShot", "Projectile", "None", 103)
-      t = 5000; G._on.status_try("b1", "GAPING_WOUND", "c1", 103)
-      t = 5005; rr("b1", "c1", 1, "NONE")
-      t = 5060; G._on.status_on("b1", "GAPING_WOUND", "c1", 103)
-      -- 5 made: tried PRONE, another status of the cast went on, PRONE did not
-      t = 6000; G._on.status_try("b1", "PRONE", "c1", 106)
-      t = 6005; rr("b1", "c1", 1, "NONE")
-      t = 6010; G._on.status_on("b1", "SLOWED", "c1", 106)
-      t = 6500; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 106)
-      -- 6 made with no cast id: the source's next UsingSpell too late to be the roll's cast
-      t = 7000; rr("b1", "c1", 1, "NONE")
-      t = 7100; G._on.status_on("b1", "BURNING", "c1")
-      t = 7400; G._on.using("c1", "Projectile_MainHandAttack", "Projectile", "None", 107)
-      -- 7 made: its cast ends in the next round; the other enemy's concentration check left open
-      t = 8000; rr("b1", "c1", 1, "NONE")
-      t = 8050; G._on.using("c1", "Projectile_TripAttack", "Projectile", "None", 104)
-      t = 8100; G._on.roll_result("Concentration", "e2", "e2", 0, 0, "NONE")
+      local function rr(who, src, crit) G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", who, src, 1, 0, crit) end
+      local hits = { { cast_guid = "g3", sid = 0, spell = "" } }
+      local function hit(cast, sid, spell) hits[#hits + 1] = { cast_guid = cast, sid = sid, spell = spell } end
+      -- A made save: the Osiris roll with the cast-start event, the impact's inverse condition a second later
+      t = 1000; rr("b1", "c1", "SUCCESS")
+      t = 1001; comp("c1", "b1", "g1", true, 13, 17, 16)
+      t = 1100; G._on.using("c1", "Projectile_MenacingAttack", "Projectile", "None", 101); hit("g1", 101, "Projectile_MenacingAttack")
+      t = 2200; comp("c1", "b1", "g1", false, 13, 13, 16)
+      G._on.status_try("b1", "PASSIVE_HUNTERS_MARK", "c1", 101)
+      t = 2400; G._on.cast("c1", "Projectile_MenacingAttack", "Projectile", "None", 101)
+      -- B failed save: the cast-start event waits unclaimed; the Osiris roll comes with the impact (total = the bare d20)
+      t = 3000; comp("c1", "b1", "g2", false, 11, 15, 16)
+      t = 3100; G._on.using("c1", "Projectile_MenacingAttack", "Projectile", "None", 102); hit("g2", 102, "Projectile_MenacingAttack")
+      t = 4200; G._on.status_try("b1", "HUNTERS_MARK", "c1", 102)
+      G._on.status_try("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
+      G._on.status_try("b1", "BLEEDING", "x9", 102)
+      G._on.status_try("b1", "FRIGHTENED", "c1", 102)
+      t = 4205; comp("c1", "b1", "g2", true, 11, 11, 16)
+      t = 4210; rr("b1", "c1", "NONE")
+      t = 4250; G._on.status_on("b1", "HUNTERS_MARK", "c1", 102)
+      G._on.status_on("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
+      G._on.status_on("b1", "BLEEDING", "x9", 102)
+      G._on.status_on("b1", "FRIGHTENED", "c1", 102)
+      t = 4400; G._on.cast("c1", "Projectile_MenacingAttack", "Projectile", "None", 102)
+      -- C Piercing Shot: two saves, the first a natural 1; the Osiris roll nearest the second impact
+      t = 5000; comp("c1", "b1", "g3", false, 1, 7, 12)
+      comp("c1", "b1", "g3", true, 7, 13, 12)
+      t = 5100; G._on.using("c1", "Projectile_PiercingShot", "Projectile", "None", 103); hit("g3", 103, "Projectile_PiercingShot")
+      t = 6000; comp("c1", "b1", "g3", true, 1, 1, 12)
+      t = 6200; G._on.status_try("b1", "GAPING_WOUND_DAMAGE", "c1", 103)
+      G._on.status_try("b1", "GAPING_WOUND", "c1", 103)
+      t = 6230; comp("c1", "b1", "g3", false, 7, 7, 12)
+      t = 6240; rr("b1", "c1", "FAIL")
+      t = 6250; G._on.status_on("b1", "GAPING_WOUND_DAMAGE", "c1", 103)
+      G._on.status_on("b1", "GAPING_WOUND", "c1", 103)
+      t = 6400; G._on.cast("c1", "Projectile_PiercingShot", "Projectile", "None", 103)
+      -- D the event says made, the status tried with the cast's id went on: flagged (roller in Target, no Osiris roll)
+      t = 7000; comp("b1", "c1", "g4", true, 15, 19, 14); hit("g4", 104, "Projectile_TripAttack")
+      t = 7900; G._on.status_try("b1", "PRONE", "c1", 104)
+      t = 7950; G._on.status_on("b1", "PRONE", "c1", 104)
+      -- E made: PRONE tried, another status of the cast went on, PRONE only with another cast's id
+      t = 8000; comp("b1", "c1", "g5", true, 16, 20, 14); hit("g5", 106, "Projectile_TripAttack")
+      t = 8900; G._on.status_try("b1", "PRONE", "c1", 106)
+      G._on.status_on("b1", "SLOWED", "c1", 106)
+      G._on.status_on("b1", "PRONE", "c1", 199)
+      t = 9000; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 106)
+      -- F an Osiris roll with no component and a status just after: no outcome from the timing
+      t = 9500; rr("b1", "c1", "NONE")
+      t = 9550; G._on.status_on("b1", "PRONE", "c1")
+      -- G a cast not ended: left open; the other enemy's concentration check left alone
+      t = 9750; comp("b1", "c1", "g7", true, 12, 16, 14); hit("g7", 107, "Projectile_TripAttack")
+      t = 9800; G._on.roll_result("Concentration", "e2", "e2", 0, 0, "NONE")
+      -- H a save whose impact and cast's end fall in the next round
+      t = 10000; comp("b1", "c1", "g8", true, 18, 22, 14); hit("g8", 108, "Projectile_TripAttack")
       G.rounds[2] = R2
-      t = 9000; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 104)
-      -- 8 failed by the window alone (no cast ids), the event saying made: flagged
-      t = 10000; comp("b1", "c1", true, 15, 19, 14, "Wisdom")
-      t = 10100; G._on.status_on("b1", "PRONE", "c1")
-      -- 9 open: a cast id, the cast not ended; 10 open: no cast id, the window not closed when the fight ended
-      t = 11000; rr("b1", "c1", 1, "NONE")
-      t = 11100; G._on.using("c1", "Projectile_TripAttack", "Projectile", "None", 105)
-      t = 12000; rr("b1", "c1", 1, "NONE")
+      t = 11000; comp("b1", "c1", "g8", false, 18, 18, 14)
+      G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 108)
       -- the character's own roll left out; a component naming neither enemy counted, not kept
       t = 12010; G._on.roll_result("Concentration", "c1", "c1", 1, 0, "NONE")
-      comp("c1", "x9", true, 10, 12, 10, "Wisdom")
+      comp("c1", "x9", "g9", true, 10, 12, 10)
       -- a component whose enemy is only its Source and no Osiris roll claims it waits apart
-      t = 12020; comp("c1", "e2", false, 2, 6, 15, "Wisdom")
-      G.settleSaves(G.rounds, 12100)
+      t = 12020; comp("c1", "e2", "g10", false, 2, 6, 15)
+      G.settleSaves(G.rounds, hits)
       T_sl_saves, T_sl_saves2, T_sl_unclaimed = R1.saves, R2.saves, R1.saves_unclaimed or R2.saves_unclaimed
       T_sl_probe, T_sl_events = G.results.save_probe, G.results.save_events
-      T_sl_log, T_sl_tries = R1.status_log, R1.status_tries
+      T_sl_tries = R1.status_tries
       -- an Osiris handler failure is kept in the record
       local orr = G.onRollResult
       G.onRollResult = function() error("boom") end
@@ -3638,46 +3634,52 @@ def save_log_tests(L):
       G.fighting, G.F, G.rounds = false, nil, {}
     """)
     g = L.globals()
-    sv = (lst(g.T_sl_saves) or []) + (lst(g.T_sl_saves2) or [])
-    rows = [(x.who, x.roll_type, x.success, x.status, x.sid) for x in sv]
-    want = [("b1", "GAMEPLAY_SpellSavingThrowSave", False, "GAPING_WOUND", 101),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", True, None, 102),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", False, "GAPING_WOUND", 103),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", False, "GAPING_WOUND", 103),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", True, None, 106),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", True, None, None),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", True, None, 104),
-            ("e2", "Concentration", None, None, None),
-            ("b1", None, False, "PRONE", None),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", None, None, 105),
-            ("b1", "GAMEPLAY_SpellSavingThrowSave", None, None, None)]
-    check("saves: each outcome settled from the statuses (cast id from the tried status, the window or the next "
-          "UsingSpell; made once the cast ended or the window closed; else open)", rows == want, str(rows))
-    check("saves: the status tried before the roll kept as the save's status",
-          len(sv) == 11 and sv[0].save_status == "GAPING_WOUND" and sv[4].save_status == "PRONE"
-          and sv[1].save_status is None, str([x.save_status for x in sv]))
-    check("saves: the Osiris row filled from the component of the same roll, the raw result and criticality kept",
-          len(sv) == 11 and sv[0].osiris is True and sv[0].component is True and sv[0].roll == 6 and sv[0].dc == 15
-          and sv[0].result_raw == 1 and sv[0].result is None and sv[1].crit == "SUCCESS" and sv[0].bonus == 3
-          and sv[0].disadvantage is True and sv[7].result_raw == 0, str([(x.result_raw, x.crit) for x in sv]))
-    check("saves: an event outcome the statuses contradict is flagged",
-          len(sv) == 11 and sv[8].success_event is True and sv[8].success_differs is True
-          and sv[0].success_event is False and sv[0].success_differs is None)
+    sv = lst(g.T_sl_saves) or []
+    by = {}
+    for x in sv:
+        by.setdefault(x.cast_guid, []).append(x)
+    rows = [(x.cast_guid, x.condition, x.roll, x.total, x.bonus_used, x.success, x.condition_result) for x in sv]
+    want = [("g1", 1, 13, 17, 4, True, False), ("g2", 1, 11, 15, 4, False, True),
+            ("g3", 1, 1, 7, 6, False, True), ("g3", 2, 7, 13, 6, True, False),
+            ("g4", 1, 15, 19, 4, True, None), ("g5", 1, 16, 20, 4, True, None),
+            (None, None, None, None, None, None, None), ("g7", 1, 12, 16, 4, True, None),
+            (None, None, None, None, None, None, None), ("g8", 1, 18, 22, 4, True, False)]
+    check("saves: one row per cast and condition from the cast-start event (total = d20 + the bonus used, its "
+          "Success the outcome), the impact only as condition_result", rows == want, str(rows))
+    a, b, c = (by.get("g1") or [None])[0], (by.get("g2") or [None])[0], by.get("g3") or []
+    check("saves: a made save's Osiris roll joins the row of its cast-start event, raw result and criticality kept",
+          a is not None and a.osiris is True and a.component is True and a.crit == "SUCCESS" and a.result_raw == 1
+          and a.dc == 16 and a.disadvantage is True and a.bonus == 4 and a.t_result == 2200, str(a and a.crit))
+    check("saves: a failed save's Osiris roll at the impact claims the waiting cast-start row, not the impact's total",
+          b is not None and b.osiris is True and b.crit == "NONE" and b.total == 15 and b.t == 3000, str(b and b.t))
+    check("saves: Piercing Shot's first save decides and takes the Osiris roll; the second is kept, not deciding",
+          len(c) == 2 and c[0].deciding is True and c[1].deciding is False and c[0].crit == "FAIL"
+          and c[0].osiris is True and c[1].osiris is None and c[0].spell == "Projectile_PiercingShot"
+          and c[0].sid == 103, str([(x.deciding, x.crit, x.sid) for x in c]))
+    cross = [(x.cast_guid, x.save_status, x.status, x.success_status, x.success_differs) for x in sv]
+    check("saves: the statuses cross-check through the cast's id (a rider, another source's or another cast's status "
+          "never the save's); a disagreement flagged unless the row does not decide",
+          cross == [("g1", None, None, True, None), ("g2", "FRIGHTENED", "FRIGHTENED", False, None),
+                    ("g3", "GAPING_WOUND", "GAPING_WOUND", False, None),
+                    ("g3", "GAPING_WOUND", "GAPING_WOUND", False, None), ("g4", "PRONE", "PRONE", False, True),
+                    ("g5", "PRONE", None, True, None), (None, None, None, None, None), ("g7", None, None, None, None),
+                    (None, None, None, None, None), ("g8", None, None, True, None)], str(cross))
+    f = sv[6] if len(sv) > 8 else None
+    check("saves: an Osiris roll with no component gets no outcome; a concentration check left alone",
+          f is not None and f.success is None and f.status is None and f.osiris is True
+          and sv[8].roll_type == "Concentration" and sv[8].who == "e2" and sv[8].success_status is None,
+          str(f and f.success))
+    check("saves: an impact in the next round joins its row there; no row of its own",
+          not lst(g.T_sl_saves2), str(len(lst(g.T_sl_saves2) or [])))
     un = lst(g.T_sl_unclaimed) or []
     check("saves: a component whose enemy is only its Source waits unclaimed without an Osiris roll",
           len(un) == 1 and un[0].roll == 2 and un[0].who == "e2" and un[0].swapped is True, str(len(un)))
     check("saves: every component counted before any filter, the first kept as a probe",
-          g.T_sl_events == 4 and g.T_sl_probe is not None and g.T_sl_probe.probe is True, str(g.T_sl_events))
-    log = lst(g.T_sl_log) or []
+          g.T_sl_events == 15 and g.T_sl_probe is not None and g.T_sl_probe.probe is True, str(g.T_sl_events))
     tries = lst(g.T_sl_tries) or []
-    check("status: the status rows keep the cast id, the engine's tries apart",
-          [(x.status, x.sid, x.on) for x in log][:4] == [("PASSIVE_HUNTERS_MARK", 101, True),
-                                                        ("INSURFACE", 101, True), ("BLEEDING", 101, True),
-                                                        ("GAPING_WOUND", 101, True)]
-          and [(x.status, x.sid) for x in tries] == [("GAPING_WOUND", 101), ("INSURFACE", 101), ("BLEEDING", 101),
-                                                     ("PASSIVE_HUNTERS_MARK", 102), ("GAPING_WOUND", 103),
-                                                     ("PRONE", 106)] and tries[0].on is None,
-          str([(x.status, x.sid) for x in log]) + " " + str([(x.status, x.sid) for x in tries]))
+    check("status: the engine's tries kept apart with the cast id",
+          [(x.status, x.sid) for x in tries][:2] == [("PASSIVE_HUNTERS_MARK", 101), ("HUNTERS_MARK", 102)]
+          and tries[0].on is None, str([(x.status, x.sid) for x in tries]))
     check("saves: an Osiris handler failure is recorded", "boom" in str(g.T_sl_error), str(g.T_sl_error))
     ls = g.T_sl_listeners
     check("saves: each registration's outcome recorded (stubbed engine: RollResult yes, no component listener)",
@@ -3738,7 +3740,7 @@ def save_log_tests(L):
     check("saves: a fight's record starts with the registrations' outcome",
           "G.results = { prep = prepRes, save_listeners = G.saveListeners() }" in src)
     check("saves: the outcomes settled when the fight ends",
-          "  G.settleSaves(G.rounds, G.t0 and now() - G.t0)\n" in src)
+          "  G.settleSaves(G.rounds, G.hits)\n" in src)
 
 
 def turn_round_tests(L):
@@ -7231,46 +7233,29 @@ MUTATIONS = [
      '    if a.move_to == "@leave_spot" then\n      local _, gap',
      '    if a.move_to == "@leave_spot" and m.result == "ended short" then\n      local _, gap'),
     ("record: the character's own saves recorded as the boss's", GL,
-     '    if not G.addSave(R, row, "component", true) then', '    if not G.addSave(R, row, "component") then'),
+     '  elseif not G.addSave(R, row, "component", true) then', '  elseif not G.addSave(R, row, "component") then'),
     ("record: a rider taken as a save's status", GL, "G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true,",
      "G.SAVE_NOT = { X = true,"),
     ("saves: a passive rider with the save's cast id taken as its status", GL,
      " PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true,", " X1 = true, X2 = true,"),
-    ("saves: a surface status taken as the save's", GL, "  INSURFACE = true }", "  X3 = true }"),
     ("saves: another source's try taken as the save's", GL,
-     "x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] end",
-     "x.who == v.who and not G.SAVE_NOT[x.status] end"),
-    ("saves: the status tried with the cast's id not looked up", GL,
-     "      if saveTry(x) and x.sid == v.sid then v.save_status = x.status; break end\n", ""),
-    ("saves: the window used although tries were recorded", GL, "  elseif #tries == 0 then", "  elseif true then"),
-    ("saves: the window never used", GL, "  elseif #tries == 0 then", "  elseif false then"),
-    ("record: a status just before its save never linked", GL,
-     "          and dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then",
-     "          and dt >= 0 and dt <= G.SAVE_STATUS_MS then"),
+     "x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] then",
+     "x.who == v.who and not G.SAVE_NOT[x.status] then"),
     ("saves: RollResult registered with the wrong number of arguments", GL, '"RollResult", 6,', '"RollResult", 4,'),
     ("saves: the character's Osiris rolls recorded", GL,
      '  if not G.fighting or G.member(G.F, roller) ~= "enemy" then return end', "  if not G.fighting then return end"),
     ("saves: RollResult's result not kept raw", GL, "roll_type = rollType, result_raw = result,",
      "roll_type = rollType, result_raw = nil,"),
     ("saves: the outcome never settled at the fight's end", GL,
-     "  G.settleSaves(G.rounds, G.t0 and now() - G.t0)\n", ""),
-    ("saves: the status tried before the roll gives no cast id", GL,
-     "then v.sid, v.save_status = x.sid, x.status end", "then v.save_status = x.status end"),
+     "  G.settleSaves(G.rounds, G.hits)\n", ""),
     ("saves: a status of another cast taken for the save's", GL,
-     "x.who == v.who and x.sid == v.sid and x.status == v.save_status then",
-     "x.who == v.who and x.status == v.save_status then"),
+     "if x.on and x.who == v.who and x.sid == v.sid and x.status == v.save_status then",
+     "if x.on and x.who == v.who and x.status == v.save_status then"),
     ("saves: another status of the save's cast taken for the one tried", GL,
-     "x.who == v.who and x.sid == v.sid and x.status == v.save_status then", "x.who == v.who and x.sid == v.sid then"),
-    ("saves: a made save's cast id never read from its UsingSpell", GL,
-     "      if x.who == v.source and x.t >= v.t and x.t - v.t <= G.SAVE_CAST_MS then v.sid = x.sid; break end\n", ""),
-    ("saves: a UsingSpell long after the roll taken as its cast", GL,
-     "x.t >= v.t and x.t - v.t <= G.SAVE_CAST_MS then", "x.t >= v.t then"),
-    ("saves: made before the cast ended", GL, "      if x.sid == v.sid then v.success = true; break end",
-     "      v.success = true"),
-    ("saves: made before the window closed", GL,
-     "  elseif tEnd and tEnd - (v.t or 0) > G.SAVE_STATUS_MS then", "  else"),
-    ("saves: a concentration check settled as a save", GL,
-     '  if v.roll_type == "Concentration" then return end\n', ""),
+     "if x.on and x.who == v.who and x.sid == v.sid and x.status == v.save_status then",
+     "if x.on and x.who == v.who and x.sid == v.sid then"),
+    ("saves: made before the cast ended", GL,
+     "      if x.sid == v.sid then v.success_status = true; break end", "      v.success_status = true"),
     ("saves: a cast that ends in the next round not read", GL, "  for j = i, i + 1 do", "  for j = i, i do"),
     ("saves: the components not counted", GL, "    G.results.save_events = (G.results.save_events or 0) + 1\n", ""),
     ("status: the cast id not kept", GL, "    cause = causee and uuid(causee), sid = sid, t = now() - G.t0 }",
@@ -7291,12 +7276,13 @@ MUTATIONS = [
      "    F.earlyTurn = nil\n"),
     ("turns: the early TurnStarted's round not noted", GL, "    F.turnRound[uuid(F.char)] = #G.rounds\n", ""),
     ("saves: the two sources never merged", GL,
-     "    if sameRoll(v, row, kind) then return G.mergeSave(v, row, kind) end\n", ""),
+     "    if sameRoll(v, row, kind) then return G.mergeSave(castHead(R.saves, v, kind), row, kind) end\n", ""),
     ("saves: a component waiting for its Osiris roll never claimed", GL,
-     '      G.mergeSave(v, table.remove(un, i), "component")\n', ""),
+     "        claimCast(Rj, x)\n", ""),
     ("saves: rolls far apart merged", GL,
-     "math.abs((row.t or 0) - (v.t or 0)) <= G.SAVE_MERGE_MS", "true"),
-    ("saves: a disagreement on the outcome not flagged", GL, "then v.success_differs = true end", "then end"),
+     "  return math.abs(t - (v.t or 0)) <= G.SAVE_MERGE_MS or", "  return true or"),
+    ("saves: a disagreement on the outcome not flagged", GL,
+     "    v.success_differs = true\n", ""),
     ("saves: an Osiris handler failure not recorded", GL,
      "G.results.save_error = tostring(err) end\nend\nif not G._listeners12",
      "end\nend\nif not G._listeners12"),
@@ -7304,11 +7290,6 @@ MUTATIONS = [
      "    saving_throw_event = (G._listeners11 or {}).save == true,", "    saving_throw_event = true,"),
     ("saves: a fight's record without the registrations' outcome", GL,
      "      G.results = { prep = prepRes, save_listeners = G.saveListeners() }", "      G.results = { prep = prepRes }"),
-    ("record: a status long after the save linked", GL, "dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then",
-     "dt >= -G.SAVE_BACK_MS then"),
-    ("record: another source's status linked to the save", GL,
-     "local function sameSource(v, x) return v.source == nil or x.cause == nil or v.source == x.cause end",
-     "local function sameSource() return true end"),
     ("record: a hit's saves not read", GL, "      saves[#saves + 1] = G.saveFields(c)\n", ""),
     ("record: a hit's attack roll taken as a save", GL,
      '    if first(c, { "SavingThrowRoll" }) == true or flagText(first(c, { "RollType" })) == "SavingThrowRoll" then',
@@ -7640,6 +7621,38 @@ MUTATIONS = [
      'if p.get("adv") is False and p.get("dis"))', 'if p.get("dis"))'),
     ("split: rows in the character's own turn counted as reactions", RN,
      "return r == 0 or (rel.get(r) is not None and (d.get(\"t\") or 0) > rel[r])", "return True"),
+    ("saves: the impact event read as a condition of its own", GL,
+     "  if row.roll == nil or row.total ~= row.roll then return nil end", "  do return nil end"),
+    ("saves: the outcome taken from the impact event", GL,
+     "    v.condition_result, v.t_result = row.success, row.t",
+     "    v.success, v.condition_result, v.t_result = row.success, row.success, row.t"),
+    ("saves: the impact's bare total taken for the row's", GL,
+     "    v.condition_result, v.t_result = row.success, row.t", "    v.condition_result, v.t_result, v.total = row.success, row.t, row.total"),
+    ("saves: the bonus used read from RollBonus", GL,
+     "row.bonus_used = row.total - row.roll end", "row.bonus_used = row.bonus end"),
+    ("saves: rows not keyed by the cast", GL,
+     "  if row.cast_guid ~= nil then rows, claimed = castRows(row.who, row.cast_guid) end\n", ""),
+    ("saves: Piercing Shot's second save marked deciding", GL,
+     "v.deciding = v.condition == 1 end", "v.deciding = true end"),
+    ("saves: Piercing Shot not known to roll twice", GL,
+     "G.SAVE_FIRST_DECIDES = { Projectile_PiercingShot = true,", "G.SAVE_FIRST_DECIDES = {"),
+    ("saves: a non-deciding row's disagreement flagged", GL,
+     "v.success_status ~= v.success and v.deciding ~= false then", "v.success_status ~= v.success then"),
+    ("saves: an Osiris roll joins the nearest condition, not the cast's first", GL,
+     '        G.mergeSave(castHead(Rj.saves, x, "osiris"), row, "osiris")', '        G.mergeSave(x, row, "osiris")'),
+    ("saves: a cast's other waiting rows left unclaimed", GL,
+     "    if y == x or (x.cast_guid ~= nil and y.who == x.who and y.cast_guid == x.cast_guid) then",
+     "    if y == x then"),
+    ("saves: an Osiris roll with the impact never joins", GL,
+     " or (v.t_result ~= nil and math.abs(t - v.t_result) <= G.SAVE_MERGE_MS)", ""),
+    ("saves: an impact in the next round not joined", GL,
+     "  for j = math.max(1, #G.rounds - 1), #G.rounds do\n    for _, key in", "  for j = #G.rounds, #G.rounds do\n    for _, key in"),
+    ("saves: the cast's hit without its id taken", GL,
+     "if h.cast_guid == guid and h.sid ~= nil and h.sid ~= 0 then return h end", "if h.cast_guid == guid then return h end"),
+    ("saves: a status try of any cast taken as the save's", GL,
+     "if x.sid == v.sid and x.who == v.who and x.cause", "if x.who == v.who and x.cause"),
+    ("saves: Piercing Shot's damage rider taken as the save's status", GL,
+     "  INSURFACE = true, GAPING_WOUND_DAMAGE = true,", "  INSURFACE = true,"),
 ]
 
 
