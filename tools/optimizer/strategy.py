@@ -11,17 +11,19 @@ from the game stats (profile_from_spec). The search is exact, not sampled:
   carried as its first two moments (dice means and variances, every die doubled on a critical hit);
 - one turn: the attacks in order with a branch state (Sneak Attack spent, superiority dice spent, boss Frightened or
   Prone, Gaping Wound, Ensnaring Strike), so Sneak Attack lands once, on the first hit with net Advantage;
-- the boss's turn: it walks up and attacks unless Frightened or restrained (not in round 1: it starts too far away to
-  reach), or knocked Prone by Trip Attack while out of its reach (standing up leaves it too little movement to close in,
-  prone_closes_in); its miss gives the set's riposte reaction, its hit can break concentration;
+- the boss's turn: it walks up and attacks unless Frightened or restrained; still at its start spot (round 1, or held
+  there since) it only Dashes into reach, which takes its action; knocked Prone by Trip Attack out of its reach it
+  walks back and attacks only sometimes (PRONE_CLOSES); its miss gives the set's riposte reaction, its hit can break
+  concentration;
 - Sneak Attack's one charge (SneakAttack_Charge) comes back as the character's turn ends (seen in game: spent on the
   riposte in the boss's turn, it is missing in the character's next turn; spent in the character's turn, it is there
   again for the boss's), so a riposte that takes it costs the next turn's; the reaction policy (SNEAK_POLICIES) says
   when the riposte may take it;
 - the fight: dynamic programming over (round, boss adjacent at the turn's start, superiority dice, Action Surge,
-  concentration, the once-per-rest item attacks, Dread Ambusher, Sneak Attack's charge, True Strike from
-  the riposte) for the largest expected total; the same recursion carries the second moment, so the total's standard
-  deviation is exact for the chosen policy. The fight is the gauntlet's: it ends as the character's 16th turn ends.
+  concentration, the once-per-rest item attacks, Dread Ambusher, Sneak Attack's charge, True Strike from the riposte,
+  the boss still at its start spot) for the largest expected total; the same recursion carries the second moment, so
+  the total's standard deviation is exact for the chosen policy. The fight is the gauntlet's: it ends as the
+  character's 16th turn ends.
 
 A strategy family limits what the turn may do with the boss in reach (melee, step away, stand and shoot) and what it
 may use; the search finds each family's best policy, and families are ranked by expected total.
@@ -144,9 +146,7 @@ class Profile:
     boss_first: float = 0.0         # P(the boss acts before the character in round 1)
     boss_odds: tuple = None         # measured ((roll mode, P(the boss's attack lands)), ...) in place of a uniform d20
     own_odds: tuple = None          # measured ((roll mode, P(natural = 1..20)), ...) of the character's own d20
-    boss_move: float = 9.0          # the boss's Movement (m)
-    prone_stand: float = 0.5        # the share of its Movement standing up from Prone costs (PRONE's OnRemoveFunctors)
-    prone_ai_move: float = 4.5      # Movement the AI loses as it stands up (AI_HELPER_PRONE's ActionResource(Movement))
+    prone_closes: float = 0.5       # P(the boss, knocked Prone out of its reach after a leave, walks back and attacks)
     taken_hit: float = None         # damage the character takes per boss hit, and a critical hit's extra (the model's
     taken_crit: float = 0.0         # boss scenario: expect.boss taken_hit / taken_crit / taken_heal); None = not known
     taken_heal: float = 0.0
@@ -215,7 +215,6 @@ def profile_from_spec(spec, stats):
     if "DreadAmbusher" in passives:
         init += 3
     E = spec.get("enemy") or {}
-    stand, ai_move = prone_movement(stats)
     char_ac, boss_atk = int(spec["expect"]["ac"]), int(E.get("atk", 9))
     odds = tuple(sorted(E["odds"].items())) if E.get("odds") else BOSS_ODDS.get((boss_atk, char_ac))
     own = spec.get("own_odds")
@@ -246,28 +245,9 @@ def profile_from_spec(spec, stats):
         boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)), boss_atk=boss_atk,
         char_ac=char_ac, boss_odds=odds, own_odds=own, conc_save=(con - 10) // 2 + save_bonus, boss_first=first,
         taken_hit=gear.get("taken_hit"), taken_crit=gear.get("taken_crit") or 0.0,
-        taken_heal=gear.get("taken_heal") or 0.0, boss_move=float(E.get("move", BOSS_MOVE_M)), prone_stand=stand,
-        prone_ai_move=ai_move)
-
-
-def prone_movement(stats):
-    """(share of the Movement standing up costs, Movement an AI loses with it) from the game's PRONE and
-    AI_HELPER_PRONE; the Profile defaults where a stats file lacks them."""
-    stand, ai_move = Profile.prone_stand, Profile.prone_ai_move
-    m = re.search(r"UseActionResource\(Movement,\s*(\d+)%", (stats.get("PRONE") or {}).get("OnRemoveFunctors") or "")
-    if m:
-        stand = int(m.group(1)) / 100
-    m = re.search(r"ActionResource\(Movement,\s*-([\d.]+)", (stats.get("AI_HELPER_PRONE") or {}).get("Boosts") or "")
-    if m:
-        ai_move = float(m.group(1))
-    return stand, ai_move
-
-
-def prone_closes_in(P):
-    """Can the boss, knocked Prone out of its reach, stand up and still walk back into reach in its turn? Standing costs
-    prone_stand of its Movement and the AI loses prone_ai_move more as it stands, so a 9 m boss has none left: in game
-    the boss stood up 5 m from the character and ended its turn without moving or attacking."""
-    return P.boss_move * (1 - P.prone_stand) - P.prone_ai_move >= LEAVE_GAP_M
+        taken_heal=gear.get("taken_heal") or 0.0,
+        prone_closes=(float(E["prone_closes"]) if E.get("prone_closes") is not None
+                      else PRONE_CLOSES[0] / PRONE_CLOSES[1]))
 
 
 # ------------------------------------------------------------------------------------------------------- one turn
@@ -414,8 +394,8 @@ def run_turn(P, plan, start, parts=False):
             marked = marked0 and not ens
             dice = w.dice + a.extra_dice + ((P.mark_die,) if marked and P.mark_die else ()) + \
                 ((P.sup_die,) if a.maneuver else ())
-            flat = w.flat + ssd + (w.adv_flat if mode == "adv" else 0) + \
-                (P.gaping if (start.gaping or gnew) else 0)
+            gape = P.gaping if (start.gaping or gnew) else 0
+            flat = w.flat + ssd + (w.adv_flat if mode == "adv" else 0) + gape
             roll = (1.0, 0.0, 0.0, float(mode == "adv"), float(mode == "dis"), float(a.dis_any or mode == "dis"), 0.0)
 
             def scaled(f, extra):
@@ -427,9 +407,10 @@ def run_turn(P, plan, start, parts=False):
                 if not pr:
                     continue
                 d = dice + (P.sneak_dice if sneak else ())
-                # Sneak Attack's damage is a hit of its own for the weapon's "on damage with Advantage" passive
-                # (Crimson Mischief's Vicious: a second 7 after the Sneak Attack row, seen on every riposte)
-                mu, s2 = landed(d, flat + (w.adv_flat if sneak else 0), is_crit)
+                # Sneak Attack's damage is a row of its own: the weapon's "on damage with Advantage" passive
+                # (Crimson Mischief's Vicious: a second 7 after the Sneak Attack row, seen on every riposte) and
+                # Gaping Wound's +2 (a second tick with the Sneak Attack row) land on it again
+                mu, s2 = landed(d, flat + ((w.adv_flat + gape) if sneak else 0), is_crit)
                 base = (p * pr, pr * (m1 + p * mu), pr * (m2 + 2 * m1 * mu + p * s2))
                 sa_dice = dice_moments(P.sneak_dice, 2 if is_crit else 1)[0] if sneak else 0.0
                 vb = scaled(pr, roll[:1] + (1.0, float(is_crit)) + roll[3:6] + (sa_dice,))
@@ -476,19 +457,25 @@ BOSS_PARTS = ("react_attacks", "react_hits", "react_crits", "react_sneak", "boss
 def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=False, prone=False):
     """The boss's turn after ours -> [(p, E[R], E[R^2], conc after, adjacent at our next turn, Sneak Attack's charge at
     our next turn, True Strike on the boss at our next turn)], R = our damage in it (the riposte, the Ensnaring Strike
-    tick). reach False: the boss only walks up (round 1: it starts too far away to attack). prone: Trip Attack knocked
-    it Prone; it stands up, and out of its reach stays there unless prone_closes_in. Sneak Attack's charge is always
-    there in the boss's turn: it came back as ours ended. parts: each row also carries E[X;row] of BOSS_PARTS."""
+    tick). reach False: the boss is still at its start spot, so it only Dashes into reach, which takes its action
+    (round 1, or held there since), Prone or not. prone: Trip Attack knocked it Prone; in reach it stands and attacks,
+    out of its reach (after a leave) it walks back and attacks with P.prone_closes, else stays away. Sneak Attack's
+    charge is always there in the boss's turn: it came back as ours ended. parts: each row also carries E[X;row] of
+    BOSS_PARTS."""
     out = []
     none = (0.0,) * len(BOSS_PARTS)
-    branches = [(1.0, conc == "ensnare", 0.0, 0.0)]
+    # (p, restrained, the tick's E[T], E[T^2], stays where it stood up)
+    branches = [(1.0, conc == "ensnare", 0.0, 0.0, False)]
     if conc == "ensnare":
         esc = 1 - save_fails(P.boss_save, P.spell_dc)
         tm, tv = dice_moments((P.ensnare_die,))
-        branches = [(esc, False, 0.0, 0.0), (1 - esc, True, tm, tv + tm * tm)]
-    for pb, held, dm, d2 in branches:
+        branches = [(esc, False, 0.0, 0.0, False), (1 - esc, True, tm, tv + tm * tm, False)]
+    if prone and reach and not ends_adjacent:
+        branches = [(pb * f, held, dm, d2, stays) for pb, held, dm, d2, _ in branches
+                    for f, stays in ((1 - P.prone_closes, True), (P.prone_closes, False)) if f]
+    for pb, held, dm, d2, stays in branches:
         conc_b = conc if (conc != "ensnare" or held) else ""
-        moves = not frightened and not held and not (prone and not prone_closes_in(P))
+        moves = not frightened and not held and not stays
         if not (ends_adjacent or moves):
             out.append((pb, pb * dm, pb * d2, conc_b, False, True, False) + ((none,) if parts else ()))
             continue
@@ -512,7 +499,8 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=Fals
             rows.append(((1 - ph) * miss, 0.0, 0.0, conc_b, True, False, (1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0)))
             for pr, is_crit in ((hit, False), (crit, True)):
                 spend = can_sneak and riposte_spends(P, is_crit)
-                m_, v_ = landed(dice + (P.sneak_dice if spend else ()), flat + (w.adv_flat if spend else 0), is_crit)
+                m_, v_ = landed(dice + (P.sneak_dice if spend else ()),
+                                flat + ((w.adv_flat + (P.gaping if gaping else 0)) if spend else 0), is_crit)
                 sa_dice = dice_moments(P.sneak_dice, 2 if is_crit else 1)[0] if spend else 0.0
                 rows.append(((1 - ph) * pr, m_, v_, conc_b, not spend, P.riposte_ts,
                              (1.0, 1.0, float(is_crit), sa_dice, 1.0, 0.0, 0.0)))
@@ -531,9 +519,6 @@ FIGHT_PARTS = OWN_PARTS + ("own_dmg",) + BOSS_PARTS + ("react_dmg",)
 # the boss stands this far from the character as the fight starts (round 1: out of its reach, a walk-up to melee);
 # plan.py writes it into the spec for the harness's arena layout
 BOSS_START_M = 10.0
-# The boss's Movement when the spec's enemy gives none: its template is a Human, whose base Movement is 9 m (the same as
-# the character's in game).
-BOSS_MOVE_M = 9.0
 # The boss's measured landing chances, by (attack bonus, the character's AC): the gauntlet's records with a row for
 # every boss attack roll pooled (20 fights). Straight rolls landed 73 of 136 and Disadvantage rolls 19 of 51 at +9
 # against AC 22, where a uniform d20 gives 40% and 16% (the game's dice were high for the boss, not for the character).
@@ -557,9 +542,13 @@ OWN_ODDS = {(9, 22): (
     ("adv", shares((3, 6, 8, 17, 29, 33, 37, 54, 54, 69, 80, 68, 101, 104, 73, 94, 100, 107, 96, 101))),
     ("straight", shares((103, 111, 115, 123, 114, 139, 134, 135, 129, 142, 136, 125, 151, 156, 99, 113, 117, 124,
                          100, 102))))}
-# The least the boss walks to have the character in its reach again after a leave: the harness's leave spot is at least
-# 3.8 m from the boss (G.LEAVE_M 4.5 less its 0.7 m slack), less a melee reach of 1.5 m.
-LEAVE_GAP_M = 2.3
+# What the boss did in its turn after a Trip Attack knocked it Prone out of its reach (after a leave), as (walked back
+# and attacked, all such turns) in the gauntlet's records: once each way (a 4.4 m leave: it stood up, walked in and
+# attacked; a 5.1 m leave: it stood up and ended its turn). Standing up costs half its Movement and no AI_HELPER_PRONE
+# was ever logged on it, so the distance left to walk decides; the model does not know it and takes the share. It
+# never Dashed in from a leave spot; from its start spot it Dashes in, Prone or not (Search: far). A spec's enemy
+# "prone_closes" overrides it.
+PRONE_CLOSES = (1, 2)
 FAMILIES = {
     # mode allowed with the boss in reach / out of reach, the options the family may use, and the harness's plan mode
     "melee": dict(adjacent=("melee",), away=("melee", "free"), ensnare=False, mode="melee",
@@ -595,6 +584,7 @@ class State:
     boss_after: bool                # the boss's turn follows this one (false for the last turn: the gauntlet ends there)
     sneak: bool = True              # Sneak Attack's charge at the turn's start
     ts: bool = False                # True Strike on the boss at the turn's start
+    far: bool = False               # the boss is still at its start spot (out of reach): it can only Dash in
 
 
 def plans(P, s, fam):
@@ -679,13 +669,15 @@ class Search:
             if not s.boss_after:
                 out.append((p, m1, m2, None) + ((own + (0.0,) * (len(BOSS_PARTS) + 1),) if parts else ()))
                 continue
-            # round 1: the boss starts too far away to reach the character unless the character walked up to it
-            reach = not (s.rnd == 1 and not s.adjacent and plan.mode != "melee")
-            for row in boss_turn(self.P, conc, plan.mode in ("melee", "stand"), fr, gnew, reach, parts=parts,
-                                 prone=prone):
+            # the boss at its start spot is too far away to reach the character and attack in one turn, unless the
+            # character walked up to it; it stays there only while held
+            ends_adjacent = plan.mode in ("melee", "stand")
+            reach = not (s.far and not ends_adjacent)
+            for row in boss_turn(self.P, conc, ends_adjacent, fr, gnew, reach, parts=parts, prone=prone):
                 pb, rm, rs, cc, adj, keep, ts = row[:7]
                 nxt = None if last else State(adjacent=adj, conc=cc,
-                                              boss_after=(s.rnd + 1 < ROUNDS) or self.last, sneak=keep, ts=ts, **nx)
+                                              boss_after=(s.rnd + 1 < ROUNDS) or self.last, sneak=keep, ts=ts,
+                                              far=s.far and not adj, **nx)
                 br = (p * pb, m1 * pb + p * rm, m2 * pb + 2 * m1 * rm + p * rs, nxt)
                 if parts:
                     br += (tuple(x * pb for x in own) + tuple(p * y for y in row[7]) + (p * rm,),)
@@ -695,7 +687,8 @@ class Search:
     def start_state(self):
         P = self.P
         return State(rnd=1, adjacent=False, dice=P.sup_dice, surge=P.surge, conc="",
-                     pierce_m=P.pierce_melee, pierce_r=P.pierce_ranged, dread=bool(P.dread_die), boss_after=True)
+                     pierce_m=P.pierce_melee, pierce_r=P.pierce_ranged, dread=bool(P.dread_die), boss_after=True,
+                     far=True)
 
     def total(self):
         """-> (E[total], sd) over who acts first: we do (the boss walks up after our turn), or the boss does (it walks
@@ -705,7 +698,7 @@ class Search:
         v1, v2, _ = self.value(self.start_state())
         e1, e2 = (1 - P.boss_first) * v1, (1 - P.boss_first) * v2
         if P.boss_first:
-            w1, w2, _ = self.value(replace(self.start_state(), adjacent=True))
+            w1, w2, _ = self.value(replace(self.start_state(), adjacent=True, far=False))
             e1 += P.boss_first * w1
             e2 += P.boss_first * w2
         return e1, max(0.0, e2 - e1 * e1) ** 0.5
@@ -734,7 +727,7 @@ class Search:
         P = self.P
         dist = {self.start_state(): 1 - P.boss_first}
         if P.boss_first:
-            s2 = replace(self.start_state(), adjacent=True)
+            s2 = replace(self.start_state(), adjacent=True, far=False)
             dist[s2] = dist.get(s2, 0.0) + P.boss_first
         sums = [0.0] * len(FIGHT_PARTS)
         rounds = []
@@ -929,9 +922,9 @@ def harness_rounds(path, A, evade_steps, evade_every_round=False):
 
 # The state the harness reads as its turn starts, as the policy table's key: round, boss in reach, superiority dice,
 # Action Surge ready, concentration, Piercing Strike / Shot ready, Dread Ambusher's attack,
-# Sneak Attack's charge, True Strike from a riposte hit in the boss's turn just before. tools/gauntlet/gauntlet.lua
-# (G.policyKey) builds the same text.
-POLICY_FIELDS = ("rnd", "adjacent", "dice", "surge", "conc", "pierce_m", "pierce_r", "dread", "sneak", "ts")
+# Sneak Attack's charge, True Strike from a riposte hit in the boss's turn just before, the boss still at its start
+# spot. tools/gauntlet/gauntlet.lua (G.policyKey) builds the same text.
+POLICY_FIELDS = ("rnd", "adjacent", "dice", "surge", "conc", "pierce_m", "pierce_r", "dread", "sneak", "ts", "far")
 
 
 def state_key(s):
@@ -968,7 +961,7 @@ def reachable(S):
     P = S.P
     dist = {S.start_state(): 1 - P.boss_first}
     if P.boss_first:
-        s2 = replace(S.start_state(), adjacent=True)
+        s2 = replace(S.start_state(), adjacent=True, far=False)
         dist[s2] = dist.get(s2, 0.0) + P.boss_first
     out = {}
     while dist:

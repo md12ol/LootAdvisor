@@ -879,30 +879,31 @@ def test_strategy_halves():
 
 
 def test_strategy_trip_prone():
-    """Trip Attack's Prone (boss STR save +4 vs DC 16 fails 55%): standing up costs half the boss's 9 m and the AI loses
-    4.5 m more (the game's PRONE / AI_HELPER_PRONE strings), so out of reach it stays out and attacks no one (as in
-    game), the next turn starting out of reach with the charge kept and no True Strike; in reach it stands and attacks
-    as before; a boss with movement to spare walks back. In the turn, rolls within 3 m of a Prone boss gain Advantage,
-    shots from further away do not (hand formulas)."""
+    """Trip Attack's Prone (boss STR save +4 vs DC 16 fails 55%): out of its reach after a leave the boss walks back and
+    attacks in half its turns (the records: once each way) and stays away in the other half, the next turn then
+    starting out of reach with the charge kept and no True Strike; in reach it stands and attacks as before; at its
+    start spot it Dashes in, Prone or not, and attacks no one. In the turn, rolls within 3 m of a Prone boss gain
+    Advantage, shots from further away do not (hand formulas)."""
     import strategy as G
     fails = []
-    stats = {"PRONE": {"OnRemoveFunctors": "IF(RemoveCause(StatusRemoveCause.Condition)):UseActionResource(Movement, "
-                                           "50%, 0, true);AI_ONLY:ApplyStatus(AI_HELPER_PRONE,100,2)"},
-             "AI_HELPER_PRONE": {"Boosts": "ActionResource(Movement,-4.5,0);Advantage(AttackTarget)"}}
-    if G.prone_movement(stats) != (0.5, 4.5) or G.prone_movement({}) != (0.5, 4.5):
-        fails.append(f"stats {G.prone_movement(stats)}")
     P = _thx_profile(riposte_ts=True)
-    if G.prone_closes_in(P) or not G.prone_closes_in(G.replace(P, boss_move=14.0)):
-        fails.append("9 m boss closes in, or a 14 m one does not")
+    if G.PRONE_CLOSES != (1, 2) or P.prone_closes != 0.5 or G.profile_from_spec(_own_spec(), {}).prone_closes != 0.5 \
+            or G.profile_from_spec(_own_spec(prone_closes=0.25), {}).prone_closes != 0.25:
+        fails.append(f"share {G.PRONE_CLOSES} {P.prone_closes}")
+    plain = G.boss_turn(P, "mark", False, False, False)
     away = G.boss_turn(P, "mark", False, False, False, prone=True)
-    if away != [(1.0, 0.0, 0.0, "mark", False, True, False)]:
-        fails.append(f"prone out of reach {away}")
+    want = [(0.5, 0.0, 0.0, "mark", False, True, False)] + [(r[0] * 0.5, r[1] * 0.5, r[2] * 0.5) + r[3:] for r in plain]
+    if len(away) != len(want) or any(abs(a - b) > 1e-12 if isinstance(a, float) else a != b
+                                     for x, y in zip(away, want) for a, b in zip(x, y)):
+        fails.append(f"prone out of reach {away[:2]}")
     if G.boss_turn(P, "mark", True, False, False, prone=True) != G.boss_turn(P, "mark", True, False, False):
         fails.append("prone in reach changed the boss's attack")
-    if G.boss_turn(G.replace(P, boss_move=14.0), "mark", False, False, False, prone=True) != \
-            G.boss_turn(P, "mark", False, False, False):
-        fails.append("a boss with movement to spare stayed away")
-    # one landed Trip in four (natural 1 misses with Advantage: 1/400), 55% fail
+    if G.boss_turn(G.replace(P, prone_closes=1.0), "mark", False, False, False, prone=True) != plain:
+        fails.append("a boss that always walks back stayed away")
+    start = G.boss_turn(P, "mark", False, False, False, reach=False, prone=True)
+    if start != [(1.0, 0.0, 0.0, "mark", True, True, False)]:
+        fails.append(f"prone at the start spot {start}")
+    # one landed Trip in four (natural 1 misses with Advantage: 1/400), 55% fail, half of those stay away
     w = G.Weapon("x", 40, (6,), 0, ranged=True)
     P2 = G.replace(P, ranged_main=w, ranged_off=w, sharpshooter=None, sneak_dice=(), mark_die=0, riposte=None)
     S = G.Search(P2, "evade_nohold")
@@ -910,8 +911,8 @@ def test_strategy_trip_prone():
                 boss_after=True)
     br = S._branches(s, G.Plan("leave", maneuver="TripAttack", n_maneuver=1))
     p_away = sum(b[0] for b in br if b[3] is not None and not b[3].adjacent)
-    want = (1 - 1 / 400) * 0.55
-    if abs(p_away - want) > 1e-12 or any(b[3].ts or not b[3].sneak for b in br if not b[3].adjacent):
+    want = (1 - 1 / 400) * 0.55 * 0.5
+    if abs(p_away - want) > 1e-12 or any(b[3].ts or not b[3].sneak or b[3].far for b in br if not b[3].adjacent):
         fails.append(f"next turn out of reach {p_away} want {want}")
     # straight rolls, +9 vs AC 19 (55%), no critical hits: the Trip (d6 + d8) then one plain d6 roll
     w9 = G.Weapon("y", 9, (6,), 0)
@@ -924,6 +925,65 @@ def test_strategy_trip_prone():
     if abs(near - (trip + 3.5 * (pp * (1 - 0.45 ** 2) + (1 - pp) * 0.55))) > 1e-9 or \
             abs(far - (trip + 3.5 * 0.55)) > 1e-9:
         fails.append(f"in-turn Advantage: melee {near}, shot {far}")
+    assert not fails, fails
+
+
+def test_strategy_far_start():
+    """The boss at its start spot (~10 m off: the we-first start, and while it is held there) can only Dash into
+    reach, which takes its action: no attack, no riposte, its next turn in reach, the flag cleared. Held (Frightened)
+    it stays and keeps the flag; once it has moved it attacks as usual; a character who walks up to it (melee) is
+    attacked at once. The boss-first start has it in reach already; the flag is in the policy key."""
+    import strategy as G
+    fails = []
+    P = G.replace(_thx_profile(riposte_ts=True), boss_first=0.15, maneuvers=("MenacingAttack",))
+    S = G.Search(P, "evade")
+    st = S.start_state()
+    if not (st.far and not st.adjacent) or "far=1" not in G.state_key(st) or \
+            G.parse_state_key(G.state_key(st)) != st:
+        fails.append(f"start {st}")
+    s2 = G.replace(st, rnd=2, dread=False)
+    own, _ = G.turn_numbers(P, G.Plan("free"), G.TurnStart(False, "", False))
+    br = S._branches(s2, G.Plan("free"))
+    m = sum(b[1] for b in br) / sum(b[0] for b in br)
+    if abs(m - own) > 1e-9 or not all(b[3].adjacent and not b[3].far and b[3].sneak and not b[3].ts for b in br):
+        fails.append(f"round 2 from the start spot: {m} vs own {own}")
+    br = S._branches(G.replace(s2, far=False), G.Plan("free"))
+    if not sum(b[1] for b in br) / sum(b[0] for b in br) > own + 1:
+        fails.append("a boss that has moved does not attack")
+    held = S._branches(s2, G.Plan("free", maneuver="MenacingAttack", n_maneuver=1))
+    if not any(b[3].far for b in held) or any(b[3].far != (not b[3].adjacent) for b in held):
+        fails.append("Frightened at its start spot: flag not kept, or kept after it came")
+    Sm = G.Search(P, "melee")
+    up = Sm._branches(Sm.start_state(), G.Plan("melee"))
+    alone = G.turn_numbers(P, G.Plan("melee"), G.TurnStart(False, "", False))[0]
+    if not sum(b[1] for b in up) / sum(b[0] for b in up) > alone + 1 or any(b[3].far for b in up):
+        fails.append("the boss does not attack a character who walked up to it, or the flag stayed")
+    first = [s for s in G.reachable(S) if s.rnd == 1 and s.adjacent]
+    if len(first) != 1 or first[0].far:
+        fails.append(f"boss-first start {first}")
+    assert not fails, fails
+
+
+def test_strategy_gaping_sneak():
+    """Gaping Wound's +2 comes with every damage row, so a hit that carries Sneak Attack (its own row) gets it twice:
+    the riposte that always takes the charge gains twice what one that never does gains; the own turn's first landed
+    roll with Advantage gains 2 more (melee, 4 rolls at +14 vs AC 19 with Advantage, each missing 4%)."""
+    import strategy as G
+    fails = []
+    P = _thx_profile()
+
+    def gain(prof):
+        return sum(r[1] for r in G.boss_turn(prof, "mark", True, False, True)) - \
+            sum(r[1] for r in G.boss_turn(prof, "mark", True, False, False))
+    g_always, g_never = gain(G.replace(P, riposte_sneak="always")), gain(G.replace(P, riposte_sneak="never"))
+    if not g_never > 0 or abs(g_always - 2 * g_never) > 1e-9:
+        fails.append(f"riposte gain always {g_always} never {g_never}")
+
+    def own(sneak, gape):
+        return G.turn_numbers(P, G.Plan("melee"), G.TurnStart(True, "", gape, sneak))[0]
+    extra = (own(True, True) - own(True, False)) - (own(False, True) - own(False, False))
+    if abs(extra - 2 * (1 - 0.04 ** 4)) > 1e-9:
+        fails.append(f"own turn: Sneak Attack row's Gaping Wound {extra}")
     assert not fails, fails
 
 
@@ -997,7 +1057,7 @@ def test_strategy_gaping_ends():
     try:
         P = G.replace(_thx_profile(), boss_save=-30, sup_dice=0, surge=False, dread_die=0, boss_first=0.0)
         S = G.Search(P, "melee")
-        s = G.replace(S.start_state(), adjacent=True)
+        s = G.replace(S.start_state(), adjacent=True, far=False)
         plan = G.Plan("melee", pierce=True)
         rip_with = G.boss_turn(P, "", True, False, True)
         rip_without = G.boss_turn(P, "", True, False, False)
@@ -1378,7 +1438,8 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_buff_spells, test_riposte, test_item_riposte, test_boss_turns_taken, test_wrath_storm,
             test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
-            test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_boss_odds,
+            test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_far_start,
+            test_strategy_gaping_sneak, test_strategy_boss_odds,
             test_strategy_own_odds, test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
             test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck, test_strategy_policy_table]
@@ -3131,15 +3192,91 @@ def mutations():
             G.boss_turn = old
     out.append(("strategy: a Prone boss walks back into reach", m_strategy_prone_ignored))
 
-    def m_strategy_prone_stand_free():
+    def m_strategy_prone_never_closes():
         import strategy as G
-        old = G.prone_closes_in
-        G.prone_closes_in = lambda P: P.boss_move * (1 - P.prone_stand) >= G.LEAVE_GAP_M   # the AI's loss left out
+        old = G.boss_turn
+        G.boss_turn = lambda P, *a, **k: old(G.replace(P, prone_closes=0.0), *a, **k)   # 9 - 4.5 - 4.5 = 0 m left
         try:
             return _ci_red(test_strategy_trip_prone)
         finally:
-            G.prone_closes_in = old
-    out.append(("strategy: standing up costs only half the boss's movement", m_strategy_prone_stand_free))
+            G.boss_turn = old
+    out.append(("strategy: a Prone boss never walks back after a leave", m_strategy_prone_never_closes))
+
+    def m_strategy_prone_start_stays():
+        import strategy as G
+        old = G.boss_turn
+
+        def stays(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=False, prone=False):
+            if prone and not reach:
+                return [(1.0, 0.0, 0.0, conc, False, True, False) + (((0.0,) * len(G.BOSS_PARTS),) if parts else ())]
+            return old(P, conc, ends_adjacent, frightened, gaping, reach, parts=parts, prone=prone)
+        G.boss_turn = stays
+        try:
+            return _ci_red(test_strategy_trip_prone)
+        finally:
+            G.boss_turn = old
+    out.append(("strategy: a Prone boss at its start spot does not Dash in", m_strategy_prone_start_stays))
+
+    def m_strategy_far_round1_only():
+        import strategy as G
+        old = G.Search._branches
+        G.Search._branches = lambda self, s, plan, parts=False: old(self, G.replace(s, far=s.far and s.rnd == 1), plan,
+                                                                   parts)
+        try:
+            return _ci_red(test_strategy_far_start)
+        finally:
+            G.Search._branches = old
+    out.append(("strategy: the boss attacks from its start spot after round 1", m_strategy_far_round1_only))
+
+    def m_strategy_far_kept():
+        import strategy as G
+        old = G.Search._branches
+
+        def kept(self, s, plan, parts=False):
+            return [b[:3] + (b[3] and G.replace(b[3], far=s.far),) + b[4:] for b in old(self, s, plan, parts)]
+        G.Search._branches = kept
+        try:
+            return _ci_red(test_strategy_far_start)
+        finally:
+            G.Search._branches = old
+    out.append(("strategy: the start-spot flag kept after the boss came", m_strategy_far_kept))
+
+    def m_strategy_far_not_keyed():
+        import strategy as G
+        old = G.POLICY_FIELDS
+        G.POLICY_FIELDS = tuple(f for f in old if f != "far")
+        try:
+            return _ci_red(test_strategy_far_start)
+        finally:
+            G.POLICY_FIELDS = old
+    out.append(("strategy: the start-spot flag not in the policy key", m_strategy_far_not_keyed))
+
+    def _m_source(G, fn, old_text, new_text, test):
+        # the function recompiled from its source with one text replaced, in the module's namespace
+        import inspect
+        import textwrap
+        src = textwrap.dedent(inspect.getsource(fn))
+        assert src.count(old_text) == 1, old_text
+        keep = G.__dict__[fn.__name__]
+        exec(compile(src.replace(old_text, new_text), G.__file__, "exec"), G.__dict__)
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test)
+        finally:
+            G.__dict__[fn.__name__] = keep
+            G._turn_cached.cache_clear()
+
+    def m_strategy_gaping_sneak_own():
+        import strategy as G
+        return _m_source(G, G.run_turn, "((w.adv_flat + gape) if sneak else 0)", "(w.adv_flat if sneak else 0)",
+                         test_strategy_gaping_sneak)
+    out.append(("strategy: Gaping Wound left off the own Sneak Attack row", m_strategy_gaping_sneak_own))
+
+    def m_strategy_gaping_sneak_riposte():
+        import strategy as G
+        return _m_source(G, G.boss_turn, "((w.adv_flat + (P.gaping if gaping else 0)) if spend else 0)",
+                         "(w.adv_flat if spend else 0)", test_strategy_gaping_sneak)
+    out.append(("strategy: Gaping Wound left off the riposte's Sneak Attack row", m_strategy_gaping_sneak_riposte))
 
     def m_strategy_prone_no_adv():
         import strategy as G
