@@ -260,7 +260,9 @@ function G.refill(u, kind)
   local rs = e and try(function() return e.ActionResources.Resources end)
   for k, list in pairs(rs or {}) do
     local _, def = resName(k)
+    -- the engine prints the enum as ResourceReplenishType(ShortRest); the name inside is compared whole
     local rep = def and tostring(def.ReplenishType) or "?"
+    rep = rep:match("^%w+%((%w+)%)$") or rep
     if kind == "long" or rep == "ShortRest" or rep == "Turn" then
       for _, entry in ipairs(list) do entry.Amount = entry.MaxAmount end
     end
