@@ -3144,6 +3144,20 @@ def rest_reset_tests(L):
         return true
       end
       T_rr_check = { ready(bad), ready(good) }
+      -- action resources on a short rest: the engine's ReplenishType prints as ResourceReplenishType(<name>)
+      local sget = Ext.StaticData.Get
+      local function rep(n) return setmetatable({}, { __tostring = function() return "ResourceReplenishType(" .. n .. ")" end }) end
+      local SD = { dice = { Name = "SuperiorityDie", ReplenishType = rep("ShortRest") },
+        turn = { Name = "Movement", ReplenishType = rep("Turn") },
+        slot = { Name = "SpellSlot", ReplenishType = rep("Rest") } }
+      Ext.StaticData.Get = function(id) return SD[id] end
+      E.SpellBookCooldowns.Cooldowns = {}
+      E.ActionResources.Resources = { dice = { { Amount = 0, MaxAmount = 4 } }, turn = { { Amount = 1, MaxAmount = 9 } },
+        slot = { { Amount = 1, MaxAmount = 3 } } }
+      G.refill("c1", "short")
+      local R = E.ActionResources.Resources
+      T_rr_res = { R.dice[1].Amount, R.turn[1].Amount, R.slot[1].Amount }
+      Ext.StaticData.Get = sget
       Ext.Entity.Get, Osi.ApplyStatus = eget, apply
     """)
     g = L.globals()
@@ -3160,6 +3174,9 @@ def rest_reset_tests(L):
           str(lst(g.T_rr_spells)))
     rc = seq(g.T_rr_check, 2)
     check("setup: Action Surge still on cooldown fails the setup check; ready passes", rc == [False, True], str(rc))
+    rs = seq(g.T_rr_res, 3)
+    check("rest reset: a short rest refills short-rest and turn resources, keeps a long-rest one spent",
+          rs == [4, 9, 1], str(rs))
 
 
 def toggle_tests(L):
@@ -7107,6 +7124,8 @@ MUTATIONS = [
      '  if kind == "long" then pcall(Osi.ApplyStatus, u, G.REST_STATUS, 0, 1, u) end\n', ""),
     ("rest reset: reset entries kept", GL,
      "    if kept == 0 and #cds > 0 then pcall(function() e.SpellBookCooldowns.Cooldowns = {} end) end\n", ""),
+    ("rest reset: the engine's ResourceReplenishType(ShortRest) never refilled", GL,
+     '    rep = rep:match("^%w+%((%w+)%)$") or rep\n', ""),
     ("rest reset: a long-rest cooldown reset on a short rest", GL,
      '      if kind == "long" or t:match("ShortRest") or t:match("Turn") or t:match("Combat") then\n',
      '      if true then\n'),
