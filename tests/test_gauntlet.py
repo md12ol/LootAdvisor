@@ -179,7 +179,8 @@ def lua_tests():
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
               impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
               sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests,
-              cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests, record_gap_tests):
+              cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests, record_gap_tests,
+              save_log_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -3523,6 +3524,112 @@ def record_gap_tests(L):
     check("record: a hit's saving throws from its condition rolls, the attack roll left out",
           hs_ is not None and len(hs_) == 1 and hs_[1].roll == 5 and hs_[1].total == 9 and hs_[1].dc == 18
           and hs_[1].ability == "Constitution", str(hs_ and len(hs_)))
+
+
+def save_log_tests(L):
+    """The enemies' rolls from the Osiris RollResult event (roll type, roller, source, result, criticality), filled
+    from the SavingThrowRolledEvent component of the same roll whichever comes first (its roller in Target, or in
+    Source when an Osiris roll claims it); a failed save takes its source's next status, a made one keeps it apart;
+    the registrations' outcome is recorded."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local t = 0
+      local oldNow = Ext.Utils.MonotonicTime
+      Ext.Utils.MonotonicTime = function() return t end
+      G.t0 = 0
+      G.F = { char = "c1", enemies = { "b1", "e2" } }
+      G.fighting, G.rounds = true, { {} }
+      local R = G.rounds[1]
+      Ext.Types = { Serialize = function() return { probe = true } end }
+      local function comp(tgt, src, ok, nat, total, dc, ab)
+        G._on.save({ Target = { Uuid = { EntityUuid = tgt } }, Source = { Uuid = { EntityUuid = src } }, Success = ok,
+          Total = total, Ability = ab, RollBonus = 3, Advantage = false, Disadvantage = true, SpellCastUuid = "g7",
+          ConditionRoll = { Difficulty = dc, Roll = { Result = { NaturalRoll = nat, Total = total } } } })
+      end
+      -- a failed save reported by both sources (Osiris first), then its status
+      t = 1000; G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", "b1", "c1", 0, 0, "NONE")
+      t = 1000; comp("b1", "c1", false, 6, 10, 15, "Constitution")
+      t = 1020; G._on.status_on("b1", "GAPING_WOUND", "c1")
+      -- a made save: the component first, its roller in Source, claimed by the Osiris roll; a status after it
+      t = 2000; comp("c1", "b1", true, 12, 16, 14, "Constitution")
+      t = 2010; G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", "b1", "c1", 1, 0, "SUCCESS")
+      t = 2100; G._on.status_on("b1", "BLEEDING", "c1")
+      -- the character's own roll left out; another enemy's concentration check from Osiris alone
+      t = 3000; G._on.roll_result("Concentration", "c1", "c1", 1, 0, "NONE")
+      t = 3000; G._on.roll_result("Concentration", "e2", "e2", 1, 0, "NONE")
+      -- the same roller's rolls too far apart stay two rows; a component no Osiris roll claims waits apart
+      t = 4000; G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", "b1", "c1", 1, 0, "NONE")
+      t = 4000 + G.SAVE_MERGE_MS + 1; comp("b1", "c1", true, 18, 22, 15, "Dexterity")
+      t = 5000; comp("c1", "b1", false, 2, 6, 15, "Wisdom")
+      t = 6000; G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", "b1", "c1", 1, 0, "NONE")
+      -- the two sources disagree on the outcome: the Osiris one kept, the row flagged
+      t = 7000; G._on.roll_result("GAMEPLAY_SpellSavingThrowSave", "e2", "c1", 0, 0, "NONE")
+      t = 7000; comp("e2", "c1", true, 15, 19, 14, "Wisdom")
+      T_sl_saves, T_sl_unclaimed, T_sl_probe = R.saves, R.saves_unclaimed, G.results.save_probe
+      -- an Osiris handler failure is kept in the record
+      local orr = G.onRollResult
+      G.onRollResult = function() error("boom") end
+      G._on.roll_result("Concentration", "b1", "b1", 1, 0, "NONE")
+      G.onRollResult = orr
+      T_sl_error = G.results.save_error
+      T_sl_listeners = G.saveListeners()
+      Ext.Types = nil
+      Ext.Utils.MonotonicTime = oldNow
+      G.fighting, G.F, G.rounds = false, nil, {}
+    """)
+    g = L.globals()
+    sv = lst(g.T_sl_saves) or []
+    rows = [(x.who, x.source, x.roll_type, x.success, x.roll, x.total, x.dc, x.ability, x.osiris, x.component)
+            for x in sv]
+    check("saves: Osiris rolls of the enemies, filled from the component of the same roll whichever came first",
+          rows == [("b1", "c1", "GAMEPLAY_SpellSavingThrowSave", False, 6, 10, 15, "Constitution", True, True),
+                   ("b1", "c1", "GAMEPLAY_SpellSavingThrowSave", True, 12, 16, 14, "Constitution", True, True),
+                   ("e2", "e2", "Concentration", True, None, None, None, None, True, None),
+                   ("b1", "c1", "GAMEPLAY_SpellSavingThrowSave", True, None, None, None, None, True, None),
+                   ("b1", "c1", None, True, 18, 22, 15, "Dexterity", None, True),
+                   ("b1", "c1", "GAMEPLAY_SpellSavingThrowSave", True, None, None, None, None, True, None),
+                   ("e2", "c1", "GAMEPLAY_SpellSavingThrowSave", False, 15, 19, 14, "Wisdom", True, True)], str(rows))
+    check("saves: an outcome the two sources disagree on is flagged",
+          len(sv) == 7 and sv[6].success_differs is True and sv[0].success_differs is None)
+    check("saves: the Osiris result, criticality and the component's bonus and Disadvantage kept",
+          len(sv) == 7 and sv[0].result == 0 and sv[1].crit == "SUCCESS" and sv[0].bonus == 3
+          and sv[0].disadvantage is True and sv[1].swapped is True and sv[0].swapped is None,
+          str([(x.result, x.crit, x.bonus) for x in sv]))
+    check("saves: a failed save takes its source's next status, a made one keeps it as status_made",
+          len(sv) == 7 and sv[0].status == "GAPING_WOUND" and sv[0].status_made is None
+          and sv[1].status is None and sv[1].status_made == "BLEEDING", str([(x.status, x.status_made) for x in sv]))
+    un = lst(g.T_sl_unclaimed) or []
+    check("saves: a component whose enemy is only its Source waits unclaimed without an Osiris roll",
+          len(un) == 1 and un[0].roll == 2 and un[0].who == "b1", str(len(un)))
+    check("saves: the first component kept as a probe", g.T_sl_probe is not None and g.T_sl_probe.probe is True)
+    check("saves: an Osiris handler failure is recorded", "boom" in str(g.T_sl_error), str(g.T_sl_error))
+    ls = g.T_sl_listeners
+    check("saves: each registration's outcome recorded (stubbed engine: RollResult yes, no component listener)",
+          ls is not None and ls.roll_result is True and ls.saving_throw_event is False,
+          str(ls and (ls.roll_result, ls.saving_throw_event)))
+    # a reload registers RollResult with its six arguments, once per game session
+    with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
+        src = fh.read()
+    L.execute(r"""
+      T_sl_regs = {}
+      T_sl_oldreg, T_sl_oldoc = Ext.Osiris.RegisterListener, Ext.Entity.OnCreate
+      Ext.Osiris.RegisterListener = function(name, n, when) T_sl_regs[#T_sl_regs + 1] = name .. "/" .. n .. "/" .. when end
+      Ext.Entity.OnCreate = function(name) T_sl_regs[#T_sl_regs + 1] = name end
+      GAUNTLET._listeners11, GAUNTLET._listeners12 = nil, nil
+    """)
+    L.eval("function(s) return load(s)() end")(src)
+    L.execute(r"""
+      T_sl_after = GAUNTLET.saveListeners()
+      Ext.Osiris.RegisterListener, Ext.Entity.OnCreate = T_sl_oldreg, T_sl_oldoc
+    """)
+    regs = lst(g.T_sl_regs) or []
+    check("saves: RollResult registered with its six arguments, the component listener beside it",
+          regs == ["SavingThrowRolledEvent", "RollResult/6/after"], str(regs))
+    la = g.T_sl_after
+    check("saves: both registrations recorded as made", la.roll_result is True and la.saving_throw_event is True)
+    check("saves: a fight's record starts with the registrations' outcome",
+          "G.results = { prep = prepRes, save_listeners = G.saveListeners() }" in src)
 
 
 def real_roll_tests(L):
@@ -6959,12 +7066,35 @@ MUTATIONS = [
      '    if a.move_to == "@leave_spot" then\n      local _, gap',
      '    if a.move_to == "@leave_spot" and m.result == "ended short" then\n      local _, gap'),
     ("record: the character's own saves recorded as the boss's", GL,
-     '  if G.member(F, tgt) ~= "enemy" then return end', "  if not G.member(F, tgt) then return end"),
-    ("record: a made save takes a status", GL, "    if v.success == false and not v.status and", "    if not v.status and"),
+     '    local v = G.addSave(R, row, "component", true)', '    local v = G.addSave(R, row, "component")'),
+    ("record: a made save takes a status", GL,
+     "      if v.success == false then v.status = x.status else v.status_made = x.status end",
+     "      v.status = x.status"),
     ("record: a rider taken as a save's status", GL, "G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true }",
      "G.SAVE_NOT = {}"),
     ("record: a status just before its save never linked", GL,
-     "  if row.success == false then\n    for i = #(R.status_log", "  if false then\n    for i = #(R.status_log"),
+     "  if not v or v.success == nil or v.status or v.status_made then return end", "  if true then return end"),
+    ("saves: RollResult registered with the wrong number of arguments", GL, '"RollResult", 6,', '"RollResult", 4,'),
+    ("saves: the character's Osiris rolls recorded", GL,
+     '  if not G.fighting or G.member(G.F, roller) ~= "enemy" then return end', "  if not G.fighting then return end"),
+    ("saves: result 1 read as a failed roll", GL,
+     "  if n == 1 then success = true elseif n == 0 then success = false end",
+     "  if n == 0 then success = true elseif n == 1 then success = false end"),
+    ("saves: the two sources never merged", GL,
+     "    if sameRoll(v, row, kind) then return G.mergeSave(v, row, kind) end\n", ""),
+    ("saves: a component waiting for its Osiris roll never claimed", GL,
+     '      G.mergeSave(v, table.remove(un, i), "component")\n', ""),
+    ("saves: rolls far apart merged", GL,
+     "math.abs((row.t or 0) - (v.t or 0)) <= G.SAVE_MERGE_MS", "true"),
+    ("saves: a disagreement on the outcome not flagged", GL, "then v.success_differs = true end", "then end"),
+    ("saves: a made save's status not kept", GL, " else v.status_made = x.status end", " end"),
+    ("saves: an Osiris handler failure not recorded", GL,
+     "G.results.save_error = tostring(err) end\nend\nif not G._listeners12",
+     "end\nend\nif not G._listeners12"),
+    ("saves: the component listener's outcome not read", GL,
+     "    saving_throw_event = (G._listeners11 or {}).save == true }", "    saving_throw_event = true }"),
+    ("saves: a fight's record without the registrations' outcome", GL,
+     "      G.results = { prep = prepRes, save_listeners = G.saveListeners() }", "      G.results = { prep = prepRes }"),
     ("record: a status long after the save linked", GL, "    if dt > G.SAVE_STATUS_MS then break end\n", ""),
     ("record: another source's status linked to the save", GL,
      "    local same = v.source == nil or x.cause == nil or v.source == x.cause\n", "    local same = true\n"),

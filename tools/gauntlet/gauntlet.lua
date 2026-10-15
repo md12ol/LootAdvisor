@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 11
+G.VERSION = 12
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1889,44 +1889,107 @@ function G.saveFields(c)
   return { roll = first(c, { "Roll.Result.NaturalRoll" }), total = first(c, { "Roll.Result.Total" }),
     dc = first(c, { "Difficulty" }), ability = flagText(first(c, { "Ability" })) }
 end
--- The enemies' saving throws (the one-frame SavingThrowRolledEvent), per round in R.saves: the d20, the total, the DC,
--- the ability, made or not, Advantage / Disadvantage, the roll bonus, who caused it and the cast; the first event's
--- whole component in results.save_probe so the names can be checked against the game. The event names no status: a
--- failed save takes the first status the same source puts on the same target within SAVE_STATUS_MS after it, or
--- SAVE_BACK_MS before it (the two events' order is the engine's); a made save has none.
-G.SAVE_STATUS_MS, G.SAVE_BACK_MS = 500, 50
+-- The enemies' rolls, per round in R.saves. Two sources fill one row between them when both report the same roll
+-- (same roller, a source neither contradicts, within SAVE_MERGE_MS; either may come first): the Osiris RollResult
+-- event (roll type, roller, source, result, active roll, criticality), which carries no die, and the one-frame
+-- SavingThrowRolledEvent component (the d20, the total, the DC, the ability, Advantage / Disadvantage, the roll bonus,
+-- the cast). The first component of a fight is kept whole in results.save_probe whoever it names, so a filter that
+-- drops every one still shows what arrived. The events name no status: a failed save takes the first status the same
+-- source puts on the roller within SAVE_STATUS_MS after it, or SAVE_BACK_MS before it (the engine's order); a made save
+-- followed the same way keeps it as status_made, where a result read the wrong way round shows.
+G.SAVE_STATUS_MS, G.SAVE_BACK_MS, G.SAVE_MERGE_MS = 500, 50, 200
 G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true }
-function G.onSave(comp)
-  if not G.fighting then return end
-  local F = G.F
-  local tgt = first(comp, { "Target.Uuid.EntityUuid" })
-  if G.member(F, tgt) ~= "enemy" then return end
+-- row's fields go into v where v has none; a success the two sources disagree on is flagged, the first one kept
+function G.mergeSave(v, row, kind)
+  if v.success ~= nil and row.success ~= nil and v.success ~= row.success then v.success_differs = true end
+  for k, x in pairs(row) do if v[k] == nil then v[k] = x end end
+  v[kind] = true
+  return v
+end
+local function sameRoll(v, row, kind)
+  return not v[kind] and v.who == row.who and math.abs((row.t or 0) - (v.t or 0)) <= G.SAVE_MERGE_MS
+    and (v.source == nil or row.source == nil or v.source == row.source)
+end
+-- Fills the row the other source started for the same roll, else starts one (unless onlyMerge). -> the row, or nil
+function G.addSave(R, row, kind, onlyMerge)
+  R.saves = R.saves or {}
+  for i = #R.saves, 1, -1 do
+    local v = R.saves[i]
+    if row.t - (v.t or 0) > G.SAVE_MERGE_MS then break end
+    if sameRoll(v, row, kind) then return G.mergeSave(v, row, kind) end
+  end
+  if onlyMerge then return nil end
+  row[kind] = true
+  R.saves[#R.saves + 1] = row
+  return row
+end
+-- A status that came just before the save (within SAVE_BACK_MS) is linked once the save's outcome is known.
+function G.saveBackLink(R, v)
+  if not v or v.success == nil or v.status or v.status_made then return end
+  for i = #(R.status_log or {}), 1, -1 do
+    local x = R.status_log[i]
+    if v.t - (x.t or 0) > G.SAVE_BACK_MS then break end
+    if G.saveStatus(R, x) then break end
+  end
+end
+-- Osiris RollResult(roll type, roller, roll subject, result, active roll, criticality). Result 1 is read as made: the
+-- character's concentration checks, held all fight, all came with 1.
+function G.onRollResult(rollType, roller, subject, result, active, crit)
+  if not G.fighting or G.member(G.F, roller) ~= "enemy" then return end
   local R = G.rounds[#G.rounds]
   if not R then return end
-  local src = first(comp, { "Source.Uuid.EntityUuid" })
+  local n, success = tonumber(result), nil
+  if n == 1 then success = true elseif n == 0 then success = false end
+  local row = G.jsonSafe({ who = uuid(roller), source = subject and uuid(subject), t = now() - G.t0,
+    roll_type = rollType, result = result, success = success, active = active,
+    crit = crit ~= nil and tostring(crit) or nil })
+  local v = G.addSave(R, row, "osiris")
+  local un = R.saves_unclaimed or {}
+  for i = #un, 1, -1 do
+    if sameRoll(v, un[i], "component") then
+      G.mergeSave(v, table.remove(un, i), "component")
+      break
+    end
+  end
+  G.saveBackLink(R, v)
+end
+-- The roller is the component's Target when that is an enemy. When only its Source is (which of the two holds the
+-- roller is unchecked), the row joins an Osiris roll of that enemy, or waits in R.saves_unclaimed for one: taken on
+-- its own it would record the character's saves against the boss as the boss's.
+function G.onSave(comp)
+  if not G.fighting then return end
+  if G.results and not G.results.save_probe then
+    G.results.save_probe = G.jsonSafe(try(function() return Ext.Types.Serialize(comp) end) or "?")
+  end
+  local F = G.F
+  local R = G.rounds[#G.rounds]
+  if not R then return end
+  local tgt, src = first(comp, { "Target.Uuid.EntityUuid" }), first(comp, { "Source.Uuid.EntityUuid" })
   local row = G.saveFields(first(comp, { "ConditionRoll" }) or {})
-  row.who, row.source, row.t = uuid(tgt), src and uuid(src), now() - G.t0
+  row.t = now() - G.t0
   row.total = first(comp, { "Total" }) or row.total
   row.ability = flagText(first(comp, { "Ability" })) or row.ability
   row.success, row.bonus = first(comp, { "Success" }), first(comp, { "RollBonus" })
   row.advantage, row.disadvantage = first(comp, { "Advantage" }), first(comp, { "Disadvantage" })
   row.cast_guid = first(comp, { "SpellCastUuid" })
-  row = G.jsonSafe(row)
-  R.saves = R.saves or {}
-  R.saves[#R.saves + 1] = row
-  if row.success == false then
-    for i = #(R.status_log or {}), 1, -1 do
-      local x = R.status_log[i]
-      if row.t - (x.t or 0) > G.SAVE_BACK_MS then break end
-      if G.saveStatus(R, x) then break end
+  row.save_type = flagText(first(comp, { "RollType" }))
+  if G.member(F, tgt) == "enemy" then
+    row.who, row.source = uuid(tgt), src and uuid(src)
+    G.saveBackLink(R, G.addSave(R, G.jsonSafe(row), "component"))
+  elseif G.member(F, src) == "enemy" then
+    row.who, row.source, row.swapped = uuid(src), tgt and uuid(tgt), true
+    row = G.jsonSafe(row)
+    local v = G.addSave(R, row, "component", true)
+    if v then
+      G.saveBackLink(R, v)
+    else
+      R.saves_unclaimed = R.saves_unclaimed or {}
+      R.saves_unclaimed[#R.saves_unclaimed + 1] = row
     end
   end
-  if G.results and not G.results.save_probe then
-    G.results.save_probe = G.jsonSafe(try(function() return Ext.Types.Serialize(comp) end) or "?")
-  end
 end
--- A status put on an enemy (a status_log row) is the one a failed save of the same source on it let through, when it
--- came within the window and that save has no status yet. -> linked
+-- A status put on an enemy (a status_log row) is the one a save of the same source on it let through, when it came
+-- within the window and that save has no status yet. -> linked
 function G.saveStatus(R, x)
   if not x.on or x.save or G.SAVE_NOT[x.status] then return false end
   for i = #(R.saves or {}), 1, -1 do
@@ -1934,8 +1997,10 @@ function G.saveStatus(R, x)
     local dt = (x.t or 0) - (v.t or 0)
     if dt > G.SAVE_STATUS_MS then break end
     local same = v.source == nil or x.cause == nil or v.source == x.cause
-    if v.success == false and not v.status and v.who == x.who and same and dt >= -G.SAVE_BACK_MS then
-      v.status, x.save = x.status, true
+    if v.success ~= nil and not v.status and not v.status_made and v.who == x.who and same
+        and dt >= -G.SAVE_BACK_MS then
+      if v.success == false then v.status = x.status else v.status_made = x.status end
+      x.save = true
       return true
     end
   end
@@ -2148,6 +2213,20 @@ if not G._listeners11 then
   G._listeners11 = {
     save = pcall(Ext.Entity.OnCreate, "SavingThrowRolledEvent", function(_e, _ty, comp) pcall(G._on.save, comp) end),
   }
+end
+-- added in version 12: the rolls' results (the saving throws' outcome)
+G._on.roll_result = function(rollType, roller, subject, ...)
+  local ok, err = xpcall(G.dispatch, debug.traceback, G.onRollResult, { n = 2, roller, subject }, rollType, roller,
+    subject, ...)
+  if not ok and G.results and not G.results.save_error then G.results.save_error = tostring(err) end
+end
+if not G._listeners12 then
+  G._listeners12 = { roll_result = pcall(Ext.Osiris.RegisterListener, "RollResult", 6, "after",
+    function(...) pcall(G._on.roll_result, ...) end) }
+end
+function G.saveListeners()
+  return { roll_result = (G._listeners12 or {}).roll_result == true,
+    saving_throw_event = (G._listeners11 or {}).save == true }
 end
 -- added in version 10: the engine's end of a CharacterMoveToPosition (its event name), arrived or cancelled
 if not G._listeners10 then
@@ -4565,7 +4644,7 @@ function G.start(F)
     if G.status == "prepped" then
       local prepRes = G.results
       G.reset()
-      G.results = { prep = prepRes }
+      G.results = { prep = prepRes, save_listeners = G.saveListeners() }
       G.status = "fighting"
       local cpos, pts = G.arena(scn, F.plan.mode or "melee", F.plan.selfaoe, G.origin, A, F.plan.boss_distance)
       pcall(Osi.TeleportToPosition, u, cpos[1], cpos[2], cpos[3], "", 0, 0, 0, 0, 1)
