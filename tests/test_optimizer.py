@@ -888,7 +888,7 @@ def test_strategy_halves():
 
 
 def test_strategy_trip_prone():
-    """Trip Attack's Prone (boss STR save +4 vs DC 16 fails 55%): out of its reach after a leave the boss walks back and
+    """Trip Attack's Prone (boss STR save +6 vs DC 16 fails 45%): out of its reach after a leave the boss walks back and
     attacks in half its turns (the records: once each way) and stays away in the other half, the next turn then
     starting out of reach with the charge kept and no True Strike; in reach it stands and attacks as before; at its
     start spot it Dashes in, Prone or not, and attacks no one. In the turn, rolls within 3 m of a Prone boss gain
@@ -912,7 +912,7 @@ def test_strategy_trip_prone():
     start = G.boss_turn(P, "mark", False, False, False, reach=False, prone=True)
     if start != [(1.0, 0.0, 0.0, "mark", True, True, False)]:
         fails.append(f"prone at the start spot {start}")
-    # one landed Trip in four (natural 1 misses with Advantage: 1/400), 55% fail, half of those stay away
+    # one landed Trip in four (natural 1 misses with Advantage: 1/400), 45% fail, half of those stay away
     w = G.Weapon("x", 40, (6,), 0, ranged=True)
     P2 = G.replace(P, ranged_main=w, ranged_off=w, sharpshooter=None, sneak_dice=(), mark_die=0, riposte=None)
     S = G.Search(P2, "evade_nohold")
@@ -920,7 +920,7 @@ def test_strategy_trip_prone():
                 boss_after=True)
     br = S._branches(s, G.Plan("leave", maneuver="TripAttack", n_maneuver=1))
     p_away = sum(b[0] for b in br if b[3] is not None and not b[3].adjacent)
-    want = (1 - 1 / 400) * 0.55 * 0.5
+    want = (1 - 1 / 400) * 0.45 * 0.5
     if abs(p_away - want) > 1e-12 or any(b[3].ts or not b[3].sneak or b[3].far for b in br if not b[3].adjacent):
         fails.append(f"next turn out of reach {p_away} want {want}")
     # straight rolls, +9 vs AC 19 (55%), no critical hits: the Trip (d6 + d8) then one plain d6 roll
@@ -930,10 +930,41 @@ def test_strategy_trip_prone():
     start = G.TurnStart(True, "", False)
     near, _ = G.turn_numbers(P3, G.Plan("melee", maneuver="TripAttack", n_maneuver=1), start)
     far, _ = G.turn_numbers(P3, G.Plan("leave", maneuver="TripAttack", n_maneuver=1), start)
-    trip, pp = 0.55 * 8.0, 0.55 * 0.55
+    trip, pp = 0.55 * 8.0, 0.55 * 0.45
     if abs(near - (trip + 3.5 * (pp * (1 - 0.45 ** 2) + (1 - pp) * 0.55))) > 1e-9 or \
             abs(far - (trip + 3.5 * 0.55)) > 1e-9:
         fails.append(f"in-turn Advantage: melee {near}, shot {far}")
+    assert not fails, fails
+
+
+def test_strategy_boss_saves():
+    """The boss saves with its bonus for the save's ability (in game: Wisdom +4, Strength and Constitution +6): Menacing
+    Attack on Wisdom (+4 vs DC 16 fails 11/20), Trip Attack on Strength (+6 vs DC 16, 9/20), Piercing Strike's Gaping
+    Wound on Constitution (+6 vs DC 18, 11/20), Ensnaring Strike on Strength (+6 vs DC 14, 7/20, and the same to break
+    free in the boss's turn). A spec's enemy gives the bonus per ability; one with a single bonus uses it for each."""
+    import strategy as G
+    fails = []
+    w = G.Weapon("x", 40, (6,), 0)
+    P = G.replace(_thx_profile(), melee_main=w, melee_off=w, sneak_dice=(), mark_die=0, riposte=None,
+                  bonus_actions=0, conc_save=30)
+    land = 1 - 1 / 400                                      # only a natural 1 on both dice misses
+    start = G.TurnStart(True, "", False)
+    # run_turn's key: (sneak used, dice, frightened, Gaping Wound, ensnare 1 = restrained, prone)
+    for plan, slot, want in ((G.Plan("melee", maneuver="MenacingAttack", n_maneuver=1), 2, 11 / 20),
+                             (G.Plan("melee", maneuver="TripAttack", n_maneuver=1), 5, 9 / 20),
+                             (G.Plan("melee", pierce=True), 3, 11 / 20),
+                             (G.Plan("melee", ensnare=True), 4, 7 / 20)):
+        got = sum(v[0] for k, v in G.run_turn(P, plan, start).items() if k[slot] == 1)
+        if abs(got - land * want) > 1e-12:
+            fails.append(f"{plan}: {got} want {land * want}")
+    held = sum(r[0] for r in G.boss_turn(P, "ensnare", True, False, False) if r[3] == "ensnare")
+    if abs(held - 7 / 20) > 1e-12:
+        fails.append(f"Ensnaring Strike held {held} want {7 / 20}")
+    Q = G.profile_from_spec(_own_spec(save=4, saves={"STR": 6, "CON": 6, "WIS": 4, "DEX": 4}), {})
+    R = G.profile_from_spec(_own_spec(save=3), {})
+    got = [G.boss_save(Q, a) for a in ("STR", "CON", "WIS", "DEX")] + [G.boss_save(R, a) for a in ("STR", "CON", "WIS")]
+    if got != [6, 6, 4, 4, 3, 3, 3]:
+        fails.append(f"spec bonuses {got}")
     assert not fails, fails
 
 
@@ -1064,7 +1095,8 @@ def test_strategy_gaping_ends():
     G.ROUNDS = 2
     fails = []
     try:
-        P = G.replace(_thx_profile(), boss_save=-30, sup_dice=0, surge=False, dread_die=0, boss_first=0.0)
+        P = G.replace(_thx_profile(), boss_save=-30, boss_saves=(), sup_dice=0, surge=False, dread_die=0,
+                      boss_first=0.0)
         S = G.Search(P, "melee")
         s = G.replace(S.start_state(), adjacent=True, far=False)
         plan = G.Plan("melee", pierce=True)
@@ -1447,7 +1479,7 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_buff_spells, test_riposte, test_item_riposte, test_boss_turns_taken, test_wrath_storm,
             test_strategy_attack_odds, test_strategy_turn_moments,
             test_strategy_sneak_once, test_strategy_ranking, test_strategy_harness_rounds, test_strategy_sneak_charge,
-            test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_far_start,
+            test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_boss_saves, test_strategy_far_start,
             test_strategy_gaping_sneak, test_strategy_boss_odds,
             test_strategy_own_odds, test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
             test_reaction_sneak, test_attack_parts_split,
@@ -3211,6 +3243,30 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: a manoeuvre counted with an off-hand half", m_strategy_halves_any))
+
+    def m_strategy_one_save():
+        import strategy as G
+        old = G.boss_save
+        G.boss_save = lambda P, ability: P.boss_save                      # one bonus for every ability
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_boss_saves)
+        finally:
+            G.boss_save = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: the boss saves with one bonus for every ability", m_strategy_one_save))
+
+    def m_strategy_trip_wis():
+        import strategy as G
+        old = G.boss_save
+        G.boss_save = lambda P, ability: old(P, "WIS" if ability == "STR" else ability)   # Trip / Ensnare on WIS
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_boss_saves)
+        finally:
+            G.boss_save = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: Trip Attack and Ensnaring Strike roll the boss's Wisdom save", m_strategy_trip_wis))
 
     def m_strategy_prone_ignored():
         import strategy as G

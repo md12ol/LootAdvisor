@@ -76,6 +76,11 @@ def attack_odds(bonus, ac, mode, crit_from=20, bonus_die=0, naturals=None):
     return miss, hit, crit
 
 
+def boss_save(P, ability):
+    """The boss's save bonus for one ability ("STR", "CON", "WIS", ...)."""
+    return dict(P.boss_saves).get(ability, P.boss_save)
+
+
 def save_fails(bonus, dc):
     """P(d20 + bonus < dc): a saving throw with no natural-roll rule."""
     return min(1.0, max(0.0, sum(1 for r in range(1, 21) if r + bonus < dc) / 20))
@@ -138,7 +143,9 @@ class Profile:
                                     # action of the character's next turn rolls without Sharpshooter's -5 (seen in
                                     # game: +16 / +14 in place of +11 / +9 on both rolls of that action, the +10 kept)
     boss_ac: int = 19
-    boss_save: int = 4
+    boss_save: int = 4              # the boss's save bonus for an ability boss_saves leaves out
+    boss_saves: tuple = (("CON", 6), ("STR", 6))  # ((ability, bonus), ...): the gauntlet's boss template is
+                                    # proficient in Strength and Constitution saves (+2 on the forced +4)
     boss_atk: int = 9
     char_ac: int = 22
     conc_save: int = 8              # Constitution save bonus (concentration)
@@ -242,7 +249,8 @@ def profile_from_spec(spec, stats):
         pierce_melee="Target_PiercingThrust" in ((stats.get(items.get("MeleeMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
         pierce_ranged="Projectile_PiercingShot" in ((stats.get(items.get("RangedMainHand")) or {}).get("BoostsOnEquipMainHand") or ""),
         ensnare=cl.get("Ranger", 0) >= 1, riposte=riposte, riposte_ts=riposte_ts,
-        boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)), boss_atk=boss_atk,
+        boss_ac=int(E.get("ac", 19)), boss_save=int(E.get("save", 4)),
+        boss_saves=tuple(sorted((k, int(v)) for k, v in (E.get("saves") or {}).items())), boss_atk=boss_atk,
         char_ac=char_ac, boss_odds=odds, own_odds=own, conc_save=(con - 10) // 2 + save_bonus, boss_first=first,
         taken_hit=gear.get("taken_hit"), taken_crit=gear.get("taken_crit") or 0.0,
         taken_heal=gear.get("taken_heal") or 0.0,
@@ -369,10 +377,10 @@ def run_turn(P, plan, start, parts=False):
     """-> {(sneak_used, dice_hit, frightened, gaping_new, ensnare, prone): (p, E[D;branch], E[D^2;branch])}; ensnare 0
     none or missed, 1 hit and restrained, 2 hit and saved; prone: a Trip Attack knocked the boss Prone. parts: each
     value also carries E[X;branch] of OWN_PARTS."""
-    # Menacing's WIS save and Trip's STR save: the gauntlet's boss has one bonus for every save
-    q_man = save_fails(P.boss_save, P.maneuver_dc)
-    q_gape = save_fails(P.boss_save, P.maneuver_dc + 2)
-    q_snare = save_fails(P.boss_save, P.spell_dc)
+    q_man = save_fails(boss_save(P, "WIS"), P.maneuver_dc)
+    q_trip = save_fails(boss_save(P, "STR"), P.maneuver_dc)
+    q_gape = save_fails(boss_save(P, "CON"), P.maneuver_dc + 2)
+    q_snare = save_fails(boss_save(P, "STR"), P.spell_dc)
     zero = (0.0,) * len(OWN_PARTS)
     states = {(not start.sneak, 0, False, False, 0, False): (1.0, 0.0, 0.0, zero)}
     marked0 = plan.mark or start.conc == "mark"
@@ -424,7 +432,7 @@ def run_turn(P, plan, start, parts=False):
                     outs = [((sa2, k2, True, gnew, ens, prone), q_man),
                             ((sa2, k2, fr, gnew, ens, prone), 1 - q_man)]
                 elif a.maneuver == "TripAttack" and not prone:
-                    outs = [((sa2, k2, fr, gnew, ens, True), q_man), ((sa2, k2, fr, gnew, ens, False), 1 - q_man)]
+                    outs = [((sa2, k2, fr, gnew, ens, True), q_trip), ((sa2, k2, fr, gnew, ens, False), 1 - q_trip)]
                 elif a.pierce:
                     outs = [((sa2, k2, fr, True, ens, prone), q_gape), ((sa2, k2, fr, gnew, ens, prone), 1 - q_gape)]
                 elif a.ensnare:
@@ -470,7 +478,7 @@ def boss_turn(P, conc, ends_adjacent, frightened, gaping, reach=True, parts=Fals
     # (p, restrained, the tick's E[T], E[T^2], stays where it stood up)
     branches = [(1.0, conc == "ensnare", 0.0, 0.0, False)]
     if conc == "ensnare":
-        esc = 1 - save_fails(P.boss_save, P.spell_dc)
+        esc = 1 - save_fails(boss_save(P, "STR"), P.spell_dc)
         tm, tv = dice_moments((P.ensnare_die,))
         branches = [(esc, False, 0.0, 0.0, False), (1 - esc, True, tm, tv + tm * tm, False)]
     if prone and reach and not ends_adjacent:
