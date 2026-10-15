@@ -4360,6 +4360,7 @@ def pointer_tests():
     old = (E.pointer_off_ui, E.ev, E.write_test)
     try:
         E.pointer_off_ui = lambda *a, **k: order.append("pointer")
+        E.release_stuck_buttons = lambda *a, **k: []
         E.write_test = lambda *a, **k: None
 
         def ev(code, timeout=10.0, side="server"):
@@ -4373,6 +4374,24 @@ def pointer_tests():
         check("pointer: moved off the hotbar before the Start", order[:2] == ["pointer", "start"], str(order))
         check("pointer: a share of the screen away from its edges",
               all(0.1 <= v <= 0.9 for v in E.POINTER_AT), str(E.POINTER_AT))
+        # a fresh copy of the module: other tests stub the button release on the shared one
+        import importlib.util
+        spec_ = importlib.util.spec_from_file_location("engine_fresh", E.__file__)
+        Ef = importlib.util.module_from_spec(spec_)
+        spec_.loader.exec_module(Ef)
+        state = {0x02: True}
+        ups = []
+
+        def send_up(flag):
+            ups.append(flag)
+            state.clear()
+        still = Ef.release_stuck_buttons(lambda vk: state.get(vk, False), send_up)
+        stuck = Ef.release_stuck_buttons(lambda vk: vk == 0x01, lambda flag: None)
+        check("pointer: a held mouse button is released before the Start; one that stays down is reported",
+              Ef.mouse_buttons_down(lambda vk: vk == 0x02) == ["right"] and still == [] and ups == [0x0010]
+              and stuck == ["left"] and Ef.release_stuck_buttons(lambda vk: False, None) == [], f"{still} {ups} {stuck}")
+        check("pointer: the default spot is on the minimap (nothing in the world under it)",
+              E.POINTER_AT == (0.897, 0.25), str(E.POINTER_AT))
         check("pointer: LA_POINTER_AT sets the spot; a bad or out-of-range value keeps the default",
               E.pointer_at({"LA_POINTER_AT": "0.5,0.4"}) == (0.5, 0.4) and E.pointer_at({}) == E.POINTER_AT
               and E.pointer_at({"LA_POINTER_AT": "x"}) == E.POINTER_AT
@@ -4713,6 +4732,7 @@ def engine_lane_tests():
     it ends; a lane run returns each lane's record; a lane that never writes one is an invalid run."""
     import engine as E
     E.pointer_off_ui = lambda *a, **k: None
+    E.release_stuck_buttons = lambda *a, **k: []
     d = tempfile.mkdtemp(prefix="gauntlet_lanes_")
     old = (E.ev, E.RUNS, E.write_se, E.LOCK)
     try:
@@ -4916,6 +4936,7 @@ def engine_tests():
     finishes, is an invalid run with its cause, never a hang."""
     import engine as E
     E.pointer_off_ui = lambda *a, **k: None
+    E.release_stuck_buttons = lambda *a, **k: []
     d = tempfile.mkdtemp(prefix="gauntlet_runs_")
     old = (E.ev, E.RUNS, E.write_se, E.LOCK)
     try:
@@ -6114,6 +6135,7 @@ def engine_popup_tests():
     to the test file, the eval sets Automatic and calls GAUNTLET_TEST.start; a refused Start is an invalid run."""
     import engine as E
     E.pointer_off_ui = lambda *a, **k: None
+    E.release_stuck_buttons = lambda *a, **k: []
     old = (E.ev, E.write_se, E.LOCK, E.RUNS)
     d = tempfile.mkdtemp(prefix="gauntlet_eng_")
     try:
@@ -7037,8 +7059,10 @@ MUTATIONS = [
      "                if True:"),
     ("report: the rounds against the strategy left out", RN, "                rl = round_lines(r)\n",
      "                rl = []\n"),
-    ("pointer: left on the hotbar at the Start", EN, "    def send_start():\n        pointer_off_ui()\n",
-     "    def send_start():\n"),
+    ("pointer: a held mouse button not released", EN, "            send_up(MOUSE_BUTTONS[name][2])", "            pass"),
+    ("pointer: left on the hotbar at the Start", EN,
+     '            raise RunInvalid("mouse button held down before the Start: " + ", ".join(stuck))\n        pointer_off_ui()\n',
+     '            raise RunInvalid("mouse button held down before the Start: " + ", ".join(stuck))\n'),
     ("strategy spec: decisions without riders", PL,
      '        d["riders"] = [{k: v for k, v in r.items() if k != "round"} for r in plan_riders([d["steps"]])]',
      "        pass"),
