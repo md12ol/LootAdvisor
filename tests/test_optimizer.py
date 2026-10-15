@@ -840,7 +840,8 @@ def test_strategy_sneak_charge():
 def test_strategy_true_strike():
     """True Strike from a riposte hit: both rolls of the next turn's first attack action (the first main-hand shot and
     the off-hand half) roll without Sharpshooter's -5, its +10 kept; the turn's mean rises by the non-critical hit
-    chance gained times the shot's non-critical damage (hand formula, no Sneak Attack, no mark)."""
+    chance gained times the shot's non-critical damage (hand formula, no Sneak Attack, no mark). A Piercing Shot or a
+    manoeuvre first fires no half, so the half on the later plain shot rolls as it would without True Strike."""
     import strategy as G
     P = G.replace(_thx_profile(), sneak_dice=(), mark_die=0)
     start = G.TurnStart(True, "", False)
@@ -852,6 +853,14 @@ def test_strategy_true_strike():
         fails.append(f"flags {flags}")
     base, _ = G.turn_numbers(P, G.Plan("leave"), start)
     up, _ = G.turn_numbers(P, G.Plan("leave"), ts)
+    for plan in (G.Plan("leave", pierce=True), G.Plan("leave", maneuver="Menacing", n_maneuver=1)):
+        got = [a for a in G.build_attacks(P, plan, ts) if a.label == "off-hand"]
+        want_half = [a for a in G.build_attacks(P, plan, start) if a.label == "off-hand"]
+        if len(got) != 1 or got != want_half:
+            fails.append(f"half after {plan.pierce and 'Piercing Shot' or plan.maneuver} first: {got} want {want_half}")
+        first = G.build_attacks(P, plan, ts)[0]
+        if not first.true_strike:
+            fails.append(f"first attack {first.label} without True Strike")
 
     def hit(bonus):                      # non-critical hit with Advantage against AC 19, 19-20 crit
         need = 19 - bonus
@@ -3162,6 +3171,27 @@ def mutations():
             G.build_attacks = old
             G._turn_cached.cache_clear()
     out.append(("strategy: True Strike from the riposte ignored", m_strategy_no_ts))
+
+    def m_strategy_ts_any_half():
+        import strategy as G
+        old = G.build_attacks
+
+        def every(P, plan, state):
+            out_ = old(P, plan, state)
+            if not getattr(state, "ts", False):
+                return out_
+            i = next((k for k, a in enumerate(out_) if a.label == "off-hand"), None)
+            if i is not None:
+                out_[i] = G.replace(out_[i], true_strike=True, sharpshooter=True)
+            return out_
+        G.build_attacks = every
+        G._turn_cached.cache_clear()
+        try:
+            return _ci_red(test_strategy_true_strike)
+        finally:
+            G.build_attacks = old
+            G._turn_cached.cache_clear()
+    out.append(("strategy: True Strike on the half when Piercing Shot or a manoeuvre goes first", m_strategy_ts_any_half))
 
     def m_strategy_halves_any():
         import strategy as G
