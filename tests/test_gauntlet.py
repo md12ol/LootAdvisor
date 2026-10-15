@@ -3869,10 +3869,21 @@ def real_roll_tests(L):
       G.goFight(F)
       T_start = G.realCasters.c1 ~= nil
       T_res = G.results.real_rolls
+      local gae, sget = Ext.Entity.GetAllEntitiesWithComponent, Ext.StaticData.Get
+      Ext.Entity.GetAllEntitiesWithComponent = function(c)
+        if c ~= "Ruleset" then return gae(c) end
+        return { { Ruleset = { Rulesets = { "med" }, Modifiers = { [G.KARMIC_DICE] = false } } } }
+      end
+      Ext.StaticData.Get = function(id, kind)
+        if kind == "Ruleset" and id == "med" then return { Name = "DIFFICULTY_MEDIUM" } end
+        return sget(id, kind)
+      end
       G._finish(F, "aborted")
+      Ext.Entity.GetAllEntitiesWithComponent, Ext.StaticData.Get = gae, sget
       T_end = G.realCasters.c1 == nil
       T_rec = saved and saved.real_rolls
       T_ver = saved and saved.version
+      T_diff = saved and saved.difficulty
       local F2 = { char = "c1", enemies = { "e1" }, req = { scenario = "boss", label = "y", real_rolls = false },
                    plan = {}, S = {}, started = 1, cooldown = {}, tRun = 0,
                    realRolls = G.realRollsFor({ real_rolls = false }) }
@@ -3888,7 +3899,31 @@ def real_roll_tests(L):
     g = L.globals()
     check("rolls: the character rolls from the fight's start, not after its end", g.T_start is True and g.T_end is True
           and g.T_res is True, f"{g.T_start} {g.T_end}")
+    d = g.T_diff
+    check("record: every run record names the difficulty and whether Karmic Dice is on",
+          d is not None and d.name == "balanced" and d.karmic_dice is False and d.rulesets[1] == "DIFFICULTY_MEDIUM",
+          str(d and dict(d)))
     check("record: every run record names the harness version", g.T_ver == g.GAUNTLET.VERSION, str(g.T_ver))
+    # Honour lists the hard difficulty too; the RulesetModifiers entity's value wins over the Ruleset's; no Ruleset,
+    # nothing
+    L.execute(r"""
+      local G = GAUNTLET
+      local gae, sget = Ext.Entity.GetAllEntitiesWithComponent, Ext.StaticData.Get
+      local names = { hon = "RULESET_HONOUR", hard = "DIFFICULTY_HARD", lar = "RULESET_LARIAN" }
+      Ext.StaticData.Get = function(id, kind) return kind == "Ruleset" and { Name = names[id] } or nil end
+      local ents = { Ruleset = { { Ruleset = { Rulesets = { "lar", "hon", "hard" },
+                                               Modifiers = { [G.KARMIC_DICE] = false } } } },
+                     RulesetModifiers = { { RulesetModifiers = { Modifiers = { [G.KARMIC_DICE] = true } } } } }
+      Ext.Entity.GetAllEntitiesWithComponent = function(c) return ents[c] or {} end
+      T_hon = G.difficulty()
+      ents = {}
+      T_none = G.difficulty()
+      Ext.Entity.GetAllEntitiesWithComponent, Ext.StaticData.Get = gae, sget
+    """)
+    h, n = g.T_hon, g.T_none
+    check("difficulty: Honour over its hard difficulty, Karmic Dice from RulesetModifiers, nothing without a Ruleset",
+          h.name == "honour" and h.karmic_dice is True and len(h.rulesets) == 3 and n.name is None
+          and n.karmic_dice is None and len(n.rulesets) == 0, f"{dict(h)} {dict(n)}")
     check("rolls: every run record says whether the run rolled", g.T_rec is True and g.T_rec2 is False and
           g.T_start2 is False, f"{g.T_rec} {g.T_rec2}")
     # a record Stringify refuses even as a JSON-safe copy: a minimal record is written and the run still ends
@@ -6657,6 +6692,9 @@ GL, PL, RN, EN, PA = "gauntlet.lua", "plan.py", "run.py", "engine.py", "pairs.py
 TL = "gauntlet_test.lua"
 TB = "testmod/LootAdvisorGauntletTest/Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/BootstrapServer.lua"
 MUTATIONS = [
+    ("record: Karmic Dice never read", GL, "if tostring(k) == G.KARMIC_DICE and", "if false and"),
+    ("record: the hard difficulty hides Honour", GL, "if G.DIFFICULTY_NAMES[n] and out.name ~= \"honour\" then",
+     "if G.DIFFICULTY_NAMES[n] then"),
     ("record: no harness version", GL, "  local rec = { version = G.VERSION, run = G.runSeq,",
      "  local rec = { run = G.runSeq,"),
     ("lanes: one state for all lanes", GL, "  for _, k in ipairs(G.LANE_FIELDS) do G[k] = nxt[k] end\n",
