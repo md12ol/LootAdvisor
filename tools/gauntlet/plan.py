@@ -1141,7 +1141,7 @@ def strategy_spec(spec, family, stats):
 def enemy_for(model, act):
     """The run's enemy for the act (catalog.py's enemies entry), so a spec needs no catalogue in the game."""
     import catalog as CAT
-    return dict(model.ENEMY[int(act)], template=CAT.TEMPLATE, hp=CAT.ENEMY_HP)
+    return CAT.enemy_entry(model.ENEMY[int(act)])
 
 
 def main(argv=None):

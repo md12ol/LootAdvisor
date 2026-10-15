@@ -24,6 +24,17 @@ TEMPLATE = "b7f6f34b-07e6-4bcc-a4bc-023b25fb6e84"   # a plain humanoid (Absolute
 # hostile faction ("Evil NPC") instead. SetFaction needs the full "<name>_<guid>" string.
 ENEMY_FACTION = "Evil NPC_64321d50-d516-b1b2-cfac-2eb773de1ff6"
 ENEMY_HP = 5000
+# The template keeps its own saving-throw proficiencies under the forced stats (its class progression: a Fighter's
+# Strength and Constitution): measured in game, its Constitution saves roll the forced bonus + 2, Wisdom the bonus.
+TEMPLATE_SAVE_PROF = {"STR": 2, "CON": 2}
+
+
+def enemy_entry(E):
+    """The act's enemy (model.ENEMY's entry) as the harness spawns it, with its save bonus per ability."""
+    saves = {ab: E["save"] + TEMPLATE_SAVE_PROF.get(ab, 0) for ab in ("STR", "DEX", "CON", "INT", "WIS", "CHA")}
+    return dict(E, template=TEMPLATE, hp=ENEMY_HP, saves=saves)
+
+
 # No buff from outside the set: the build, the set, the planned actions and the consumables give every status a
 # run has (the model scores nothing else), so the catalogue lists none.
 BUFFS = {"1": [], "2": [], "3": []}
@@ -160,7 +171,7 @@ def main(argv=None):
             sets[s["id"]] = e
         for c in opt.get("compare") or []:
             pass
-    out = {"version": 1, "enemies": {str(k): dict(v, template=TEMPLATE, hp=ENEMY_HP) for k, v in model.ENEMY.items()},
+    out = {"version": 1, "enemies": {str(k): enemy_entry(v) for k, v in model.ENEMY.items()},
            "buffs": BUFFS, "enemy_faction": ENEMY_FACTION, "arenas": arenas(), "builds": builds, "sets": sets, "tuned": {}}
     with open(a.out, "w", encoding="utf-8") as f:
         json.dump(out, f, default=str)
