@@ -5544,7 +5544,7 @@ def policy_tests(L):
         if u == "c1" then return { SpellBookCooldowns = { Cooldowns = cds }, StatusContainer = { Statuses = {} } } end
       end
       local key = function(conc, ts) return "rnd=2|adjacent=1|dice=3|surge=1|conc=" .. conc ..
-        "|gaping=0|pierce_m=0|pierce_r=1|dread=0|sneak=1|ts=" .. ts end
+        "|gaping=0|pierce_m=0|pierce_r=1|dread=0|sneak=1|ts=" .. ts .. "|far=0" end
       local plain = { spell = "Target_MainHandAttack", group = "action", target = "@boss" }
       local mark = { spell = "Target_HuntersMark", group = "bonus", target = "@boss" }
       local policy = { fields = G.POLICY_FIELDS, has = { surge = true, pierce_m = true, pierce_r = true, dread = true,
@@ -5591,6 +5591,18 @@ def policy_tests(L):
       G.results.rider_misses = nil
       G.riderCheck(F, R4)
       T_rm4 = R4.rider_misses
+      -- the boss's start spot: out of reach and not moved (within G.START_SPOT_M) -> far; in reach, moved, or no
+      -- start recorded -> not
+      local function far(at, start)
+        pos.b1, F.boss_start = at, start
+        return G.policyState(F, { r = 2, turn_statuses = {} }).far
+      end
+      T_far = { far({ 9, 0, 0 }, { 9.6, 0, 0 }), far({ 9, 0, 0 }, { 10.5, 0, 0 }), far({ 1.5, 0, 0 }, { 1.5, 0, 0 }),
+        far({ 9, 0, 0 }, nil) }
+      pos.b1 = { 9, 0, 0 }
+      G.bossStartSpot(F)
+      T_far[5] = G.policyState(F, { r = 2, turn_statuses = {} }).far
+      pos.b1, F.boss_start = { 1.5, 0, 0 }, nil
       Osi.HasActiveStatus, Osi.GetPosition, Osi.GetActionResourceValuePersonal, Osi.IsDead, Ext.Entity.Get =
         saved[1], saved[2], saved[3], saved[4], saved[5]
       G.F, G.rounds = nil, {}
@@ -5601,7 +5613,8 @@ def policy_tests(L):
     check("policy: the live state read from the engine (reach, dice, cooldowns, the boss's statuses, the charge) is "
           "the table's key; its decision is played and recorded with the state's expectation",
           p1 is not None and p1.key == "rnd=2|adjacent=1|dice=3|surge=1|conc=mark|gaping=0|pierce_m=0|pierce_r=1|"
-          "dread=0|sneak=1|ts=0" and p1.decision == "melee" and q1 == ["Target_MainHandAttack"] and p1.own == 112.4
+          "dread=0|sneak=1|ts=0|far=0" and p1.decision == "melee" and q1 == ["Target_MainHandAttack"] and
+          p1.own == 112.4
           and p1["round"] == 131.7 and not p1.outside, str(p1 and p1.key))
     q2 = [g.T_q2[i + 1].spell for i in range(len(g.T_q2))]
     check("policy: Hunter's Mark broken in the enemies' turn -> the state's decision recasts it, its rider checked",
@@ -5614,6 +5627,9 @@ def policy_tests(L):
           f"{g.T_p3.key} {g.T_fault}")
     check("policy: the concentration the turn started with is checked as the turn ends (lost -> rider missing)",
           g.T_rm4 is not None and g.T_rm4[1].status == "HUNTERS_MARK", str(g.T_rm4))
+    fa = [g.T_far[i + 1] for i in range(5)]
+    check("policy: far = the boss out of reach and still at the start spot recorded as the fight starts (moved "
+          "1.5 m, in reach or no start: not)", fa == [True, False, False, False, True], str(fa))
 
 
 def conc_rider_tests(L):
@@ -7039,6 +7055,13 @@ MUTATIONS = [
      "                rl = []\n"),
     ("pointer: left on the hotbar at the Start", EN, "    def send_start():\n        pointer_off_ui()\n",
      "    def send_start():\n"),
+    ("policy: the boss's start spot never compared", GL, "  if not (boss and s) then return false end",
+     "  if true then return false end"),
+    ("policy: far even after the boss moved", GL, " <= G.START_SPOT_M\nend", " <= 1e9\nend"),
+    ("policy: far with the boss in reach", GL, "far = boss ~= nil and dist(F.char, boss) > G.REACH and",
+     "far = boss ~= nil and"),
+    ("policy: the boss's start spot not recorded", GL, "  F.boss_start = bx and { bx, by, bz } or nil\n",
+     "  F.boss_start = nil\n"),
     ("strategy spec: decisions without riders", PL,
      '        d["riders"] = [{k: v for k, v in r.items() if k != "round"} for r in plan_riders([d["steps"]])]',
      "        pass"),

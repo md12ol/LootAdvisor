@@ -3661,7 +3661,22 @@ end
 -- records both (R.policy), with the strategy's expectation for that state; a state outside the table makes the run
 -- invalid. The key is the text strategy.py's state_key builds.
 G.POLICY_FIELDS = { "rnd", "adjacent", "dice", "surge", "conc", "gaping", "pierce_m", "pierce_r", "dread", "sneak",
-  "ts" }
+  "ts", "far" }
+-- far: the boss out of reach and still within this of where it stood as the fight started (it has not moved: from
+-- there it can only Dash into reach, which takes its action)
+G.START_SPOT_M = 1.0
+-- as the fight starts, before anyone has moved
+function G.bossStartSpot(F)
+  local bx, by, bz = xyz(resolveTarget(F, "@boss"))
+  F.boss_start = bx and { bx, by, bz } or nil
+end
+function G.bossAtStart(F, boss)
+  local s = F.boss_start
+  if not (boss and s) then return false end
+  local x, y, z = xyz(boss)
+  if not x then return false end
+  return math.sqrt((x - s[1]) ^ 2 + (y - s[2]) ^ 2 + (z - s[3]) ^ 2) <= G.START_SPOT_M
+end
 -- True Strike from the character's riposte in the enemies' turn just before (a hit puts TRUE_STRIKE on the target):
 -- the status lasts two of the character's turns, so its being on is no proof it came from the last enemy turn.
 function G.trueStrikeBefore(F, R)
@@ -3690,7 +3705,8 @@ function G.policyState(F, R)
     dread = has.dread == true and started.DREAD_AMBUSHER == true,
     -- without Sneak Attack the search keeps the charge "there" all fight
     sneak = has.sneak ~= true or (resAmount(F.char, "SneakAttack_Charge") or 0) > 0,
-    ts = has.ts == true and G.trueStrikeBefore(F, R) }
+    ts = has.ts == true and G.trueStrikeBefore(F, R),
+    far = boss ~= nil and dist(F.char, boss) > G.REACH and G.bossAtStart(F, boss) }
 end
 function G.policyKey(st, fields)
   local parts = {}
@@ -4650,6 +4666,7 @@ end
 -- The fight starts: round 0, the combat entered, the fight loop waits for the character's turn.
 function G.goFight(F)
   G.round, G.fighting = 0, true
+  G.bossStartSpot(F)
   G.results.timing = { prep_ms = now() - F.tRun, fight_at = now() - G.t0 }
   F.tFight = now()
   F.hpChar = try(Osi.GetHitpoints, F.char)
