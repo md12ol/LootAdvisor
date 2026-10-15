@@ -1910,7 +1910,9 @@ end
 -- filter, so a filter that drops every one still shows what arrived. Neither event gives the outcome (RollResult's
 -- result is 1 on saves made and failed alike, kept as result_raw): G.settleSaves reads it from the statuses.
 G.SAVE_STATUS_MS, G.SAVE_BACK_MS, G.SAVE_MERGE_MS, G.SAVE_CAST_MS = 500, 50, 200, 300
-G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true, PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true }
+-- never a save's status: the riders, and the status of standing in a surface (put on in the same tick)
+G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true, PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true,
+  INSURFACE = true }
 -- row's fields go into v where v has none
 function G.mergeSave(v, row, kind)
   for k, x in pairs(row) do if v[k] == nil then v[k] = x end end
@@ -1993,42 +1995,42 @@ local function nearRows(rounds, i, key)
   return out
 end
 local function sameSource(v, x) return v.source == nil or x.cause == nil or v.source == x.cause end
--- One save's outcome. A failed save's status goes on: the engine tries it on the roller just before the roll
--- (StatusAttempt) and applies it after, both with the cast's id; a made save's roll comes just before its cast's
--- UsingSpell and nothing goes on. The cast id (sid) comes from that attempt, else from a status of the same source
--- within SAVE_STATUS_MS after the roll or SAVE_BACK_MS before it, else from the source's next UsingSpell within
--- SAVE_CAST_MS. With an id, failed = a status with it went on, made = none did and the cast ended; without one,
--- failed = a status of the source in the window, made = none and the fight lasted past the window. Otherwise success
--- stays nil, as it does for concentration checks, which put no status on.
+-- One save's outcome, read from its timing. A failed save's row comes in the same tick as the engine's try of its
+-- status on the roller (StatusAttempt, with the cast's id), which then goes on (StatusApplied, same id); a made save's
+-- row comes just before its cast's UsingSpell and no try of a save status follows. The cast id (sid) comes from that
+-- try (within SAVE_BACK_MS before the row), else from the source's next UsingSpell within SAVE_CAST_MS. With an id,
+-- failed = the status tried with it went on, made = none did and the cast ended. Only a try by the save's source of a
+-- status outside SAVE_NOT counts, so a rider or a surface status of the same tick is never the save's. When no try
+-- was recorded around the save (the listener missing), a status of the same source within the window decides
+-- instead. Otherwise success stays nil, as it does for concentration checks, which put no status on.
 function G.settleSave(v, rounds, i, tEnd)
   if v.roll_type == "Concentration" then return end
-  local log = nearRows(rounds, i, "status_log")
-  for _, x in ipairs(nearRows(rounds, i, "status_tries")) do
-    if x.who == v.who and sameSource(v, x) and x.t <= v.t and v.t - x.t <= G.SAVE_BACK_MS then
-      v.sid, v.save_status = x.sid, x.status
-    end
-  end
-  local on
-  if v.sid == nil then
-    for _, x in ipairs(log) do
-      local dt = (x.t or 0) - (v.t or 0)
-      if x.on and not x.save and not G.SAVE_NOT[x.status] and x.who == v.who and sameSource(v, x)
-          and dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then
-        on, v.sid = x, x.sid
-        break
-      end
-    end
+  local log, tries = nearRows(rounds, i, "status_log"), nearRows(rounds, i, "status_tries")
+  local function saveTry(x) return x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] end
+  for _, x in ipairs(tries) do
+    if saveTry(x) and x.t <= v.t and v.t - x.t <= G.SAVE_BACK_MS then v.sid, v.save_status = x.sid, x.status end
   end
   if v.sid == nil and v.source then
     for _, x in ipairs(nearRows(rounds, i, "usings")) do
       if x.who == v.source and x.t >= v.t and x.t - v.t <= G.SAVE_CAST_MS then v.sid = x.sid; break end
     end
   end
-  if not on and v.sid ~= nil then
+  if v.sid ~= nil and v.save_status == nil then
+    for _, x in ipairs(tries) do
+      if saveTry(x) and x.sid == v.sid then v.save_status = x.status; break end
+    end
+  end
+  local on
+  if v.save_status then
     for _, x in ipairs(log) do
-      if x.on and x.who == v.who and x.sid == v.sid and not G.SAVE_NOT[x.status]
-          and (v.save_status == nil or x.status == v.save_status) then
-        on = x
+      if x.on and x.who == v.who and x.sid == v.sid and x.status == v.save_status then on = x; break end
+    end
+  elseif #tries == 0 then
+    for _, x in ipairs(log) do
+      local dt = (x.t or 0) - (v.t or 0)
+      if x.on and not x.save and not G.SAVE_NOT[x.status] and x.who == v.who and sameSource(v, x)
+          and dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then
+        on, v.sid = x, x.sid
         break
       end
     end

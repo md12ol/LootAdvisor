@@ -3483,6 +3483,7 @@ def record_gap_tests(L):
       Ext.Types = { Serialize = function() return { probe = true } end }
       t = 1000; save("b1", "c1", false, 7, 11, 16, "Wisdom")
       t = 1010; G._on.status_on("b1", "HUNTERS_MARK", "c1")
+      t = 1070; G._on.status_on("b1", "INSURFACE", "c1")
       t = 1080; G._on.status_on("b1", "FRIGHTENED", "c1")
       t = 2000; save("b1", "c1", true, 15, 19, 16, "Wisdom")
       t = 2050; G._on.status_on("b1", "PRONE", "c1")
@@ -3533,9 +3534,10 @@ def save_log_tests(L):
     """The enemies' rolls from the Osiris RollResult event (roll type, roller, source, the raw result, criticality),
     filled from the SavingThrowRolledEvent component of the same roll whichever comes first (its roller in Target, or in
     Source when an Osiris roll claims it); every component counted and the first kept before any filter. The outcome is
-    settled from the statuses at the fight's end: the status tried just before the roll and its cast id, else a status
-    of the same source in the window, else the source's next UsingSpell; made only once the cast ended or the window
-    closed, else left open. The status rows keep the cast id; the registrations' outcome is recorded."""
+    settled from the statuses at the fight's end: the save status its source tried just before the roll (a rider or a
+    surface status never) or with the cast id of the source's next UsingSpell, and whether it went on; a status of the
+    source in the window only when no try was recorded; made only once the cast ended or the window closed, else
+    left open. The status rows keep the cast id; the registrations' outcome is recorded."""
     L.execute(r"""
       local G = GAUNTLET
       G.reset()
@@ -3557,12 +3559,17 @@ def save_log_tests(L):
       end
       -- 1 failed: the status tried just before the roll, applied later with its cast id; a rider of the cast skipped
       t = 1000; G._on.status_try("b1", "GAPING_WOUND", "c1", 101)
+      G._on.status_try("b1", "INSURFACE", "00000000-0000-0000-0000-000000000000", 101)
+      G._on.status_try("b1", "BLEEDING", "x9", 101)
       t = 1005; rr("b1", "c1", 1, "NONE"); comp("b1", "c1", false, 6, 10, 15, "Constitution")
       t = 1600; G._on.status_on("b1", "PASSIVE_HUNTERS_MARK", "c1", 101)
+      G._on.status_on("b1", "INSURFACE", "00000000-0000-0000-0000-000000000000", 101)
+      G._on.status_on("b1", "BLEEDING", "x9", 101)
       t = 1700; G._on.status_on("b1", "GAPING_WOUND", "c1", 101)
       -- 2 made: the roll just before its cast's UsingSpell, only a rider with the cast id, the cast ended
       t = 2000; rr("b1", "c1", 1, "SUCCESS")
       t = 2100; G._on.using("c1", "Projectile_TripAttack", "Projectile", "None", 102)
+      t = 2900; G._on.status_try("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
       t = 3000; G._on.status_on("b1", "PASSIVE_HUNTERS_MARK", "c1", 102)
       t = 3200; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 102)
       -- 3 and 4: one failed save with an early row before the cast as well; both rows failed
@@ -3578,6 +3585,7 @@ def save_log_tests(L):
       t = 6500; G._on.cast("c1", "Projectile_TripAttack", "Projectile", "None", 106)
       -- 6 made with no cast id: the source's next UsingSpell too late to be the roll's cast
       t = 7000; rr("b1", "c1", 1, "NONE")
+      t = 7100; G._on.status_on("b1", "BURNING", "c1")
       t = 7400; G._on.using("c1", "Projectile_MainHandAttack", "Projectile", "None", 107)
       -- 7 made: its cast ends in the next round; the other enemy's concentration check left open
       t = 8000; rr("b1", "c1", 1, "NONE")
@@ -3646,10 +3654,12 @@ def save_log_tests(L):
     log = lst(g.T_sl_log) or []
     tries = lst(g.T_sl_tries) or []
     check("status: the status rows keep the cast id, the engine's tries apart",
-          [(x.status, x.sid, x.on) for x in log][:2] == [("PASSIVE_HUNTERS_MARK", 101, True),
+          [(x.status, x.sid, x.on) for x in log][:4] == [("PASSIVE_HUNTERS_MARK", 101, True),
+                                                        ("INSURFACE", 101, True), ("BLEEDING", 101, True),
                                                         ("GAPING_WOUND", 101, True)]
-          and [(x.status, x.sid, x.on) for x in tries] == [("GAPING_WOUND", 101, None), ("GAPING_WOUND", 103, None),
-                                                          ("PRONE", 106, None)],
+          and [(x.status, x.sid) for x in tries] == [("GAPING_WOUND", 101), ("INSURFACE", 101), ("BLEEDING", 101),
+                                                     ("PASSIVE_HUNTERS_MARK", 102), ("GAPING_WOUND", 103),
+                                                     ("PRONE", 106)] and tries[0].on is None,
           str([(x.status, x.sid) for x in log]) + " " + str([(x.status, x.sid) for x in tries]))
     check("saves: an Osiris handler failure is recorded", "boom" in str(g.T_sl_error), str(g.T_sl_error))
     ls = g.T_sl_listeners
@@ -7202,7 +7212,15 @@ MUTATIONS = [
     ("record: a rider taken as a save's status", GL, "G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true,",
      "G.SAVE_NOT = { X = true,"),
     ("saves: a passive rider with the save's cast id taken as its status", GL,
-     " PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true }", " }"),
+     " PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true,", " X1 = true, X2 = true,"),
+    ("saves: a surface status taken as the save's", GL, "  INSURFACE = true }", "  X3 = true }"),
+    ("saves: another source's try taken as the save's", GL,
+     "x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] end",
+     "x.who == v.who and not G.SAVE_NOT[x.status] end"),
+    ("saves: the status tried with the cast's id not looked up", GL,
+     "      if saveTry(x) and x.sid == v.sid then v.save_status = x.status; break end\n", ""),
+    ("saves: the window used although tries were recorded", GL, "  elseif #tries == 0 then", "  elseif true then"),
+    ("saves: the window never used", GL, "  elseif #tries == 0 then", "  elseif false then"),
     ("record: a status just before its save never linked", GL,
      "          and dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then",
      "          and dt >= 0 and dt <= G.SAVE_STATUS_MS then"),
@@ -7213,13 +7231,13 @@ MUTATIONS = [
      "roll_type = rollType, result_raw = nil,"),
     ("saves: the outcome never settled at the fight's end", GL,
      "  G.settleSaves(G.rounds, G.t0 and now() - G.t0)\n", ""),
-    ("saves: the status tried before the roll gives no cast id", GL, "      v.sid, v.save_status = x.sid, x.status",
-     "      v.save_status = x.status"),
+    ("saves: the status tried before the roll gives no cast id", GL,
+     "then v.sid, v.save_status = x.sid, x.status end", "then v.save_status = x.status end"),
     ("saves: a status of another cast taken for the save's", GL,
-     "      if x.on and x.who == v.who and x.sid == v.sid and not G.SAVE_NOT[x.status]",
-     "      if x.on and x.who == v.who and not G.SAVE_NOT[x.status]"),
+     "x.who == v.who and x.sid == v.sid and x.status == v.save_status then",
+     "x.who == v.who and x.status == v.save_status then"),
     ("saves: another status of the save's cast taken for the one tried", GL,
-     "          and (v.save_status == nil or x.status == v.save_status) then", "          then"),
+     "x.who == v.who and x.sid == v.sid and x.status == v.save_status then", "x.who == v.who and x.sid == v.sid then"),
     ("saves: a made save's cast id never read from its UsingSpell", GL,
      "      if x.who == v.source and x.t >= v.t and x.t - v.t <= G.SAVE_CAST_MS then v.sid = x.sid; break end\n", ""),
     ("saves: a UsingSpell long after the roll taken as its cast", GL,
