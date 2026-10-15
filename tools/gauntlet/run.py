@@ -914,6 +914,47 @@ def binom_interval(k, n, alpha=0.05):
     return lower, upper
 
 
+def _poisson_cdf(k, mu):
+    """P(X <= k) for X ~ Poisson(mu)."""
+    if k < 0:
+        return 0.0
+    if mu <= 0.0:
+        return 1.0
+    return min(1.0, sum(math.exp(-mu + i * math.log(mu) - math.lgamma(i + 1)) for i in range(k + 1)))
+
+
+def poisson_interval(k, n, alpha=0.05):
+    """Exact (Garwood) 95% interval of a count per unit, k events over n units -> (lo, hi), None for n = 0. Unlike a
+    t interval over the units it has width when every unit counted 0, so a rare event (a critical hit) seen in no
+    round still leaves the model's small rate inside."""
+    if not n:
+        return None
+
+    def solve(f, hi):
+        lo = 0.0
+        for _ in range(80):
+            mid = (lo + hi) / 2
+            if f(mid):
+                hi = mid
+            else:
+                lo = mid
+        return (lo + hi) / 2
+    top = k + 20.0 * math.sqrt(k + 1) + 20.0
+    lower = 0.0 if k <= 0 else solve(lambda mu: 1.0 - _poisson_cdf(k - 1, mu) >= alpha / 2, top)
+    upper = solve(lambda mu: _poisson_cdf(k, mu) <= alpha / 2, top)
+    return lower / n, upper / n
+
+
+def count_interval(xs):
+    """95% interval of the mean count per round: Student t, but exact Poisson on the total when every round counted
+    the same (a t interval of zero width would flag any other model value)."""
+    if len(xs) < 2:
+        return None
+    if min(xs) == max(xs):
+        return poisson_interval(int(round(sum(xs))), len(xs))
+    return t_interval(xs)
+
+
 def _round_rolls(rec):
     """The run's per-round roll records (G.rollTally), or None for a record from before they were counted."""
     rs = [(r.get("r"), r.get("rolls")) for r in rec.get("rounds") or [] if isinstance(r, dict)]
@@ -1044,7 +1085,7 @@ def game_parts(rec):
         a = s.get("attacks") or {}
         n = (a.get("hit") or 0) + (a.get("crit") or 0) + (a.get("miss") or 0)
         out.update({"per_roll": False, "attacks": n, "landed": (a.get("hit") or 0) + (a.get("crit") or 0),
-                    "crits": a.get("crit") or 0, "known": 0, "net_adv": 0, "dis": 0, "sneak_dmg": 0,
+                    "crits": a.get("crit") or 0, "known": 0, "net_adv": 0, "dis": 0, "net_dis": 0, "sneak_dmg": 0,
                     "roll_dmg": 0})
         return out
     by_r = {r: x or {} for r, x in rr}
@@ -1059,7 +1100,11 @@ def game_parts(rec):
     out.update({"per_roll": True, "attacks": sum(x.get("n") or 0 for x in per),
                 "landed": sum(x.get("landed") or 0 for x in per), "crits": sum(x.get("crit") or 0 for x in per),
                 "known": sum(x.get("known") or 0 for x in per), "net_adv": sum(x.get("net_adv") or 0 for x in per),
-                "dis": sum(x.get("dis") or 0 for x in per), "sneak_dmg": sum(x.get("sneak_dmg") or 0 for x in per),
+                "dis": sum(x.get("dis") or 0 for x in per),
+                # net Disadvantage: Disadvantage with no Advantage to cancel it, of the rolls whose state is known
+                "net_dis": sum(1 for x in per for p in x.get("per_roll") or []
+                               if p.get("adv") is False and p.get("dis")),
+                "sneak_dmg": sum(x.get("sneak_dmg") or 0 for x in per),
                 "roll_dmg": sum(x.get("dmg") or 0 for x in per),
                 "n_round": [x.get("n") or 0 for x in per], "landed_round": [x.get("landed") or 0 for x in per],
                 "crit_round": [x.get("crit") or 0 for x in per],
@@ -1074,7 +1119,8 @@ def _shifted(ci, d):
 
 def pooled(parts):
     """Runs' parts pooled: totals and samples over every run, then the values and their 95% intervals ("_ci"): exact
-    binomial for the rates; Student t for the means, over the landed rolls' damage for damage per hit (the damage of
+    binomial for the rates; exact Poisson for critical hits per round, and for the other rolls per round when every
+    round counted the same; Student t for the means, over the landed rolls' damage for damage per hit (the damage of
     no roll, a status ticking, taken as fixed) and over the rounds for the per-round numbers, or over the run means
     for damage per round once there are three runs or more."""
     t, xs = {}, {}
@@ -1095,6 +1141,7 @@ def pooled(parts):
          "hit_rate": landed / att if att else None, "crit_rate": (t.get("crits") or 0) / att if att else None,
          "adv_rate": (t.get("net_adv") or 0) / known if known else None,
          "dis_rate": (t.get("dis") or 0) / known if known else None,
+         "net_dis_rate": (t.get("net_dis") or 0) / known if known else None,
          "dmg_per_hit": own / landed if landed else None,
          "dmg_per_hit_no_sneak": (own - sneak) / landed if landed and t.get("per_roll") else None,
          "sneak": sneak / r if r and t.get("per_roll") else None,
@@ -1114,12 +1161,18 @@ def pooled(parts):
     if known:
         ci["adv_rate"] = binom_interval(t.get("net_adv") or 0, known)
         ci["dis_rate"] = binom_interval(t.get("dis") or 0, known)
+        ci["net_dis_rate"] = binom_interval(t.get("net_dis") or 0, known)
     ci["hm_share"] = binom_interval(t.get("hm_rider") or 0, t.get("hm_hits") or 0)
     ci["sa_share"] = binom_interval(t.get("sa_rider_adv") or 0, t.get("sa_turns") or 0)
-    for key, sample in (("attacks", "n_round"), ("hits", "landed_round"), ("crits", "crit_round"),
-                        ("sneak", "sneak_round"), ("react_attacks", "react_n_round"),
-                        ("react_hits", "react_landed_round"), ("react_crits", "react_crit_round"),
-                        ("react_dmg", "react_dmg_round"), ("react_sneak", "react_sneak_round")):
+    for key, sample in (("attacks", "n_round"), ("hits", "landed_round"), ("react_attacks", "react_n_round"),
+                        ("react_hits", "react_landed_round")):
+        ci[key] = count_interval(xs.get(sample) or [])
+    # critical hits are rare enough that a few rounds with one give a t interval far too narrow
+    for key, sample in (("crits", "crit_round"), ("react_crits", "react_crit_round")):
+        rs = xs.get(sample) or []
+        ci[key] = poisson_interval(int(round(sum(rs))), len(rs)) if len(rs) >= 2 else None
+    for key, sample in (("sneak", "sneak_round"), ("react_dmg", "react_dmg_round"),
+                        ("react_sneak", "react_sneak_round")):
         ci[key] = t_interval(xs.get(sample) or [])
     if landed and xs.get("landed_dmg"):
         # the damage of no roll (a status ticking, a surface) per landed roll, added to the rolls' own interval
@@ -1140,7 +1193,8 @@ PARTS = [("attacks", "own turn: attack rolls per round", "attacks", "{:.2f}"),
          ("hit_rate", "own turn: hit rate (per roll)", "hit_rate", "{:.0%}"),
          ("crit_rate", "own turn: critical hits per roll", "crit_rate", "{:.1%}"),
          ("adv_rate", "own turn: rolls with net Advantage (logged rolls)", "adv_rate", "{:.0%}"),
-         ("dis_rate", "own turn: rolls with Disadvantage (logged rolls)", "dis_rate", "{:.0%}"),
+         ("dis_rate", "own turn: rolls with Disadvantage, cancelled or not (logged rolls)", "dis_any_rate", "{:.0%}"),
+         ("net_dis_rate", "own turn: rolls with net Disadvantage (logged rolls)", "dis_rate", "{:.0%}"),
          ("dmg_per_hit", "own turn: damage per landed roll", "dmg_per_hit", "{:.1f}"),
          ("dmg_per_hit_no_sneak", "own turn: damage per landed roll, no Sneak Attack", "dmg_per_hit_no_sneak",
           "{:.1f}"),
@@ -1156,8 +1210,8 @@ PARTS = [("attacks", "own turn: attack rolls per round", "attacks", "{:.2f}"),
          ("dpr", "damage per round (own turn and reactions)", "dpr", "{:.1f}")]
 # parts the model counts with the reactions in when its numbers come from before the split (no "split" in expect.boss):
 # not compared, the game's being the own turn's alone
-SPLIT_PARTS = {"attacks", "hits", "crits", "hit_rate", "crit_rate", "adv_rate", "dis_rate", "dmg_per_hit",
-               "dmg_per_hit_no_sneak", "sneak", "own_dpr", "react_attacks", "react_hits", "react_crits", "react_dmg",
+SPLIT_PARTS = {"attacks", "hits", "crits", "hit_rate", "crit_rate", "adv_rate", "dis_rate", "net_dis_rate",
+               "dmg_per_hit", "dmg_per_hit_no_sneak", "sneak", "own_dpr", "react_attacks", "react_hits", "react_crits", "react_dmg",
                "react_sneak"}
 
 
@@ -1260,7 +1314,8 @@ def report_v2(a):
                 sa_n, sa_adv, sa_all = gp.get("sa_counts") or (0, 0, 0)
                 L.append(f"\nSneak Attack: {sa_n} trigger(s) / {sa_adv} turn(s) with net Advantage / {sa_all} turn(s). "
                          "OUTSIDE: the model's value is outside the game's 95% interval (exact binomial for rates, "
-                         "Student t for means).")
+                         "exact Poisson for critical hits per round and for any count the same every round, Student t "
+                         "for the other means).")
             out["sides"][(i, side)] = {"n": len(runs), "mean": gm, "ci": ci, "rows": rows,
                                        "outside": [r_[0] for r_ in rows if r_[5]]}
             for r in runs:

@@ -4182,7 +4182,8 @@ def py_tests():
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
-              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R),
+              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R), lambda: count_report_tests(R),
+              lambda: disadvantage_report_tests(R),
               lambda: split_report_tests(R), phase_call_tests,
               lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R),
               lambda: strategy_round_tests(R), pointer_tests):
@@ -4224,7 +4225,7 @@ def strategy_spec_tests(P, R):
     finally:
         SG.ROUNDS, SG.profile_from_spec = old_rounds, old_prof
     b, ex = out["expect"]["boss"], out["expect"]
-    keys = [k for k, _l, mk, _f in R.PARTS if mk]
+    keys = [mk for _k, _l, mk, _f in R.PARTS if mk]
     check("strategy spec: expect.boss holds the family's parts, the gear model's kept as boss_gear",
           b.get("source") == "strategy melee" and ex.get("boss_gear") == gear and
           all(b.get(k) == want.get(k) for k in keys) and b.get("sneak_policy") == want["sneak_policy"] and
@@ -4233,7 +4234,7 @@ def strategy_spec_tests(P, R):
     check("strategy spec: damage taken from the boss's hits in the family's fight, rounds survived scaled with it",
           b.get("taken") == want["taken"] and b["taken"] != gear["taken"] and
           b.get("R") == round(gear["R"] * gear["taken"] / b["taken"], 2), str((b.get("taken"), b.get("R"))))
-    game = dict({k: want[k] for k in keys}, split=True)
+    game = dict({k: want[mk] for k, _l, mk, _f in R.PARTS if mk}, split=True)
     rows = {r_[0]: r_ for r_ in R.compare_parts(game, b)}
     check("strategy spec: the report compares with the family's parts (melee: 4+ rolls, its riposte rate)",
           rows["attacks"][3] == want["attacks"] > gear["attacks"] and rows["own_dpr"][3] == want["own_dpr"] and
@@ -5977,8 +5978,9 @@ def roll_report_tests(R):
           rows["crit_rate"][5] == "" and rows["adv_rate"][3] is None and rows["adv_rate"][5] == "" and
           rows["adv_rate"][2] is not None)
     check("report: damage per landed roll with an interval from the rolls' damage (all 20: zero width, 21 outside)",
-          R.compare_parts(big, {"split": True, "dmg_per_hit": 21.0})[7][5] == "OUTSIDE" and
-          R.compare_parts(big, {"split": True, "dmg_per_hit": 20.0})[7][5] == "")
+          {r_[0]: r_ for r_ in R.compare_parts(big, {"split": True, "dmg_per_hit": 21.0})}["dmg_per_hit"][5] ==
+          "OUTSIDE" and
+          {r_[0]: r_ for r_ in R.compare_parts(big, {"split": True, "dmg_per_hit": 20.0})}["dmg_per_hit"][5] == "")
     old = R.pooled([R.game_parts(_v2_rec(0, "a", 100.0, hit=40, crit=5, miss=15))])
     check("report: a record from before rolls were counted falls back to its per-action outcomes",
           old["attacks"] == 60 / 16 and old["hit_rate"] == 0.75 and old["_ci"].get("attacks") is None)
@@ -6007,6 +6009,51 @@ def roll_report_tests(R):
               rows["sneak"][5] == "OUTSIDE", str(rows["sneak"]))
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def count_report_tests(R):
+    """--report's per-round counts: critical hits get an exact Poisson interval on their total, and any count the
+    same in every round gets one too, so a sample of zero variance (16 rounds, no riposte critical) leaves a small
+    model rate inside instead of a zero-width interval flagging it."""
+    lo, hi = R.poisson_interval(5, 1)
+    check("stats: exact Poisson interval, 5 events -> 1.62-11.67", abs(lo - 1.6235) < 1e-3 and abs(hi - 11.668) < 1e-3,
+          f"{lo} {hi}")
+    check("stats: a Poisson interval of no events over 16 rounds has width (0-0.23); no rounds have none",
+          R.poisson_interval(0, 16)[0] == 0.0 and abs(R.poisson_interval(0, 16)[1] - 3.6889 / 16) < 1e-3 and
+          R.poisson_interval(0, 0) is None)
+    rec = _roll_rec([(2, 2, 0, [20, 20])] * 16, react={r: [(20, 0, False)] for r in range(1, 8)})
+    p = R.pooled([R.game_parts(rec)])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(p, {"split": True, "react_crits": 7 * 0.16 / 16, "crits": 0.1,
+                                                     "attacks": 2.2})}
+    check("report: no riposte critical in 16 rounds does not flag the model's 0.07 per round (Poisson 0-0.23)",
+          rows["react_crits"][2] == 0 and rows["react_crits"][5] == "" and rows["react_crits"][6][1] > 0.2,
+          str(rows["react_crits"]))
+    check("report: no own critical in 16 rounds does not flag the model's 0.10 per round",
+          rows["crits"][5] == "" and rows["crits"][6][1] > 0.2, str(rows["crits"]))
+    check("report: 2 rolls in every round (zero variance) leave 2.2 inside, 3.0 outside",
+          rows["attacks"][5] == "" and
+          {r_[0]: r_ for r_ in R.compare_parts(p, {"split": True, "attacks": 3.0})}["attacks"][5] == "OUTSIDE",
+          str(rows["attacks"]))
+
+
+def disadvantage_report_tests(R):
+    """--report's Disadvantage rows: the game logs any Disadvantage flag on a roll, so that row is compared with the
+    model's any-Disadvantage rate, and Disadvantage left after cancelling (no Advantage on the roll) with its net
+    rate."""
+    rec = _roll_rec([(3, 3, 0, [20, 20, 20])] * 4)
+    for r in rec["rounds"]:
+        for j, p_ in enumerate(r["rolls"]["per_roll"]):
+            p_.update(adv=j != 2, dis=True, net_adv=False)
+        r["rolls"].update(known=3, dis=3, net_adv=0)
+    gp = R.game_parts(rec)
+    p = R.pooled([gp])
+    rows = {r_[0]: r_ for r_ in R.compare_parts(p, {"split": True, "dis_any_rate": 0.95, "dis_rate": 0.3})}
+    check("report: rolls with Disadvantage, cancelled or not (12 of 12), against the model's any-Disadvantage rate",
+          rows["dis_rate"][2] == 1.0 and rows["dis_rate"][3] == 0.95 and rows["dis_rate"][5] == "" and
+          "cancelled or not" in rows["dis_rate"][1], str(rows["dis_rate"]))
+    check("report: rolls with net Disadvantage (4 of 12: no Advantage to cancel it) against the model's net rate",
+          gp["net_dis"] == 4 and abs(rows["net_dis_rate"][2] - 4 / 12) < 1e-9 and rows["net_dis_rate"][3] == 0.3 and
+          rows["net_dis_rate"][5] == "", str(rows["net_dis_rate"]))
 
 
 def split_report_tests(R):
@@ -7093,6 +7140,15 @@ MUTATIONS = [
      '        [d["steps"] for d in ((plan.get("policy") or {}).get("decisions") or [])]', "        []"),
     ("riders: Hunter's Mark not a concentration rider", PL, 'CONCENTRATION_RIDERS = {"Target_HuntersMark"}',
      "CONCENTRATION_RIDERS = set()"),
+    ("report: critical hits per round given a t interval (zero width over rounds with none)", RN,
+     "        ci[key] = poisson_interval(int(round(sum(rs))), len(rs)) if len(rs) >= 2 else None\n",
+     "        ci[key] = t_interval(rs)\n"),
+    ("report: a count the same every round given a zero-width t interval", RN, "    if min(xs) == max(xs):\n",
+     "    if False:\n"),
+    ("report: rolls with any Disadvantage compared with the model's net rate", RN,
+     '(logged rolls)", "dis_any_rate"', '(logged rolls)", "dis_rate"'),
+    ("report: net Disadvantage counted with the cancelled rolls in", RN,
+     'if p.get("adv") is False and p.get("dis"))', 'if p.get("dis"))'),
     ("split: rows in the character's own turn counted as reactions", RN,
      "return r == 0 or (rel.get(r) is not None and (d.get(\"t\") or 0) > rel[r])", "return True"),
 ]
