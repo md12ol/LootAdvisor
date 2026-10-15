@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 13
+G.VERSION = 14
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1904,39 +1904,69 @@ function G.saveFields(c)
   return { roll = first(c, { "Roll.Result.NaturalRoll" }), total = first(c, { "Roll.Result.Total" }),
     dc = first(c, { "Difficulty" }), ability = flagText(first(c, { "Ability" })) }
 end
--- The enemies' rolls, per round in R.saves. Two sources fill one row between them when both report the same roll
--- (same roller, a source neither contradicts, within SAVE_MERGE_MS; either may come first): the Osiris RollResult
--- event (roll type, roller, source, criticality), which carries no die, and the one-frame SavingThrowRolledEvent
--- component (the d20, the total, the DC, the ability, Advantage / Disadvantage, the roll bonus, the cast). Every
--- component of a fight is counted in results.save_events and the first kept whole in results.save_probe before any
--- filter, so a filter that drops every one still shows what arrived. Neither event gives the outcome (RollResult's
--- result is 1 on saves made and failed alike, kept as result_raw): G.settleSaves reads it from the statuses.
-G.SAVE_STATUS_MS, G.SAVE_BACK_MS, G.SAVE_MERGE_MS, G.SAVE_CAST_MS = 500, 50, 200, 300
+-- The enemies' rolls, per round in R.saves. The engine raises SavingThrowRolledEvent twice for each save condition of
+-- a cast, both with the cast's SpellCastUuid: at the cast's start (Total = the d20 + the whole bonus, Success = the
+-- save's outcome) and at the projectile's impact about a second later (the same d20, Total = the bare d20, Success =
+-- the functor's condition, the inverse of the save for "not SavingThrow(...)"). A row is one condition's cast-start
+-- event (condition = its order in the cast); the impact only adds condition_result and t_result, so the roll, the
+-- total and the outcome never come from it. The Osiris RollResult (roll type, roller, source, criticality; its result
+-- is 1 on saves made and failed alike, kept as result_raw) comes with the cast-start event on a made save and with the
+-- impact on a failed one: within SAVE_MERGE_MS of either it joins the cast's first row, filling only fields it lacks.
+-- Every component of a fight is counted in results.save_events and the first kept whole in results.save_probe before
+-- any filter, so a filter that drops every one still shows what arrived.
+G.SAVE_MERGE_MS = 200
 -- never a save's status: the riders, and the status of standing in a surface (put on in the same tick)
 G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true, PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true,
-  INSURFACE = true }
+  INSURFACE = true, GAPING_WOUND_DAMAGE = true, PASSIVE_GAPING_WOUND_ATTACK = true }
+-- Piercing Shot's SpellSuccess has two IFs with the same save and both roll: the first one's row decides (Piercing
+-- Strike, Target_PiercingThrust, has one)
+G.SAVE_FIRST_DECIDES = { Projectile_PiercingShot = true, Target_PiercingThrust = true }
 -- row's fields go into v where v has none
 function G.mergeSave(v, row, kind)
   for k, x in pairs(row) do if v[k] == nil then v[k] = x end end
   v[kind] = true
   return v
 end
+local function nearSave(v, t)
+  return math.abs(t - (v.t or 0)) <= G.SAVE_MERGE_MS or (v.t_result ~= nil and math.abs(t - v.t_result) <= G.SAVE_MERGE_MS)
+end
 local function sameRoll(v, row, kind)
-  return not v[kind] and v.who == row.who and math.abs((row.t or 0) - (v.t or 0)) <= G.SAVE_MERGE_MS
+  return not v[kind] and v.who == row.who and nearSave(v, row.t or 0)
     and (v.source == nil or row.source == nil or v.source == row.source)
+end
+-- the first row of v's cast in list that kind has not filled, else v: an Osiris roll that came with the impact
+-- belongs to the cast, not to the condition whose impact happened to be nearest
+local function castHead(list, v, kind)
+  if v.cast_guid == nil then return v end
+  for _, x in ipairs(list) do
+    if x.who == v.who and x.cast_guid == v.cast_guid and not x[kind] then return x end
+  end
+  return v
 end
 -- Fills the row the other source started for the same roll, else starts one (unless onlyMerge). -> the row, or nil
 function G.addSave(R, row, kind, onlyMerge)
   R.saves = R.saves or {}
   for i = #R.saves, 1, -1 do
     local v = R.saves[i]
-    if row.t - (v.t or 0) > G.SAVE_MERGE_MS then break end
-    if sameRoll(v, row, kind) then return G.mergeSave(v, row, kind) end
+    if sameRoll(v, row, kind) then return G.mergeSave(castHead(R.saves, v, kind), row, kind) end
   end
   if onlyMerge then return nil end
   row[kind] = true
   R.saves[#R.saves + 1] = row
   return row
+end
+-- Moves x and every waiting row of its cast from R.saves_unclaimed to R.saves.
+local function claimCast(R, x)
+  local keep = {}
+  R.saves = R.saves or {}
+  for _, y in ipairs(R.saves_unclaimed or {}) do
+    if y == x or (x.cast_guid ~= nil and y.who == x.who and y.cast_guid == x.cast_guid) then
+      R.saves[#R.saves + 1] = y
+    else
+      keep[#keep + 1] = y
+    end
+  end
+  R.saves_unclaimed = #keep > 0 and keep or nil
 end
 -- Osiris RollResult(roll type, roller, roll subject, result, active roll, criticality)
 function G.onRollResult(rollType, roller, subject, result, active, crit)
@@ -1945,19 +1975,47 @@ function G.onRollResult(rollType, roller, subject, result, active, crit)
   if not R then return end
   local row = G.jsonSafe({ who = uuid(roller), source = subject and uuid(subject), t = now() - G.t0,
     roll_type = rollType, result_raw = result, active = active, crit = crit ~= nil and tostring(crit) or nil })
-  local v = G.addSave(R, row, "osiris")
-  local un = R.saves_unclaimed or {}
-  for i = #un, 1, -1 do
-    if sameRoll(v, un[i], "component") then
-      G.mergeSave(v, table.remove(un, i), "component")
-      break
+  if G.addSave(R, row, "osiris", true) then return end
+  for j = #G.rounds, math.max(1, #G.rounds - 1), -1 do
+    local Rj = G.rounds[j]
+    for _, x in ipairs(Rj.saves_unclaimed or {}) do
+      if sameRoll(x, row, "osiris") then
+        claimCast(Rj, x)
+        G.mergeSave(castHead(Rj.saves, x, "osiris"), row, "osiris")
+        return
+      end
     end
   end
+  G.addSave(R, row, "osiris")
 end
--- The roller is the component's Target when that is an enemy. When only its Source is (which of the two holds the
--- roller is unchecked), the row joins an Osiris roll of that enemy, or waits in R.saves_unclaimed for one: taken on
--- its own it would record the character's saves against the boss as the boss's. The component's own Success is kept
--- as success_event.
+-- The rows already started for a roller's cast in the last two rounds (an impact can fall in the next round), and
+-- whether they are claimed: a cast's rows are all in R.saves or all in R.saves_unclaimed.
+local function castRows(who, guid)
+  local out, claimed = {}, false
+  for j = math.max(1, #G.rounds - 1), #G.rounds do
+    for _, key in ipairs({ "saves", "saves_unclaimed" }) do
+      for _, x in ipairs(G.rounds[j][key] or {}) do
+        if x.who == who and x.cast_guid == guid then
+          out[#out + 1] = x
+          claimed = claimed or key == "saves"
+        end
+      end
+    end
+  end
+  return out, claimed
+end
+-- The cast-start row an event is the impact of: the same d20, no impact yet, the event's Total the bare d20. Two
+-- conditions of one cast with the same d20 and no bonus are read as one row and its impact.
+local function impactOf(rows, row)
+  if row.roll == nil or row.total ~= row.roll then return nil end
+  for _, v in ipairs(rows) do
+    if v.condition_result == nil and v.roll == row.roll then return v end
+  end
+end
+-- added in version 14: one row per cast and condition from its cast-start event (success, bonus_used), the impact
+-- only as condition_result. The roller is the component's Target when that is an enemy. When only its Source is
+-- (which of the two holds the roller is unchecked), the cast's rows join an Osiris roll of that enemy, or wait in
+-- R.saves_unclaimed for one: taken on their own they would record the character's saves against the boss as the boss's.
 function G.onSave(comp)
   if not G.fighting then return end
   if G.results then
@@ -1974,20 +2032,36 @@ function G.onSave(comp)
   row.t = now() - G.t0
   row.total = first(comp, { "Total" }) or row.total
   row.ability = flagText(first(comp, { "Ability" })) or row.ability
-  row.success_event, row.bonus = first(comp, { "Success" }), first(comp, { "RollBonus" })
+  row.success, row.bonus = first(comp, { "Success" }), first(comp, { "RollBonus" })
   row.advantage, row.disadvantage = first(comp, { "Advantage" }), first(comp, { "Disadvantage" })
   row.cast_guid = first(comp, { "SpellCastUuid" })
   row.save_type = flagText(first(comp, { "RollType" }))
   if G.member(F, tgt) == "enemy" then
     row.who, row.source = uuid(tgt), src and uuid(src)
-    G.addSave(R, G.jsonSafe(row), "component")
   elseif G.member(F, src) == "enemy" then
     row.who, row.source, row.swapped = uuid(src), tgt and uuid(tgt), true
-    row = G.jsonSafe(row)
-    if not G.addSave(R, row, "component", true) then
-      R.saves_unclaimed = R.saves_unclaimed or {}
-      R.saves_unclaimed[#R.saves_unclaimed + 1] = row
-    end
+  else
+    return
+  end
+  row = G.jsonSafe(row)
+  local rows, claimed = {}, false
+  if row.cast_guid ~= nil then rows, claimed = castRows(row.who, row.cast_guid) end
+  local v = impactOf(rows, row)
+  if v then
+    v.condition_result, v.t_result = row.success, row.t
+    return
+  end
+  row.condition, row.component = #rows + 1, true
+  if type(row.total) == "number" and type(row.roll) == "number" then row.bonus_used = row.total - row.roll end
+  if #rows > 0 then
+    local key = claimed and "saves" or "saves_unclaimed"
+    R[key] = R[key] or {}
+    R[key][#R[key] + 1] = row
+  elseif not row.swapped then
+    G.addSave(R, row, "component")
+  elseif not G.addSave(R, row, "component", true) then
+    R.saves_unclaimed = R.saves_unclaimed or {}
+    R.saves_unclaimed[#R.saves_unclaimed + 1] = row
   end
 end
 -- The rows of key in round i and the next one: a cast that began late in a round ends after the next round started.
@@ -1996,62 +2070,49 @@ local function nearRows(rounds, i, key)
   for j = i, i + 1 do for _, x in ipairs((rounds[j] or {})[key] or {}) do out[#out + 1] = x end end
   return out
 end
-local function sameSource(v, x) return v.source == nil or x.cause == nil or v.source == x.cause end
--- One save's outcome, read from its timing. A failed save's row comes in the same tick as the engine's try of its
--- status on the roller (StatusAttempt, with the cast's id), which then goes on (StatusApplied, same id); a made save's
--- row comes just before its cast's UsingSpell and no try of a save status follows. The cast id (sid) comes from that
--- try (within SAVE_BACK_MS before the row), else from the source's next UsingSpell within SAVE_CAST_MS. With an id,
--- failed = the status tried with it went on, made = none did and the cast ended. Only a try by the save's source of a
--- status outside SAVE_NOT counts, so a rider or a surface status of the same tick is never the save's. When no try
--- was recorded around the save (the listener missing), a status of the same source within the window decides
--- instead. Otherwise success stays nil, as it does for concentration checks, which put no status on.
-function G.settleSave(v, rounds, i, tEnd)
-  if v.roll_type == "Concentration" then return end
-  local log, tries = nearRows(rounds, i, "status_log"), nearRows(rounds, i, "status_tries")
-  local function saveTry(x) return x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] end
-  for _, x in ipairs(tries) do
-    if saveTry(x) and x.t <= v.t and v.t - x.t <= G.SAVE_BACK_MS then v.sid, v.save_status = x.sid, x.status end
+-- the cast's first hit, the one that carries its story action id and spell
+local function castHit(hits, guid)
+  for _, h in ipairs(hits or {}) do
+    if h.cast_guid == guid and h.sid ~= nil and h.sid ~= 0 then return h end
   end
-  if v.sid == nil and v.source then
-    for _, x in ipairs(nearRows(rounds, i, "usings")) do
-      if x.who == v.source and x.t >= v.t and x.t - v.t <= G.SAVE_CAST_MS then v.sid = x.sid; break end
+end
+-- Cross-checks one save against the statuses; its outcome stays the cast-start event's. The cast's hit gives the
+-- story action id (sid) that the statuses carry, so nothing is matched by time: the save's status is the first one
+-- the source tried on the roller with that id (SAVE_NOT left out), success_status false when it went on, true when
+-- none did and the cast ended. A disagreement sets success_differs, except on a row that does not decide its cast.
+function G.settleSave(v, rounds, i, hits)
+  if v.roll_type == "Concentration" or v.cast_guid == nil then return end
+  local h = castHit(hits, v.cast_guid)
+  if not h then return end
+  v.sid, v.spell = h.sid, h.spell
+  if G.SAVE_FIRST_DECIDES[h.spell] then v.deciding = v.condition == 1 end
+  for _, x in ipairs(nearRows(rounds, i, "status_tries")) do
+    if x.sid == v.sid and x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] then
+      v.save_status = x.status
+      break
     end
   end
-  if v.sid ~= nil and v.save_status == nil then
-    for _, x in ipairs(tries) do
-      if saveTry(x) and x.sid == v.sid then v.save_status = x.status; break end
-    end
-  end
-  local on
   if v.save_status then
-    for _, x in ipairs(log) do
-      if x.on and x.who == v.who and x.sid == v.sid and x.status == v.save_status then on = x; break end
-    end
-  elseif #tries == 0 then
-    for _, x in ipairs(log) do
-      local dt = (x.t or 0) - (v.t or 0)
-      if x.on and not x.save and not G.SAVE_NOT[x.status] and x.who == v.who and sameSource(v, x)
-          and dt >= -G.SAVE_BACK_MS and dt <= G.SAVE_STATUS_MS then
-        on, v.sid = x, x.sid
+    for _, x in ipairs(nearRows(rounds, i, "status_log")) do
+      if x.on and x.who == v.who and x.sid == v.sid and x.status == v.save_status then
+        v.success_status, v.status, x.save = false, x.status, true
         break
       end
     end
   end
-  if on then
-    v.success, v.status, on.save = false, on.status, true
-  elseif v.sid ~= nil then
+  if v.success_status == nil then
     for _, x in ipairs(nearRows(rounds, i, "casts")) do
-      if x.sid == v.sid then v.success = true; break end
+      if x.sid == v.sid then v.success_status = true; break end
     end
-  elseif tEnd and tEnd - (v.t or 0) > G.SAVE_STATUS_MS then
-    v.success = true
   end
-  if v.success ~= nil and v.success_event ~= nil and v.success ~= v.success_event then v.success_differs = true end
+  if v.success_status ~= nil and v.success ~= nil and v.success_status ~= v.success and v.deciding ~= false then
+    v.success_differs = true
+  end
 end
--- Every round's saves, once the fight's statuses are all in (finish).
-function G.settleSaves(rounds, tEnd)
+-- Every round's saves, once the fight's statuses and hits are all in (finish).
+function G.settleSaves(rounds, hits)
   for i, R in ipairs(rounds or {}) do
-    for _, v in ipairs(R.saves or {}) do G.settleSave(v, rounds, i, tEnd) end
+    for _, v in ipairs(R.saves or {}) do G.settleSave(v, rounds, i, hits) end
   end
 end
 function G.hitRow(e)
@@ -4543,7 +4604,7 @@ end
 
 local function finish(F, why)
   G.fighting = false
-  G.settleSaves(G.rounds, G.t0 and now() - G.t0)
+  G.settleSaves(G.rounds, G.hits)
   F.state = "done"
   G.results.real_roll_edits = G.dropRealCasters(F)
   if not F.manual then
