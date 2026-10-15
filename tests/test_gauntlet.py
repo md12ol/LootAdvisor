@@ -179,7 +179,7 @@ def lua_tests():
               boss_reuse_tests, campaign_tests, roll_tests, offhand_melee_tests, rest_reset_tests,
               impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
               sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests,
-              cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests):
+              cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests, record_gap_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -3431,6 +3431,98 @@ def hit_log_tests(L):
     check("hits: a miss is a miss, hits of other creatures are left out",
           len(h) == 2 and h[2].miss is True and h[2].hit is False)
     check("hits: the first hit's description is kept as a probe", g.T_probe is not None and g.T_probe.probe is True)
+
+
+def record_gap_tests(L):
+    """The record carries what a gap rule needs: the boss's floor position at each of the character's turn starts and
+    at the end of each of the boss's turns (another enemy's turn left out), the floor gap after every leave (not only
+    one that ended short), and the enemies' saving throws (d20, total, DC, ability, made or not; a failed save takes the
+    status its source put on right after it, a made one none; the saves among a hit's condition rolls too)."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset(); G.round = 0
+      local t = 0
+      local oldNow, gp, hs = Ext.Utils.MonotonicTime, Osi.GetPosition, Osi.HasActiveStatus
+      Ext.Utils.MonotonicTime = function() return t end
+      G.t0 = 0
+      local where = { c1 = { 0, 0, 0 }, b1 = { 9, 1, 2 }, e2 = { 30, 0, 30 } }
+      Osi.GetPosition = function(u) local p = where[u]; if p then return p[1], p[2], p[3] end end
+      Osi.HasActiveStatus = function() return 0 end
+      local F = { char = "c1", enemies = { "b1", "e2" }, cooldown = {}, plan = {}, S = { rounds = 16 }, req = {},
+        rounds = 16, started = 1, state = "wait", deadline = 1e12, next = 0 }
+      G.F, G.fighting = F, true
+      local notify = G.notify
+      G.notify = function() end
+      t = 100; G._roundStart(F)
+      local R = G.rounds[#G.rounds]
+      where.b1 = { 4, 1, 1 }
+      t = 200; G._on.turn_ended("e2")
+      t = 300; G._on.turn_ended("b1")
+      t = 400; G._on.turn_ended("c1")
+      T_at = R.boss_at
+      -- leaves: the floor gap after each one, there or ended short; a hide move none
+      local function leave(result, to)
+        local Rm = { done = {}, actions = {} }
+        local rec = { move = { result = result } }
+        G.moveStep(F, { spell = "@move", move_to = to or "@leave_spot", done_key = "leave" }, Rm, rec)
+        return rec.move.gap
+      end
+      T_gap_there = leave("there")
+      where.c1 = { 0, 0, 4 }
+      T_gap_short = leave("ended short")
+      T_gap_hide = leave("there", "@hide_spot")
+      -- saves: a failed one, its status just after; a made one; the status before a failed save (the other order);
+      -- the character's own save left out; a rider that came with the hit is no save's status
+      local function save(tgt, src, ok, nat, total, dc, ab)
+        G.onSave({ Target = { Uuid = { EntityUuid = tgt } }, Source = { Uuid = { EntityUuid = src } }, Success = ok,
+          Total = total, Ability = ab, RollBonus = 4, Advantage = false, Disadvantage = false, SpellCastUuid = "g1",
+          ConditionRoll = { Difficulty = dc, Roll = { Result = { NaturalRoll = nat, Total = total } } } })
+      end
+      Ext.Types = { Serialize = function() return { probe = true } end }
+      t = 1000; save("b1", "c1", false, 7, 11, 16, "Wisdom")
+      t = 1010; G._on.status_on("b1", "HUNTERS_MARK", "c1")
+      t = 1080; G._on.status_on("b1", "FRIGHTENED", "c1")
+      t = 2000; save("b1", "c1", true, 15, 19, 16, "Wisdom")
+      t = 2050; G._on.status_on("b1", "PRONE", "c1")
+      t = 3000; G._on.status_on("b1", "PRONE", "c1")
+      t = 3020; save("b1", "c1", false, 3, 7, 16, "Strength")
+      t = 3500; save("c1", "b1", false, 2, 6, 10, "Constitution")
+      t = 5000; save("b1", "c1", false, 9, 13, 18, "Constitution")
+      t = 5000 + G.SAVE_STATUS_MS + 1; G._on.status_on("b1", "GAPING_WOUND", "c1")
+      t = 6000; save("b1", "c1", false, 4, 8, 16, "Strength")
+      t = 6050; G._on.status_on("b1", "PRONE", "x9")
+      T_saves, T_save_probe = R.saves, G.results.save_probe
+      T_hit_saves = G.hitRow({ Hit = { EffectFlags = { "Hit" }, ConditionRolls = {
+        { RollType = "AttackRoll", AttackRoll = true, Difficulty = 19, Roll = { Result = { NaturalRoll = 12, Total = 26 } } },
+        { RollType = "SavingThrowRoll", SavingThrowRoll = true, Ability = "Constitution", Difficulty = 18,
+          Roll = { Result = { NaturalRoll = 5, Total = 9 } } } } } }).saves
+      Ext.Types = nil
+      G.notify = notify
+      Osi.GetPosition, Osi.HasActiveStatus, Ext.Utils.MonotonicTime = gp, hs, oldNow
+      G.fighting, G.F, G.rounds = false, nil, {}
+    """)
+    g = L.globals()
+    at = [(g.T_at[i + 1].ev, g.T_at[i + 1].x, g.T_at[i + 1].z) for i in range(len(g.T_at or {}))]
+    check("record: the boss's floor position at the character's turn start and at the end of the boss's turn only",
+          at == [("own_start", 9, 2), ("boss_end", 4, 1)], str(at))
+    check("record: the floor gap to the boss after every leave (there or ended short), none for a hide move",
+          g.T_gap_there is not None and abs(g.T_gap_there - math.hypot(4, 1)) < 1e-9 and g.T_gap_short is not None
+          and abs(g.T_gap_short - math.hypot(4, 3)) < 1e-9 and g.T_gap_hide is None,
+          f"{g.T_gap_there} {g.T_gap_short} {g.T_gap_hide}")
+    sv = [(x.roll, x.total, x.dc, x.ability, x.success, x.status) for x in
+          (g.T_saves[i + 1] for i in range(len(g.T_saves or {})))]
+    check("record: the boss's saves with d20, total, DC, ability and outcome; the character's own left out",
+          [r[:5] for r in sv] == [(7, 11, 16, "Wisdom", False), (15, 19, 16, "Wisdom", True),
+                                  (3, 7, 16, "Strength", False), (9, 13, 18, "Constitution", False),
+                                  (4, 8, 16, "Strength", False)], str(sv))
+    check("record: a failed save takes the status its source put on next (a rider skipped, before or after the save, "
+          "within the window); a made save, another source's status or one too late none",
+          [r[5] for r in sv] == ["FRIGHTENED", None, "PRONE", None, None], str([r[5] for r in sv]))
+    check("record: the first save event kept as a probe", g.T_save_probe is not None and g.T_save_probe.probe is True)
+    hs_ = g.T_hit_saves
+    check("record: a hit's saving throws from its condition rolls, the attack roll left out",
+          hs_ is not None and len(hs_) == 1 and hs_[1].roll == 5 and hs_[1].total == 9 and hs_[1].dc == 18
+          and hs_[1].ability == "Constitution", str(hs_ and len(hs_)))
 
 
 def real_roll_tests(L):
@@ -6857,6 +6949,33 @@ MUTATIONS = [
     ("leave: a spot beyond the turn's movement preferred for the centre", GL,
      "    local dc = (c and d <= budget) and", "    local dc = c and"),
     ("far: back on the start spot counts as far again", GL, "  if not at then F.boss_left = true end\n", ""),
+    ("record: the boss's position at the character's turn start left out", GL, '  G.noteBossAt(F, R, "own_start")\n',
+     ""),
+    ("record: the boss's position at the end of its turn left out", GL,
+     '    if m == "enemy" and not started then G.noteBossAt(F, R, "boss_end", who) end\n', ""),
+    ("record: another enemy's turn end recorded as the boss's", GL,
+     "  if not b or (who and uuid(who) ~= uuid(b)) then return end", "  if not b then return end"),
+    ("record: the gap after a leave only when it ended short", GL,
+     '    if a.move_to == "@leave_spot" then\n      local _, gap',
+     '    if a.move_to == "@leave_spot" and m.result == "ended short" then\n      local _, gap'),
+    ("record: the character's own saves recorded as the boss's", GL,
+     '  if G.member(F, tgt) ~= "enemy" then return end', "  if not G.member(F, tgt) then return end"),
+    ("record: a made save takes a status", GL, "    if v.success == false and not v.status and", "    if not v.status and"),
+    ("record: a rider taken as a save's status", GL, "G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true }",
+     "G.SAVE_NOT = {}"),
+    ("record: a status just before its save never linked", GL,
+     "  if row.success == false then\n    for i = #(R.status_log", "  if false then\n    for i = #(R.status_log"),
+    ("record: a status long after the save linked", GL, "    if dt > G.SAVE_STATUS_MS then break end\n", ""),
+    ("record: another source's status linked to the save", GL,
+     "    local same = v.source == nil or x.cause == nil or v.source == x.cause\n", "    local same = true\n"),
+    ("record: a hit's saves not read", GL, "      saves[#saves + 1] = G.saveFields(c)\n", ""),
+    ("record: a hit's attack roll taken as a save", GL,
+     '    if first(c, { "SavingThrowRoll" }) == true or flagText(first(c, { "RollType" })) == "SavingThrowRoll" then',
+     "    if true then"),
+    ("record: the save's DC not kept", GL, '    dc = first(c, { "Difficulty" }),', "    dc = nil,"),
+    ("record: the save's d20 not kept", GL, '  return { roll = first(c, { "Roll.Result.NaturalRoll" }),',
+     "  return { roll = nil,"),
+    ("record: no save probe", GL, "  if G.results and not G.results.save_probe then", "  if false then"),
     ("sheath gate: the step loop ignores it", GL,
      "    if not F.queue and G.sheathHeld(F, R, t) then F.next = t + G.POLL_MS; return end\n", ""),
     ("sheath gate: never gives up", GL, "  if t - F.sheathSince < G.READY_MAX_MS then return true end",

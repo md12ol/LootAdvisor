@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 10
+G.VERSION = 11
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1794,6 +1794,7 @@ local function onTurn(started, who)
   if R then
     R.turns = R.turns or {}
     R.turns[#R.turns + 1] = { who = uuid(who), ev = started and "started" or "ended", t = now() - G.t0 }
+    if m == "enemy" and not started then G.noteBossAt(F, R, "boss_end", who) end
   end
 end
 -- The time of the last engine event of the fight's creatures (the character, its enemies, its summons) in F.activeAt:
@@ -1837,6 +1838,7 @@ local function onStatus(on, obj, status, causee)
   R.status_log = R.status_log or {}
   R.status_log[#R.status_log + 1] = { who = uuid(obj), status = status, on = on, cause = causee and uuid(causee),
     t = now() - G.t0 }
+  if on then G.saveStatus(R, R.status_log[#R.status_log]) end
 end
 -- Osiris CriticalHitBy (defender, attack owner, attacker): every critical hit in the fight, per round.
 local function onCrit(def, ownerAtt, att)
@@ -1881,6 +1883,64 @@ local function flagText(v)
   end
   return v ~= nil and tostring(v) or nil
 end
+-- One saving throw's condition roll: the d20, the total, the DC, the ability
+G.SAVE_ROLLS_MAX = 8
+function G.saveFields(c)
+  return { roll = first(c, { "Roll.Result.NaturalRoll" }), total = first(c, { "Roll.Result.Total" }),
+    dc = first(c, { "Difficulty" }), ability = flagText(first(c, { "Ability" })) }
+end
+-- The enemies' saving throws (the one-frame SavingThrowRolledEvent), per round in R.saves: the d20, the total, the DC,
+-- the ability, made or not, Advantage / Disadvantage, the roll bonus, who caused it and the cast; the first event's
+-- whole component in results.save_probe so the names can be checked against the game. The event names no status: a
+-- failed save takes the first status the same source puts on the same target within SAVE_STATUS_MS after it, or
+-- SAVE_BACK_MS before it (the two events' order is the engine's); a made save has none.
+G.SAVE_STATUS_MS, G.SAVE_BACK_MS = 500, 50
+G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true }
+function G.onSave(comp)
+  if not G.fighting then return end
+  local F = G.F
+  local tgt = first(comp, { "Target.Uuid.EntityUuid" })
+  if G.member(F, tgt) ~= "enemy" then return end
+  local R = G.rounds[#G.rounds]
+  if not R then return end
+  local src = first(comp, { "Source.Uuid.EntityUuid" })
+  local row = G.saveFields(first(comp, { "ConditionRoll" }) or {})
+  row.who, row.source, row.t = uuid(tgt), src and uuid(src), now() - G.t0
+  row.total = first(comp, { "Total" }) or row.total
+  row.ability = flagText(first(comp, { "Ability" })) or row.ability
+  row.success, row.bonus = first(comp, { "Success" }), first(comp, { "RollBonus" })
+  row.advantage, row.disadvantage = first(comp, { "Advantage" }), first(comp, { "Disadvantage" })
+  row.cast_guid = first(comp, { "SpellCastUuid" })
+  row = G.jsonSafe(row)
+  R.saves = R.saves or {}
+  R.saves[#R.saves + 1] = row
+  if row.success == false then
+    for i = #(R.status_log or {}), 1, -1 do
+      local x = R.status_log[i]
+      if row.t - (x.t or 0) > G.SAVE_BACK_MS then break end
+      if G.saveStatus(R, x) then break end
+    end
+  end
+  if G.results and not G.results.save_probe then
+    G.results.save_probe = G.jsonSafe(try(function() return Ext.Types.Serialize(comp) end) or "?")
+  end
+end
+-- A status put on an enemy (a status_log row) is the one a failed save of the same source on it let through, when it
+-- came within the window and that save has no status yet. -> linked
+function G.saveStatus(R, x)
+  if not x.on or x.save or G.SAVE_NOT[x.status] then return false end
+  for i = #(R.saves or {}), 1, -1 do
+    local v = R.saves[i]
+    local dt = (x.t or 0) - (v.t or 0)
+    if dt > G.SAVE_STATUS_MS then break end
+    local same = v.source == nil or x.cause == nil or v.source == x.cause
+    if v.success == false and not v.status and v.who == x.who and same and dt >= -G.SAVE_BACK_MS then
+      v.status, x.save = x.status, true
+      return true
+    end
+  end
+  return false
+end
 function G.hitRow(e)
   local hit = try(function() return e.Hit end) or {}
   local src = first(e, { "Caster.Uuid.EntityUuid", "Hit.Inflicter.Uuid.EntityUuid", "Hit.InflicterOwner.Uuid.EntityUuid" })
@@ -1915,6 +1975,16 @@ function G.hitRow(e)
     per[#per + 1] = { type = tostring(try(function() return dmg.DamageType end)), amount = try(function() return dmg.Amount end) }
   end
   row.damage = per
+  -- the saving throws among the hit's condition rolls (on a weapon hit the first one is the attack roll)
+  local saves = {}
+  for i = 1, G.SAVE_ROLLS_MAX do
+    local c = first(hit, { "ConditionRolls." .. i })
+    if c == nil then break end
+    if first(c, { "SavingThrowRoll" }) == true or flagText(first(c, { "RollType" })) == "SavingThrowRoll" then
+      saves[#saves + 1] = G.saveFields(c)
+    end
+  end
+  if #saves > 0 then row.saves = saves end
   return row
 end
 local function onHit(e)
@@ -2065,6 +2135,18 @@ if not G._listeners9 then
   G._listeners9 = {
     turn_started = pcall(Ext.Osiris.RegisterListener, "TurnStarted", 1, "after", on("turn_started")),
     turn_ended = pcall(Ext.Osiris.RegisterListener, "TurnEnded", 1, "after", on("turn_ended")),
+  }
+end
+-- added in version 11: the saving throws
+G._on.save = function(comp)
+  local who = { n = 2, try(function() return comp.Source.Uuid.EntityUuid end),
+    try(function() return comp.Target.Uuid.EntityUuid end) }
+  local ok, err = xpcall(G.dispatch, debug.traceback, G.onSave, who, comp)
+  if not ok and G.results and not G.results.save_error then G.results.save_error = tostring(err) end
+end
+if not G._listeners11 then
+  G._listeners11 = {
+    save = pcall(Ext.Entity.OnCreate, "SavingThrowRolledEvent", function(_e, _ty, comp) pcall(G._on.save, comp) end),
   }
 end
 -- added in version 10: the engine's end of a CharacterMoveToPosition (its event name), arrived or cancelled
@@ -2730,9 +2812,25 @@ function G.moveGoalMet(F, a)
   if try(Osi.HasActiveStatus, F.char, "FLANKED") == 1 then return false, d, "Threatened (FLANKED)" end
   return true, d
 end
+-- The boss's floor position in R.boss_at: at each of the character's turn starts ("own_start", roundStart) and at the
+-- end of each of the boss's turns ("boss_end", its TurnEnded), so the gap it closed or kept is in the record. Another
+-- enemy's turn end is left out.
+function G.noteBossAt(F, R, ev, who)
+  local b = F and R and resolveTarget(F, "@boss")
+  if not b or (who and uuid(who) ~= uuid(b)) then return end
+  local x, _, z = xyz(b)
+  if not x then return end
+  R.boss_at = R.boss_at or {}
+  R.boss_at[#R.boss_at + 1] = { ev = ev, x = x, z = z, t = now() - G.t0 }
+end
 function G.moveStep(F, a, R, rec0)
   if rec0 then
     local m = rec0.move or {}
+    -- the floor gap to the boss after every leave, wherever it ended: what the boss has to close in its turn
+    if a.move_to == "@leave_spot" then
+      local _, gap = G.moveGoalMet(F, a)
+      m.gap = gap
+    end
     local met, d, why = false, nil, nil
     if m.result == "ended short" then met, d, why = G.moveGoalMet(F, a) end
     if met then m.goal = string.format("out of reach (%.1f m from the boss along the floor)", d)
@@ -3656,6 +3754,7 @@ local function roundStart(F)
     end
   end
   G.rounds[#G.rounds + 1] = R
+  G.noteBossAt(F, R, "own_start")
   local ph = G.reactionsPhase(F, "own")
   if ph then R.reaction_phases = { { phase = ph.phase, verified = ph.verified } } end
   -- the queue is planned on the first act step, once the engine has refilled the turn's resources

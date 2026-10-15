@@ -337,10 +337,13 @@ def build_attacks(P, plan, state):
         out.append(Attack("off-hand", off, mode, precision=plain[j] in prec,
                           if_no_ensnare=plan.ensnare and j == ba - 1, dis_any=dis, near=near))
     if getattr(state, "ts", False):
-        # True Strike on the boss: both rolls of the first attack action (its main hand and the off-hand half the
-        # bonus action pays) roll without Sharpshooter's -5
+        # True Strike on the boss: the first attack action rolls without Sharpshooter's -5, and so does its off-hand
+        # half when it has one; a Piercing Shot or manoeuvre first fires no half, and in game the half on the later
+        # plain attack then rolled with the -5
         first = next((i for i, a in enumerate(out) if a.label != "Dread Ambusher"), None)
-        half = next((i for i, a in enumerate(out) if a.label == "off-hand"), None)
+        half = None
+        if kinds and kinds[0][0] == "plain":
+            half = next((i for i, a in enumerate(out) if a.label == "off-hand"), None)
         for i in (first, half):
             if i is not None:
                 out[i] = replace(out[i], true_strike=True)
