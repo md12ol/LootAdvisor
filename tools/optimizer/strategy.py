@@ -535,9 +535,11 @@ def shares(counts):
 # The character's measured d20, by the same (boss attack bonus, character AC) as BOSS_ODDS: the gauntlet's own attack
 # rolls at net Advantage in every record without a roll edit (50 fights, rows of one roll counted once), 1234 rolls.
 # "adv" is the higher die per face 1..20: 197 at 19-20 (16.0%, a uniform pair gives 19.0%) and 34 at 1-4 (2.8%, uniform
-# 4.0%). "straight" is an assumption, no straight roll being in the records: one die's faces, both dice of each of
-# those rolls (2468 dice). Disadvantage and any other bonus or AC keep the uniform d20; a spec's "own_odds" ({mode:
-# 20 counts or chances}) overrides it.
+# 4.0%). "straight" is one die's faces, both dice of each of those rolls (2468 dice): the game resolves a roll with
+# Advantage and Disadvantage on one of its two d20, kept without regard to its value (a stand run's 56 such rolls:
+# every outcome followed the kept die, 42 hits and 5 critical hits against 38.5 and 4.58 under these faces).
+# Disadvantage and any other bonus or AC keep the uniform d20; a spec's "own_odds" ({mode: 20 counts or chances})
+# overrides it.
 OWN_ODDS = {(9, 22): (
     ("adv", shares((3, 6, 8, 17, 29, 33, 37, 54, 54, 69, 80, 68, 101, 104, 73, 94, 100, 107, 96, 101))),
     ("straight", shares((103, 111, 115, 123, 114, 139, 134, 135, 129, 142, 136, 125, 151, 156, 99, 113, 117, 124,
