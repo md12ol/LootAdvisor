@@ -198,12 +198,11 @@ def run(req, spec=None, timeout=None, poll=5.0, log=print, max_misses=6):
         return _run(req, spec, timeout, poll, log, max_misses)
 
 
-# Where the mouse pointer goes before a Start, as a share of the primary screen (x, y): over the game world, away from
-# the hotbar (a "Repulsor" tooltip of the hotbar under a resting pointer covered half of a recorded fight), the party
-# portraits, the minimap and the turn order, and far enough from the edges not to pan the camera. In game a pointer
-# over the world drew a move preview in idle own turns and an object's name tooltip in enemy turns; LA_POINTER_AT
-# ("x,y" shares) sets another spot for a run without a code change.
-POINTER_AT = (0.30, 0.18)
+# Where the mouse pointer goes before a Start, as a share of the primary screen (x, y): the empty lower part of the
+# minimap circle, where nothing in the world can be hovered. Over the hotbar a "Repulsor" tooltip covered half of a
+# recorded fight; over the world the pointer drew a move preview in idle own turns and an object's name in enemy
+# turns, more so once the camera follows the fight. LA_POINTER_AT ("x,y" shares) sets another spot for a run.
+POINTER_AT = (0.897, 0.25)
 
 
 def pointer_at(env=None):
@@ -214,6 +213,36 @@ def pointer_at(env=None):
     except ValueError:
         return POINTER_AT
     return (x, y) if 0.1 <= x <= 0.9 and 0.1 <= y <= 0.9 else POINTER_AT
+
+
+# Windows virtual keys of the mouse buttons (left, right, middle). A button the system holds down (in one session the
+# right one) made the game ignore every left click and kept its pointer off the parked spot, so a tooltip showed.
+MOUSE_BUTTONS = {"left": (0x01, 0x0002, 0x0004), "right": (0x02, 0x0008, 0x0010), "middle": (0x04, 0x0020, 0x0040)}
+
+
+def mouse_buttons_down(is_down=None):
+    """The mouse buttons the system reports held down (GetAsyncKeyState). -> [names]; [] where it cannot be read."""
+    if is_down is None:
+        if os.name != "nt":
+            return []
+        import ctypes
+        u = ctypes.windll.user32
+        is_down = lambda vk: bool(u.GetAsyncKeyState(vk) & 0x8000)  # noqa: E731
+    return [name for name, (vk, _dn, _up) in MOUSE_BUTTONS.items() if is_down(vk)]
+
+
+def release_stuck_buttons(is_down=None, send_up=None):
+    """Sends one button-up for each mouse button held down, then reads them again. -> the buttons still down."""
+    down = mouse_buttons_down(is_down)
+    if not down:
+        return []
+    if send_up is None and os.name == "nt":
+        import ctypes
+        send_up = lambda flag: ctypes.windll.user32.mouse_event(flag, 0, 0, 0, 0)  # noqa: E731
+    for name in down:
+        if send_up:
+            send_up(MOUSE_BUTTONS[name][2])
+    return mouse_buttons_down(is_down)
 
 
 def pointer_off_ui(at=None):
@@ -241,6 +270,9 @@ def _run(req, spec, timeout, poll, log, max_misses):
     label = req["run_id"]
 
     def send_start():
+        stuck = release_stuck_buttons()
+        if stuck:
+            raise RunInvalid("mouse button held down before the Start: " + ", ".join(stuck))
         pointer_off_ui()
         try:
             return ev(start, timeout=20.0).strip()
@@ -397,6 +429,9 @@ def main(argv):
     elif cmd == "mode":
         print(set_mode(argv[2]))
     elif cmd == "start":
+        stuck = release_stuck_buttons()
+        if stuck:
+            sys.exit("mouse button held down, not started: " + ", ".join(stuck))
         pointer_off_ui()
         print(ev("return GAUNTLET_TEST.start()").strip())
     elif cmd == "state":
