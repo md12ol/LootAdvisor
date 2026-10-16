@@ -42,6 +42,8 @@
 - real rolls (old path): the run's casters' queued Osiris casts lose IgnoreSpellRolls (nothing else, no other caster, not the
   reaction queue), on by default and recorded per run; a missed cast is done, with its outcome; riders and the turns
   of party members outside the fight; run.py counts and reports only runs of the same kind.
+- save_report.py: the boss's save rows with no outcome by how they were built, the failure share of the deciding
+  saves against the bonus the engine used, the rows whose bonus differs from the model, records below v14 skipped.
 """
 import contextlib
 import io
@@ -4605,7 +4607,7 @@ def py_tests():
               lambda: disadvantage_report_tests(R),
               lambda: split_report_tests(R), phase_call_tests,
               lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R),
-              lambda: strategy_round_tests(R), pointer_tests):
+              lambda: strategy_round_tests(R), pointer_tests, save_report_tests):
         try:
             t()
         except Exception as e:  # noqa: BLE001
@@ -4770,6 +4772,57 @@ def strategy_round_tests(R):
               "Run rr1, per round against the strategy" in rep and "| 3 | 40 / cut" in rep, rep[-700:])
     finally:
         shutil.rmtree(d, ignore_errors=True)
+
+
+def save_report_tests():
+    """save_report.py on a synthetic v14 record: a row with no outcome counted by how it was built; Piercing Shot's
+    second condition, a concentration save and that row left out of the failure share; the share's chance from the
+    bonus the engine used, and the row whose bonus differs from the model listed; a v13 record skipped."""
+    import save_report as SR
+    base = {"who": "boss", "source": "me", "cast_guid": "c1", "component": True, "osiris": True, "swapped": True}
+    rows1 = [dict(base, ability="Wisdom", dc=16, roll=13, total=17, bonus_used=4, success=True, condition=1,
+                  spell="Target_MenacingAttack", save_status="FRIGHTENED"),
+             dict(base, cast_guid="c2", ability="Constitution", dc=18, roll=1, total=7, bonus_used=6, success=False,
+                  condition=1, deciding=True, spell="Projectile_PiercingShot", save_status="GAPING_WOUND"),
+             dict(base, cast_guid="c2", ability="Constitution", dc=18, roll=15, total=21, bonus_used=6, success=True,
+                  condition=2, deciding=False, spell="Projectile_PiercingShot")]
+    rows2 = [dict(base, cast_guid="c3", ability="Constitution", dc=10, roll=2, total=8, bonus_used=6, success=False,
+                  roll_type="Concentration"),
+             {"who": "boss", "source": "me", "osiris": True, "roll_type": "GAMEPLAY_SpellSavingThrowSave"},
+             dict(base, cast_guid="c4", ability="Wisdom", dc=16, roll=10, total=12, bonus_used=2, success=False,
+                  condition=1, spell="Target_MenacingAttack", save_status="FRIGHTENED")]
+    rec = {"version": 14, "valid": True, "difficulty": {"name": "tactician", "karmic_dice": False},
+           "req": {"enemy": {"save": 4}}, "rounds": [{"saves": rows1}, {"saves": rows2}]}
+    tmp = tempfile.mkdtemp(prefix="save_report_")
+    try:
+        for name, r in (("run_1_001.json", rec), ("run_0_001.json", dict(rec, version=13))):
+            with open(os.path.join(tmp, name), "w", encoding="utf-8") as f:
+                json.dump(r, f)
+        out = SR.analyse([tmp])
+        text = "\n".join(SR.lines(out))
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+    check("save report: a record below version 14 skipped with a warning",
+          [s["record"] for s in out["skipped_records"]] == ["run_0_001.json"] and len(out["records"]) == 1
+          and "WARNING run_0_001.json" in text, str(out["skipped_records"]))
+    tot = out["missing_total"]
+    check("save report: the row with no outcome counted under the Osiris roll alone",
+          tot.get("osiris") == [1, 1] and sum(m for m, _ in tot.values()) == 1
+          and sum(n for _, n in tot.values()) == 6, str(tot))
+    sh = out["share"]
+    check("save report: the share keeps the deciding rows only, no concentration save and no row without outcome",
+          sh["all"]["rows"] == 3 and sh["all"]["failed"] == 2
+          and out["pool_skipped"]["not deciding"] == 1 and out["pool_skipped"]["concentration"] == 1
+          and out["pool_skipped"]["no outcome"] == 1, str((sh["all"], out["pool_skipped"])))
+    check("save report: the expectation uses the bonus the engine used (0.55 + 0.55 + 0.65)",
+          abs(sh["all"]["expected"] - 1.75) < 1e-9 and sh["by_ability"]["WIS"]["rows"] == 2
+          and sh["by_ability"]["CON"]["rows"] == 1, str(sh))
+    check("save report: per spell and status", sh["by_spell_status"].get("Target_MenacingAttack / FRIGHTENED", {})
+          .get("rows") == 2, str(list(sh["by_spell_status"])))
+    check("save report: a bonus that differs from the modelled one listed (Wisdom +2 against +4; Constitution +6 "
+          "matches the template's proficiency)",
+          [(r["ability"], r["bonus_used"], r["bonus_model"]) for r in out["bonus_differs"]] == [("WIS", 2, 4)],
+          str(out["bonus_differs"]))
 
 
 def pointer_tests():
@@ -6691,6 +6744,7 @@ def phase_call_tests():
 
 # ============================================================================================ mutations
 GL, PL, RN, EN, PA = "gauntlet.lua", "plan.py", "run.py", "engine.py", "pairs.py"
+SR = "save_report.py"
 TL = "gauntlet_test.lua"
 TB = "testmod/LootAdvisorGauntletTest/Mods/LootAdvisorGauntletTest/ScriptExtender/Lua/BootstrapServer.lua"
 MUTATIONS = [
@@ -7691,6 +7745,16 @@ MUTATIONS = [
      "if x.sid == v.sid and x.who == v.who and x.cause", "if x.who == v.who and x.cause"),
     ("saves: Piercing Shot's damage rider taken as the save's status", GL,
      "  INSURFACE = true, GAPING_WOUND_DAMAGE = true,", "  INSURFACE = true,"),
+    ("save report: records below version 14 counted", SR, "if not isinstance(v, int) or v < MIN_VERSION:",
+     "if not isinstance(v, int):"),
+    ("save report: a row that does not decide its cast counted", SR, 'elif row.get("deciding") is False:',
+     "elif False:"),
+    ("save report: concentration saves counted", SR, "elif is_concentration(row):", "elif False:"),
+    ("save report: the modelled bonus taken over the engine's", SR,
+     "bonus = used if isinstance(used, (int, float)) else model", "bonus = model"),
+    ("save report: the template's proficiency left out of the model", SR,
+     'return int(E.get("save", DEFAULT_SAVE)) + TEMPLATE_SAVE_PROF.get(ability, 0)',
+     'return int(E.get("save", DEFAULT_SAVE))'),
 ]
 
 
