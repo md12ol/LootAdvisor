@@ -1150,7 +1150,7 @@ def test_strategy_policy():
         S, tot, sd, totals = G.best_search(P, "evade")
         if set(totals) != set(G.SNEAK_POLICIES):
             fails.append(f"policies searched {sorted(totals)}")
-        if abs(tot - max(totals.values())) > 1e-9 or abs(totals[S.P.riposte_sneak] - tot) > 1e-9:
+        if max(totals.values()) - tot > G.TIE or abs(totals[S.P.riposte_sneak] - tot) > 1e-9:
             fails.append(f"best {S.P.riposte_sneak} {tot} of {totals}")
         for pol in G.SNEAK_POLICIES:
             t2, _ = G.Search(G.replace(P, riposte_sneak=pol), "evade").total()
@@ -1171,6 +1171,48 @@ def test_strategy_policy():
              "crit": {"Interrupt_SneakAttack": "never", "Interrupt_SneakAttack_Critical": "auto"},
              "never": {"Interrupt_SneakAttack": "never", "Interrupt_SneakAttack_Critical": "never"}}:
         fails.append(f"answers {m}")
+    assert not fails, fails
+
+
+def test_strategy_near_ties():
+    """Plans and reaction policies whose expected totals are within the tie tolerance are tied: a plan 1e-5 ahead
+    loses to one spending fewer superiority dice, then to one using Action Surge now, and a policy 1e-5 ahead loses
+    to the earlier one; a lead beyond the tolerance still wins."""
+    import strategy as G
+    dear = G.Plan("free", maneuver="MenacingAttack", n_maneuver=1)
+    dear_surge = G.replace(dear, surge=True)
+    surge = G.Plan("free", surge=True)
+    cheap = G.Plan("free")
+    fails = []
+
+    def pick(values):
+        class Fixed(G.Search):
+            def _branches(self, s, plan, parts=False):
+                return [(1.0, values[plan], values[plan] ** 2, None)]
+        old = G.plans
+        G.plans = lambda P, s, fam: iter(values)
+        try:
+            S = Fixed(_thx_profile(), "evade")
+            return S.value(S.start_state())[2]
+        finally:
+            G.plans = old
+    for values, want in (({dear: 100.00001, cheap: 100.0}, cheap),
+                         ({dear_surge: 100.00001, cheap: 100.0}, cheap),
+                         ({cheap: 100.00001, surge: 100.0}, surge),
+                         ({dear: 100.02, surge: 100.000005, cheap: 100.0}, dear)):
+        got = pick(values)
+        if got != want:
+            fails.append(f"{ {G.describe(k): v for k, v in values.items()} } chose {G.describe(got)}")
+    old = G.Search.total
+    for totals, want in (({"always": 100.0, "crit": 100.00001, "never": 99.0}, "always"),
+                         ({"always": 100.0, "crit": 100.02, "never": 99.0}, "crit")):
+        G.Search.total = lambda self, t=totals: (t[self.P.riposte_sneak], 1.0)
+        try:
+            S, tot, _sd, _all = G.best_search(_thx_profile(riposte_ts=True), "evade")
+        finally:
+            G.Search.total = old
+        if S.P.riposte_sneak != want or tot != totals[want]:
+            fails.append(f"{totals} chose {S.P.riposte_sneak} ({tot})")
     assert not fails, fails
 
 
@@ -1482,7 +1524,7 @@ CI_TESTS = [test_condition_reader, test_d20_maths, test_roll_mix, test_stack_ave
             test_strategy_true_strike, test_strategy_halves, test_strategy_trip_prone, test_strategy_boss_saves, test_strategy_far_start,
             test_strategy_gaping_sneak, test_strategy_boss_odds,
             test_strategy_own_odds, test_strategy_gaping_ends, test_strategy_precision_halves, test_strategy_policy,
-            test_reaction_sneak, test_attack_parts_split,
+            test_strategy_near_ties, test_reaction_sneak, test_attack_parts_split,
             test_strategy_parts, test_strategy_gear_crosscheck, test_strategy_policy_table]
 
 
@@ -2625,6 +2667,19 @@ def mutations():
         finally:
             mech.die_gain = old
     out.append(("Great Weapon Fighting rerolls 1-3", m_gwf))
+
+    def m_strategy_ties_by_noise():
+        import strategy as G
+        old = G.TIE
+        G.TIE = 1e-9                                                    # a float-noise lead decides again
+        try:
+            test_strategy_near_ties()
+            return []
+        except AssertionError as e:
+            return [str(e)]
+        finally:
+            G.TIE = old
+    out.append(("strategy: near-ties decided by float noise", m_strategy_ties_by_noise))
 
     if not local_data_present():
         return out

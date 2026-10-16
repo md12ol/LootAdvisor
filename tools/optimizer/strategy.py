@@ -627,13 +627,25 @@ def plans(P, s, fam):
                                                s.dread)
 
 
+# Expected totals closer than this are a tie: such gaps are float noise or modelling detail, and deciding them by the
+# raw numbers lets any unrelated model change flip the published policy for no real gain.
+TIE = 0.01
+
+
+def spend(plan):
+    """The order tied plans are chosen in: fewer superiority dice, then Action Surge now rather than later; still tied,
+    the first plans() yields."""
+    return plan.n_maneuver + plan.n_precision, not plan.surge
+
+
 @functools.lru_cache(maxsize=None)
 def _turn_cached(P, plan, start):
     return run_turn(P, plan, start)
 
 
 class Search:
-    """The best policy of one family: V(state) = max over plans of E[this turn + boss turn + V(next)]."""
+    """The best policy of one family: V(state) = E[this turn + boss turn + V(next)] of its best plan, the plans
+    within TIE of the largest being tied and chosen by spend."""
 
     def __init__(self, P, fam, last_boss_turn=False):
         self.P, self.fam, self.last = P, fam, last_boss_turn
@@ -645,15 +657,18 @@ class Search:
             return 0.0, 0.0, None
         if s in self.memo:
             return self.memo[s]
-        best = None
+        cands = []
         for plan in plans(self.P, s, self.fam):
             e1 = e2 = 0.0
             for p, m1, m2, nx in self._branches(s, plan):
                 v1, v2, _ = self.value(nx)
                 e1 += m1 + p * v1
                 e2 += m2 + 2 * m1 * v1 + p * v2
-            if best is None or e1 > best[0] + 1e-9:
-                best = (e1, e2, plan)
+            cands.append((e1, e2, plan))
+        best = None
+        if cands:
+            top = max(c[0] for c in cands)
+            best = min((c for c in cands if c[0] >= top - TIE), key=lambda c: spend(c[2]))
         self.memo[s] = best
         return best
 
@@ -807,15 +822,15 @@ def sneak_policies(P):
 
 def best_search(P, fam, policy=None):
     """-> (Search, E[total], sd, {policy: E[total]}) of the family under the given reaction policy, or under the one of
-    sneak_policies with the largest expected total (ties: the earlier one)."""
-    best, totals = None, {}
+    sneak_policies with the largest expected total (ties within TIE: the earlier one)."""
+    runs, totals = [], {}
     for pol in ((policy,) if policy else sneak_policies(P)):
         S = Search(replace(P, riposte_sneak=pol), fam)
         tot, sd = S.total()
         totals[pol] = tot
-        if best is None or tot > best[1] + 1e-9:
-            best = (S, tot, sd)
-    return best + (totals,)
+        runs.append((S, tot, sd))
+    top = max(r[1] for r in runs)
+    return next(r for r in runs if r[1] >= top - TIE) + (totals,)
 
 
 def fight_expect(S):
