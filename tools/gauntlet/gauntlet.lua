@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 16
+G.VERSION = 17
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -4131,7 +4131,8 @@ end
 -- Every attack roll of the character's turn, from the damage log: one row per roll of cause Attack (main hand, spell)
 -- or Offhand, a miss being a 0 damage row with no type. A main-hand action with a weapon in each hand rolls twice
 -- (Attack, then Offhand about 0.4 s later), so rolls and actions differ. Rows within ROLL_MERGE_MS of a landed
--- roll's first row are that roll's (damage types of one hit, riders such as Sneak Attack that land as their own row);
+-- roll's first row are that roll's (damage types of one hit, riders such as Sneak Attack that land as their own row),
+-- and so is a later row with storyActionID 0 (a rider: in game a critical hit's Sneak Attack came 169-175 ms after);
 -- damage of other causes (a status ticking, a surface) stays in the run's damage but in no roll.
 -- Each roll takes its d20 from the hit log: the earliest unused hit row of the same outcome that DealDamage sent up to
 -- ROLL_HIT_BEFORE ms before (about 170 ms in the game) or ROLL_HIT_AFTER ms after the damage row.
@@ -4222,11 +4223,15 @@ function G.rollTally(R, hits, dmg, me, asked)
   local list, last = {}, nil
   for _, d in ipairs(rows) do
     local amt, t = d.amount or 0, d.t or 0
-    if amt > 0 and last and last.hit and last.target == d.target and t - last.t <= G.ROLL_MERGE_MS then
+    -- a row with no story action (storyActionID 0) is a rider, never a roll of its own, however late it lands; with
+    -- no landed roll to join it adds no roll (its damage stays in the run's)
+    local rider = d.sid == 0
+    local joins = amt > 0 and last and last.hit and last.target == d.target
+    if joins and (rider or t - last.t <= G.ROLL_MERGE_MS) then
       last.dmg = last.dmg + amt
       if t > last.t then last.rider = last.rider + amt end
       last.parts[#last.parts + 1] = { t = t, amount = amt, type = d.type }
-    else
+    elseif not rider then
       local landed = amt > 0
       local hi = hitRowFor(t, landed)
       local h = hi and hits[hi]

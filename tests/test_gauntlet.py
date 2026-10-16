@@ -4792,6 +4792,17 @@ def strategy_round_tests(R):
     rp = R.reaction_parts(rr)
     check("reactions: Sneak Attack is the weapon-type row after the hit, not a necrotic rider row (early or late)",
           rp["rounds"][1]["sneak"] == 6 and rp["rounds"][1]["dmg"] == 32, str(rp))
+    # a critical riposte's Sneak Attack row (storyActionID 0) 175 ms after its strike, and a rider row before any roll
+    rl = json.loads(json.dumps(rr))
+    rl["dmg"] = rl["dmg"][:1] + [
+        {"r": 1, "t": t - 500, "source": "c1", "target": "b1", "amount": 4, "cause": "Attack", "type": "Piercing",
+         "sid": 0},
+        {"r": 1, "t": t, "source": "c1", "target": "b1", "amount": 40, "cause": "Attack", "type": "Piercing", "sid": 7},
+        {"r": 1, "t": t + 175, "source": "c1", "target": "b1", "amount": 14, "cause": "Attack", "type": "Piercing",
+         "sid": 0}]
+    rq = R.reaction_parts(rl)["rounds"][1]
+    check("reactions: a rider row with no story action joins its roll however late, and alone adds no roll",
+          rq["n"] == 1 and rq["sneak"] == 14 and rq["dmg"] == 58, str(rq))
     d = tempfile.mkdtemp(prefix="gauntlet_rounds_")
     try:
         spec = {"set": "S", "act": 3, "expect": {"boss": {"dpr": 80.0, "split": True}}}
@@ -6256,10 +6267,14 @@ def sneak_row_tests(L):
         local dmg = {}
         for _, x in ipairs(rows) do
           dmg[#dmg + 1] = { r = 1, t = x[1], source = me, owner = me, target = b, cause = "Attack", type = x[2],
-            amount = x[3] }
+            amount = x[3], sid = x[4] }
         end
         return G.rollTally(R, {}, dmg, me, {})
       end
+      -- a critical hit's Sneak Attack row (storyActionID 0) came 169 ms after its strike in game: still that roll's
+      T_late = run({ { 40306, "Piercing", 40, 7 }, { 40475, "Piercing", 14, 0 } })
+      T_lone = run({ { 1000, "Piercing", 6, 0 } })
+      T_two = run({ { 1000, "Piercing", 20, 7 }, { 1175, "Piercing", 10, 7 } })
       T_a = run({ { 42, "Piercing", 21 }, { 44, "Necrotic", 3 }, { 99, "Piercing", 6 } })
       T_b = run({ { 101, "Necrotic", 2 }, { 104, "Piercing", 13 }, { 160, "Piercing", 4 } })
       T_c = run({ { 400, "Piercing", 33 }, { 454, "Piercing", 6 } })
@@ -6272,6 +6287,9 @@ def sneak_row_tests(L):
     check("sneak: the rider first and the weapon's row second (13 before)", g.T_b.sneak_dmg == 4, str(g.T_b.sneak_dmg))
     check("sneak: a hit with no rider keeps its late row; a late row of another type is no Sneak Attack",
           g.T_c.sneak_dmg == 6 and g.T_d.sneak_dmg == 0, f"{g.T_c.sneak_dmg} {g.T_d.sneak_dmg}")
+    check("rolls: a rider row with no story action joins its roll however late, and alone adds no roll",
+          g.T_late.n == 1 and g.T_late.dmg == 54 and g.T_late.sneak_dmg == 14 and g.T_lone.n == 0 and g.T_two.n == 2,
+          f"{g.T_late.n} {g.T_late.dmg} {g.T_late.sneak_dmg} {g.T_lone.n} {g.T_two.n}")
 
 
 def miss_row_tests(L):
@@ -7712,8 +7730,11 @@ MUTATIONS = [
     ("rolls: the off-hand shot not a roll", GL, "G.ROLL_CAUSES = { Attack = true, Offhand = true }",
      "G.ROLL_CAUSES = { Attack = true }"),
     ("rolls: a rider row counted as its own roll", GL,
-     "if amt > 0 and last and last.hit and last.target == d.target and t - last.t <= G.ROLL_MERGE_MS then",
-     "if false then"),
+     "if joins and (rider or t - last.t <= G.ROLL_MERGE_MS) then", "if false then"),
+    ("rolls: a late rider row with no story action counted as its own roll", GL,
+     "if joins and (rider or t - last.t <= G.ROLL_MERGE_MS) then", "if joins and t - last.t <= G.ROLL_MERGE_MS then"),
+    ("rolls: a rider row with no roll to join counted as a roll", GL, "    elseif not rider then\n      local landed",
+     "    else\n      local landed"),
     ("rolls: a 0 damage row of a spell with no attack roll counted as a miss", GL,
      'if landed or (kind ~= "none" and kind ~= "save") then', "if true then"),
     ("rolls: a slow projectile given the next cast's spell", GL,
@@ -7774,7 +7795,11 @@ MUTATIONS = [
     ("evade: the move optional again", PL, '             done_key="left")]', '             done_key="left", optional=True)]'),
     ("split: the reactions' damage left in the own turn's", RN, '        own -= react["react_dmg"]\n', ""),
     ("split: a Sneak Attack row counted as a roll of its own", RN,
-     'if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:', "if False:"),
+     'if last and last["r"] == d.get("r") and (rider or t - last["t"] <= REACTION_MERGE_MS):', "if False:"),
+    ("split: a late rider row with no story action counted as a roll of its own", RN,
+     '(rider or t - last["t"] <= REACTION_MERGE_MS)', 't - last["t"] <= REACTION_MERGE_MS'),
+    ("split: a rider row with no roll to join counted as a roll", RN,
+     'if rider and not (last and last["r"] == d.get("r")):', "if False:"),
     ("split: a model from before the split compared", RN, "        if key in SPLIT_PARTS and not split:\n            m = None\n",
      ""),
     ("strategy spec: the gear model's numbers left in expect.boss", PL,
