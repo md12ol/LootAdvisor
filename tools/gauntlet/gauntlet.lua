@@ -2004,12 +2004,14 @@ local function castRows(who, guid)
   end
   return out, claimed
 end
--- The cast-start row an event is the impact of: the same d20, no impact yet, the event's Total the bare d20. Two
--- conditions of one cast with the same d20 and no bonus are read as one row and its impact.
+-- The cast-start row an event is the impact of: the same d20, no impact yet, the event's Total the bare d20, and later
+-- than G.SAVE_IMPACT_MS after the row. A cast's cast-start events all come in the tick that resolves it and its
+-- impacts about a second later, so with no bonus a second condition rolling the same d20 is told from an impact by time.
+G.SAVE_IMPACT_MS = 200
 local function impactOf(rows, row)
   if row.roll == nil or row.total ~= row.roll then return nil end
   for _, v in ipairs(rows) do
-    if v.condition_result == nil and v.roll == row.roll then return v end
+    if v.condition_result == nil and v.roll == row.roll and row.t - (v.t or 0) > G.SAVE_IMPACT_MS then return v end
   end
 end
 -- added in version 14: one row per cast and condition from its cast-start event (success, bonus_used), the impact

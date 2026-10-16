@@ -3687,6 +3687,33 @@ def save_log_tests(L):
     check("saves: each registration's outcome recorded (stubbed engine: RollResult yes, no component listener)",
           ls is not None and ls.roll_result is True and ls.saving_throw_event is False and ls.status_try is True,
           str(ls and (ls.roll_result, ls.saving_throw_event, ls.status_try)))
+    # two conditions of one cast with the same d20 and no bonus: both cast-start events in one tick, impacts later
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      local t = 0
+      local oldNow = Ext.Utils.MonotonicTime
+      Ext.Utils.MonotonicTime = function() return t end
+      G.t0 = 0
+      G.F = { char = "c1", enemies = { "b1" } }
+      local R = { casts = {} }
+      G.fighting, G.rounds = true, { R }
+      local function comp(ok, nat)
+        G._on.save({ Target = { Uuid = { EntityUuid = "b1" } }, Source = { Uuid = { EntityUuid = "c1" } }, Success = ok,
+          Total = nat, Ability = "Constitution", RollBonus = 0, SpellCastUuid = "g1",
+          ConditionRoll = { Difficulty = 12, Roll = { Result = { NaturalRoll = nat, Total = nat } } } })
+      end
+      t = 1000; comp(false, 9); comp(false, 9)
+      t = 2100; comp(true, 9)
+      t = 2110; comp(true, 9)
+      T_sd_saves = R.saves
+      Ext.Utils.MonotonicTime = oldNow
+      G.fighting, G.F, G.rounds = false, nil, {}
+    """)
+    sd = [(x.condition, x.t, x.roll, x.total, x.success, x.condition_result, x.t_result)
+          for x in lst(L.globals().T_sd_saves) or []]
+    check("saves: two conditions of one cast with the same d20 and no bonus give two rows, each joined by its impact",
+          sd == [(1, 1000, 9, 9, False, True, 2100), (2, 1000, 9, 9, False, True, 2110)], str(sd))
     # a reload registers RollResult with its six arguments and StatusAttempt with its four, once per game session
     with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
         src = fh.read()
@@ -7720,6 +7747,8 @@ MUTATIONS = [
      "    v.success, v.condition_result, v.t_result = row.success, row.success, row.t"),
     ("saves: the impact's bare total taken for the row's", GL,
      "    v.condition_result, v.t_result = row.success, row.t", "    v.condition_result, v.t_result, v.total = row.success, row.t, row.total"),
+    ("saves: a second condition's cast-start event with the same d20 and no bonus taken as the first's impact", GL,
+     " and row.t - (v.t or 0) > G.SAVE_IMPACT_MS then return v end", " then return v end"),
     ("saves: the bonus used read from RollBonus", GL,
      "row.bonus_used = row.total - row.roll end", "row.bonus_used = row.bonus end"),
     ("saves: rows not keyed by the cast", GL,
