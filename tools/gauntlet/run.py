@@ -992,7 +992,8 @@ def reaction_parts(rec):
     """The character's reactions in the enemies' turns, from the record's damage and hit rows: every row the character
     dealt after its own turn was released (the round's tm.released) or before its first turn (round 0). Attack rolls
     the way gauntlet.lua counts its own turn's (G.rollTally): a row of cause Attack / Offhand starts a roll unless it
-    falls within REACTION_MERGE_MS of the last roll's first row, a 0-damage one is a miss; a roll is a critical hit when
+    falls within REACTION_MERGE_MS of the last roll's first row or has storyActionID 0 (a rider, at any delay; with no
+    roll before it in the round it starts none), a 0-damage one is a miss; a roll is a critical hit when
     a hit-log row of the character near it says so; its Sneak Attack is its rows of the weapon's damage type (the type
     with the most damage among its rows within SNEAK_GAP_MS of the first) coming later than that, when a Sneak Attack
     reaction of the character came in that enemy turn (gauntlet.lua G.sneakPart). Per round lists, the damage being all
@@ -1031,7 +1032,10 @@ def reaction_parts(rec):
         if d.get("cause") not in GAME_ROLL_CAUSES:
             continue
         t, amt = d.get("t") or 0, d.get("amount") or 0
-        if last and last["r"] == d.get("r") and t - last["t"] <= REACTION_MERGE_MS:
+        rider = d.get("sid") == 0   # no story action: a rider of the last roll, never a roll of its own
+        if rider and not (last and last["r"] == d.get("r")):
+            continue
+        if last and last["r"] == d.get("r") and (rider or t - last["t"] <= REACTION_MERGE_MS):
             ty = d.get("type") or ""
             if t - last["t"] < SNEAK_GAP_MS:
                 last["types"][ty] = last["types"].get(ty, 0) + amt
