@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 14
+G.VERSION = 15
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1307,11 +1307,30 @@ function G.reuseBoss(d, p, E)
   -- Start in the same session gave the boss every absolute boost twice (max HP 10024, attack +14, damage +16)
   for _, x in ipairs((G.enemyBoosts or {})[uuid(d)] or {}) do pcall(Osi.RemoveBoosts, d, x, 0, CAUSE, d) end
   if G.enemyBoosts then G.enemyBoosts[uuid(d)] = nil end
+  G.bossCleared = G.bossCleared or {}
+  G.bossCleared[uuid(d)] = G.clearBossStatuses(d)
   pcall(Osi.TeleportToPosition, d, p[1], p[2], p[3], "", 0, 0, 0, 0, 1)
   G.enemyForced = G.enemyForced or {}
   G.enemyForced[uuid(d)] = nil
-  wait(G.SETTLE_MS, function() forceEnemy(d, E) end)
+  wait(G.SETTLE_MS, function()
+    for _, st in ipairs(G.bossCleared[uuid(d)]) do pcall(Osi.RemoveStatus, d, st, "") end
+    forceEnemy(d, E)
+  end)
   return { d }
+end
+-- An aborted fight leaves the boss with what it had then (Frightened from the character's last hit), and the next
+-- run's setup check failed on it. Takes off every status that check would flag: the arena's ground statuses and the
+-- engine's technical ones stay, as the check allows them. -> the ids taken off, sorted
+function G.clearBossStatuses(d)
+  local out = {}
+  for st in pairs(G.statusSet(d)) do
+    if not G.GROUND_STATUS[st] and not G.technicalStatus(st) then
+      pcall(Osi.RemoveStatus, d, st, "")
+      out[#out + 1] = st
+    end
+  end
+  table.sort(out)
+  return out
 end
 function G.restoreBoss(d)
   local f = (G.bossFaction or {})[uuid(d)]
@@ -4873,6 +4892,7 @@ function G.spawnAndFight(F, pts, E, buffs, C)
   local u, spec = F.char, F.spec
   F.enemyFaction = (F.lane and F.lane.enemy_faction) or C.enemy_faction or G.ENEMY_FACTION
   F.boss = F.req.boss and G.reuseBoss(F.req.boss, pts[1], E) and F.req.boss or nil
+  if F.boss then G.results.boss_statuses_removed = (G.bossCleared or {})[uuid(F.boss)] end
   F.enemies = F.boss and { F.boss } or G.spawnEnemies(pts, E, not F.popup and F.enemyFaction or nil)
   if #F.enemies == 0 then return stop(F, "no enemies") end
   if not F.lane and not F.popup then F.hostility = G.makeHostile(u, F.enemies[1], F.enemyFaction) end

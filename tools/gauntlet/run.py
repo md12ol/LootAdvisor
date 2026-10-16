@@ -9,7 +9,8 @@ The method (one boss fight of 16 rounds, fixed repeats, one statistic, the model
 - every run goes through the F11 test popup's Start (engine.run): the script sets the popup to Automatic as its first
   step after loading the harness, then each run is the popup's setup, setup check and fight, with the same record;
 - a side runs until it has --repeats valid runs (default 4; the valid ones already in --results count), at most
-  twice that many tries; a side whose first run failed for a reason every run would meet is not repeated;
+  twice that many tries; a side whose run failed for a reason every run would meet is not repeated (one that
+  failed its setup check on statuses only is tried again);
 - after every run the turn list (round by round: the spell or attack, its target and its result) is written next to
   the results, <results>_turns/<run id>.md, for a person to replay the run by hand;
 - --report compares each set with the model's BOSS scenario (expect.boss from plan.py, not the day numbers): first
@@ -55,7 +56,8 @@ interval of the ratio of the two sides' damage per round excludes 1 or lies with
 rounds by their number (each round's mean over both sides is taken out and the rest resampled per side), because a
 round's damage depends on its number far more than on the dice (round 1's Action Surge, item spells, slots running out).
 A side whose first run failed for a reason that would fail every run (a setup mismatch at the start, a bad request, a
-combat that ended) is not repeated; the record says why.
+combat that ended) is not repeated; the record says why. A setup mismatch on statuses only (an earlier fight's status
+still on the boss or the character) is tried again, at most STATUS_RETRIES times in a row.
 
 specs.json comes from plan.py (one entry per pair, sets "a" and "b"). Both sets of a pair run the same scenarios with
 the same script, enemies and buffs; every run appends one record to results.jsonl. Manual runs from the in-game
@@ -193,8 +195,25 @@ DETERMINISTIC = ("setup mismatch at the start", "ended: setup mismatch at the st
                  "ended: the combat ended or never started")
 
 
+# Setup checks that fail on a status only: one an earlier fight left on (the boss still Frightened after an aborted
+# fight) wears off or is taken off by the next prep, so the side is tried again, at most STATUS_RETRIES times in a row.
+TEMPORARY_SETUP = re.compile(r"^(enemy \d+ statuses at start|no carried status \S+)$")
+STATUS_RETRIES = 2
+
+
+def temporary_setup(rec):
+    """The cause of a run whose start failed its setup check on statuses only, or None."""
+    start = (((rec.get("results") or {}).get("setup") or {}).get("start") or {})
+    fields = [str(m.get("field")) for m in start.get("mismatches") or []]
+    if not fields or not all(TEMPORARY_SETUP.match(f) for f in fields):
+        return None
+    return "setup mismatch at the start on statuses only: " + ", ".join(fields)
+
+
 def deterministic(rec):
     """The cause of an invalid run that would fail every repeat of the side the same way, or None."""
+    if temporary_setup(rec):
+        return None
     _ok, causes = run_validity(rec)
     for c in causes:
         if str(c).startswith(DETERMINISTIC):
@@ -1576,7 +1595,7 @@ def do_runs_v2(a):
             have = len(prior_runs(a.results, i, pairs[i], scen, not a.no_real_rolls)[side])
             if have:
                 print(f"pair {i} {side}: {have} valid run(s) in the results already")
-            tries = 0
+            tries, retried = 0, 0
             while have < want and tries < 2 * want:
                 tries += 1
                 runs, recs = run_side(a, i, pairs[i], side, scen, {"repeat": have})
@@ -1585,6 +1604,19 @@ def do_runs_v2(a):
                     if path:
                         print(f"  turns: {path}")
                 have += len(runs)
+                temp = next((temporary_setup(r) for r in recs if temporary_setup(r)), None)
+                if not runs and temp:
+                    retried += 1
+                    if retried > STATUS_RETRIES:
+                        why = f"{temp} ({STATUS_RETRIES} retries)"
+                        print(f"  pair {i} {side}: not repeated, the statuses stayed on: {why}")
+                        not_repeated(a, i, side, scen, why)
+                        break
+                    # a status that wears off says nothing about the set: the retry does not use up a try
+                    tries -= 1
+                    print(f"  pair {i} {side}: tried again, {temp}")
+                    continue
+                retried = 0
                 why = next((deterministic(r) for r in recs if deterministic(r)), None)
                 if not runs and why:
                     print(f"  pair {i} {side}: not repeated, the run failed for a reason every run would meet: {why}")
