@@ -3701,16 +3701,17 @@ def save_log_tests(L):
           Total = nat, Ability = "Constitution", RollBonus = 0, SpellCastUuid = "g1",
           ConditionRoll = { Difficulty = 12, Roll = { Result = { NaturalRoll = nat, Total = nat } } } })
       end
-      t = 1000; comp(false, 9); comp(true, 9)
+      t = 1000; comp(false, 9); comp(false, 9)
       t = 2100; comp(true, 9)
-      t = 2110; comp(false, 9)
+      t = 2110; comp(true, 9)
       T_sd_saves = R.saves
       Ext.Utils.MonotonicTime = oldNow
       G.fighting, G.F, G.rounds = false, nil, {}
     """)
-    sd = [(x.condition, x.roll, x.total, x.success, x.condition_result) for x in lst(L.globals().T_sd_saves) or []]
+    sd = [(x.condition, x.t, x.roll, x.total, x.success, x.condition_result, x.t_result)
+          for x in lst(L.globals().T_sd_saves) or []]
     check("saves: two conditions of one cast with the same d20 and no bonus give two rows, each joined by its impact",
-          sd == [(1, 9, 9, False, True), (2, 9, 9, True, False)], str(sd))
+          sd == [(1, 1000, 9, 9, False, True, 2100), (2, 1000, 9, 9, False, True, 2110)], str(sd))
     # a reload registers RollResult with its six arguments and StatusAttempt with its four, once per game session
     with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
         src = fh.read()
