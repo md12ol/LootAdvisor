@@ -9,12 +9,12 @@ Rows with no outcome: per record and in total, the save rows whose `success` is 
 (the cast-start component, the Osiris roll, the roller taken from the component's Source, rows still waiting
 for an Osiris roll in saves_unclaimed).
 
-Failure share: one row per save that decides its cast (`deciding` not false; Piercing Shot's second condition left
-out), concentration saves and rows with no outcome left out. Each row's chance to fail is strategy.save_fails with
-the bonus the engine used (`bonus_used`: the total less the d20), or the modelled bonus when the row has none. Per
-ability and per spell and status: rows, failed, expected, sd, z. Last, every row whose `bonus_used` differs from
-the modelled bonus for its ability: the enemy's `saves` from the run request, else its `save` plus the template's
-proficiency (catalog.TEMPLATE_SAVE_PROF).
+Failure share: one row per save that decides its cast (`deciding` not false; Piercing Shot's row whose IF does not
+apply to the caster left out), concentration saves and rows with no outcome left out. Each row's chance to fail is
+strategy.save_fails with the bonus the engine used (`bonus_used`: the total less the d20), or the modelled bonus when
+the row has none. Per ability and per spell and status: rows, failed, expected, sd, z. Last, every row whose
+`bonus_used` differs from the modelled bonus for its ability: the enemy's `saves` from the run request, else its
+`save` plus the template's proficiency (catalog.TEMPLATE_SAVE_PROF).
 """
 import argparse
 import glob
