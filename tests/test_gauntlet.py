@@ -4630,7 +4630,7 @@ def py_tests():
               lambda: lanes_py_tests(R), engine_lane_tests, lambda: item_resource_tests(P),
               lambda: plan_effect_tests(P), lambda: scheduler_tests(R), lambda: plan_gap_tests(P),
               lambda: real_rolls_py_tests(R), testmod_tests, no_leak_tests, lambda: v2_stat_tests(R),
-              lambda: v2_run_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R), lambda: count_report_tests(R),
+              lambda: v2_run_tests(R), lambda: v2_status_retry_tests(R), engine_popup_tests, no_outside_buff_tests, lambda: roll_report_tests(R), lambda: count_report_tests(R),
               lambda: disadvantage_report_tests(R),
               lambda: split_report_tests(R), phase_call_tests,
               lambda: surge_plan_tests(P), arena_note_tests, lambda: strategy_spec_tests(P, R),
@@ -5765,6 +5765,49 @@ def boss_reuse_tests(L):
     check("boss reuse: back in its own faction at the end, never deleted",
           lst(g.T_factions) == ["HOUSE_OF_HOPE"] and "boss1" not in (lst(g.T_deleted) or []) and
           "spawned2" in (lst(g.T_deleted) or []), f"{lst(g.T_factions)} {lst(g.T_deleted)}")
+    L.execute(r"""
+      local G = GAUNTLET
+      local saved = {}
+      for _, k in ipairs({ "RemoveBoosts", "RemoveStatus", "TeleportToPosition", "AddBoosts", "IsDead", "GetFaction",
+                           "GetMaxHitpoints" }) do saved[k] = Osi[k] end
+      local oldGet, oldCheck = Ext.Entity.Get, G.setupCheck
+      local taken = {}
+      Osi.RemoveStatus = function(d, st) taken[#taken + 1] = d .. " " .. st end
+      Osi.RemoveBoosts, Osi.TeleportToPosition, Osi.AddBoosts = function() end, function() end, function() end
+      Osi.IsDead = function() return 0 end
+      Osi.GetFaction = function() return "HOUSE_OF_HOPE" end
+      Osi.GetMaxHitpoints = function() return 5024 end
+      Ext.Entity.Get = function(u)
+        return { Stats = { Abilities = { 0, 16, 11, 14, 12, 12, 14 }, ProficiencyBonus = 2 }, Resistances = { AC = 10,
+          Resistances = {} }, Replicate = function() end,
+          StatusContainer = { Statuses = { h1 = "FRIGHTENED", h2 = "INSURFACE", h3 = "AI_HELPER_X", h4 = "PRONE" } } }
+      end
+      G.bossFaction, G.enemyBoosts, G.bossCleared = nil, nil, nil
+      local E = { ac = 19, save = 5, atk = 9, dmg = 12, dc = 17, hp = 5000 }
+      G.reuseBoss("boss1", { 5, 0, 7 }, E)
+      T_bs_taken = {}
+      for i, x in ipairs(taken) do T_bs_taken[i] = x end
+      T_bs_cleared = G.bossCleared and G.bossCleared.boss1
+      -- the setup check after it fails, which ends the popup run
+      G.setupCheck = function() return { checked = 1, mismatches = { { field = "x", want = 1, got = 2 } } } end
+      G.reset()
+      local F = { req = { run_id = "rb", label = "t", boss = "boss1" }, popup = true, char = "c1", spec = {}, plan = {},
+        S = {}, cooldown = {}, started = 1, state = "prep" }
+      G.F = F
+      pcall(G.spawnAndFight, F, { { 0, 0, 0 } }, E, {}, {})
+      T_bs_rec = G.results.boss_statuses_removed
+      for k, v in pairs(saved) do Osi[k] = v end
+      Ext.Entity.Get, G.setupCheck = oldGet, oldCheck
+    """)
+    g = L.globals()
+    taken = lst(g.T_bs_taken) or []
+    check("boss reuse: an earlier fight's statuses come off before the setup check, the arena's surface and the "
+          "engine's helpers stay", sorted(set(taken)) == ["boss1 FRIGHTENED", "boss1 PRONE"] and
+          lst(g.T_bs_cleared) == ["FRIGHTENED", "PRONE"], str(taken))
+    check("boss reuse: what is still on after the settle is taken off again before the stats are forced",
+          taken.count("boss1 FRIGHTENED") == 2, str(taken))
+    check("boss reuse: the run record lists the statuses taken off the boss",
+          lst(g.T_bs_rec) == ["FRIGHTENED", "PRONE"], str(lst(g.T_bs_rec)))
     with open(os.path.join(G_DIR, "gauntlet.lua"), encoding="utf-8") as fh:
         src = fh.read()
     check("boss reuse: the setup check reads each forced boost back and the arena check skips the boss",
@@ -6692,6 +6735,69 @@ def v2_run_tests(R):
         shutil.rmtree(d, ignore_errors=True)
 
 
+def _status_rec(fields, run_id):
+    """A popup run stopped by its setup check at the start, on these mismatch fields."""
+    parts = "; ".join(f"{f} (want none, got X)" for f in fields)
+    return {"mode": "scripted", "pair": 0, "side": "a", "scenario": "boss", "real_rolls": True, "valid": False,
+            "run_id": run_id, "spec_id": {"set_name": "S", "build": "b", "act": 3},
+            "invalid": ["ended: setup mismatch at the start", "setup mismatch at the start: " + parts],
+            "results": {"setup": {"start": {"checked": 9, "mismatches": [{"field": f, "want": "none", "got": "X"}
+                                                                         for f in fields]}}}}
+
+
+def v2_status_retry_tests(R):
+    """run.py v2: a run whose setup check failed on statuses only (an earlier fight's status still on the boss) is
+    tried again without using up a try, at most STATUS_RETRIES times in a row, then the side is not repeated, with why;
+    a setup mismatch on anything else still ends the side after one run."""
+    STATUS = ["enemy 1 statuses at start"]
+    check("status retry: a mismatch on statuses only is not a reason every run would meet",
+          R.deterministic(_status_rec(STATUS + ["no carried status FRIGHTENED"], "s")) is None and
+          R.temporary_setup(_status_rec(STATUS, "s")) is not None)
+    check("status retry: a status mismatch beside another one is",
+          R.deterministic(_status_rec(STATUS + ["enemy 1 AC"], "s")) is not None and
+          R.temporary_setup(_status_rec(STATUS + ["enemy 1 AC"], "s")) is None)
+    d = tempfile.mkdtemp(prefix="gauntlet_retry_")
+    old = (R.engine.load, R.engine.run, R.engine.set_mode)
+    try:
+        spec = {"set": "S", "act": 3, "expect": {"dpr": 60.0, "score": 70}}
+        pairs = [{"char": "astarion", "build": "b", "act": 3, "single": True, "specs": {"a": spec}}]
+        sp = os.path.join(d, "specs.json")
+        with open(sp, "w", encoding="utf-8") as f:
+            json.dump(pairs, f)
+        R.engine.load = lambda: "loaded"
+        R.engine.set_mode = lambda m: m
+
+        def batch(name, seq_, repeats):
+            res = os.path.join(d, name + ".jsonl")
+            it, n = iter(seq_), [0]
+
+            def fake_run(req, spec_):
+                n[0] += 1
+                v = next(it)
+                if isinstance(v, float):
+                    return dict(_v2_rec(0, "a", v), run_id=f"ok{n[0]}")
+                return _status_rec(v, f"bad{n[0]}")
+            R.engine.run = fake_run
+            with contextlib.redirect_stdout(io.StringIO()):
+                R.main([sp, "--results", res, "--sides", "a", "--repeats", str(repeats)])
+            recs = [json.loads(x) for x in open(res, encoding="utf-8") if x.strip()]
+            return n[0], recs
+        n, recs = batch("wears_off", [STATUS, STATUS, 100.0], 1)
+        check("status retry: the side is tried again after a status-only mismatch, the retries not using up its tries",
+              n == 3 and not any(r.get("not_repeated") for r in recs), f"{n} {recs[-1:]}")
+        n, recs = batch("stays", [STATUS] * 10, 4)
+        nr = [r for r in recs if r.get("not_repeated")]
+        check("status retry: at most STATUS_RETRIES retries in a row, then not repeated with the statuses named",
+              n == R.STATUS_RETRIES + 1 and len(nr) == 1 and "enemy 1 statuses at start" in nr[0]["invalid"][0],
+              f"{n} {nr}")
+        n, recs = batch("other", [STATUS + ["enemy 1 AC"]] * 10, 4)
+        check("status retry: a mismatch on anything else still ends the side after one run",
+              n == 1 and any(r.get("not_repeated") for r in recs), str(n))
+    finally:
+        R.engine.load, R.engine.run, R.engine.set_mode = old
+        shutil.rmtree(d, ignore_errors=True)
+
+
 def engine_popup_tests():
     """engine.run goes through the popup's Start: the request (with its arena's definition) and the spec are written
     to the test file, the eval sets Automatic and calls GAUNTLET_TEST.start; a refused Start is an invalid run."""
@@ -7559,7 +7665,25 @@ MUTATIONS = [
      '  if G.F and G.F.state and G.F.state ~= "done" then return "busy" end\n  local t, err = T.read()',
      "  local t, err = T.read()"),
     ("test mod: the gate ignored", TB, "  if not pass then\n", "  if false then\n"),
-    ("boss: not forced again", GL, "  wait(G.SETTLE_MS, function() forceEnemy(d, E) end)\n", ""),
+    ("boss: not forced again", GL, "    forceEnemy(d, E)\n  end)\n  return { d }", "  end)\n  return { d }"),
+    ("boss: an earlier fight's statuses kept", GL, "  G.bossCleared[uuid(d)] = G.clearBossStatuses(d)\n",
+     "  G.bossCleared[uuid(d)] = {}\n"),
+    ("boss: the arena's surface taken off too", GL,
+     '    if not G.GROUND_STATUS[st] and not G.technicalStatus(st) then\n      pcall(Osi.RemoveStatus, d, st, "")',
+     '    if not G.technicalStatus(st) then\n      pcall(Osi.RemoveStatus, d, st, "")'),
+    ("boss: a status still on after the settle left", GL,
+     '    for _, st in ipairs(G.bossCleared[uuid(d)]) do pcall(Osi.RemoveStatus, d, st, "") end\n', ""),
+    ("boss: the statuses taken off not recorded", GL,
+     "  if F.boss then G.results.boss_statuses_removed = (G.bossCleared or {})[uuid(F.boss)] end\n", ""),
+    ("status retry: a status-only mismatch counted as one every run would meet", RN,
+     "    if temporary_setup(rec):\n        return None\n", ""),
+    ("status retry: a status-only mismatch beside another one retried", RN,
+     "if not fields or not all(TEMPORARY_SETUP.match(f) for f in fields):",
+     "if not fields or not any(TEMPORARY_SETUP.match(f) for f in fields):"),
+    ("status retry: never retried", RN, "                if not runs and temp:\n", "                if False:\n"),
+    ("status retry: retried without a bound", RN, "                    if retried > STATUS_RETRIES:\n",
+     "                    if False:\n"),
+    ("status retry: a retry uses up a try", RN, "                    tries -= 1\n", ""),
     ("boss: deleted at the end", GL, "    if d == F.boss then G.restoreBoss(d) else gone[#gone + 1] = d end",
      "    gone[#gone + 1] = d"),
     ("campaign: story statuses not listed", GL,
