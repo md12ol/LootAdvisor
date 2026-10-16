@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 17
+G.VERSION = 18
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -1937,9 +1937,22 @@ G.SAVE_MERGE_MS = 200
 -- never a save's status: the riders, and the status of standing in a surface (put on in the same tick)
 G.SAVE_NOT = { HUNTERS_MARK = true, TRUE_STRIKE = true, PASSIVE_HUNTERS_MARK = true, PASSIVE_TRUE_STRIKE = true,
   INSURFACE = true, GAPING_WOUND_DAMAGE = true, PASSIVE_GAPING_WOUND_ATTACK = true }
--- Piercing Shot's SpellSuccess has two IFs with the same save and both roll: the first one's row decides (Piercing
--- Strike, Target_PiercingThrust, has one)
-G.SAVE_FIRST_DECIDES = { Projectile_PiercingShot = true, Target_PiercingThrust = true }
+-- Piercing Shot's SpellSuccess has two IFs with the same save, the first for a caster without the passive named here
+-- and the second for one with it, and the game rolls both: the row of the IF that applies to the caster decides.
+-- Piercing Strike (Target_PiercingThrust) has a single IF, so its one row decides.
+G.SAVE_PASSIVE_SPLIT = { Projectile_PiercingShot = "CrossbowExpert_Wounding" }
+-- Asked of the game once per caster and passive in a fight, kept in results.save_passives; nil when the game gave no
+-- answer.
+function G.casterPassive(caster, passive)
+  G.results.save_passives = G.results.save_passives or {}
+  local seen = G.results.save_passives
+  seen[caster] = seen[caster] or {}
+  if seen[caster][passive] == nil then
+    local r = try(Osi.HasPassive, caster, passive)
+    if r ~= nil then seen[caster][passive] = r == 1 end
+  end
+  return seen[caster][passive]
+end
 -- row's fields go into v where v has none
 function G.mergeSave(v, row, kind)
   for k, x in pairs(row) do if v[k] == nil then v[k] = x end end
@@ -2106,7 +2119,11 @@ function G.settleSave(v, rounds, i, hits)
   local h = castHit(hits, v.cast_guid)
   if not h then return end
   v.sid, v.spell = h.sid, h.spell
-  if G.SAVE_FIRST_DECIDES[h.spell] then v.deciding = v.condition == 1 end
+  local passive = G.SAVE_PASSIVE_SPLIT[h.spell]
+  if passive and (v.source or h.source) then
+    v.caster_passive = G.casterPassive(v.source or h.source, passive)
+    v.deciding = v.condition == (v.caster_passive and 2 or 1)
+  end
   for _, x in ipairs(nearRows(rounds, i, "status_tries")) do
     if x.sid == v.sid and x.who == v.who and x.cause == v.source and not G.SAVE_NOT[x.status] then
       v.save_status = x.status

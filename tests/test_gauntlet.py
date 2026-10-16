@@ -182,7 +182,7 @@ def lua_tests():
               impact_wait_tests, phase_reaction_tests, step_validity_tests, policy_tests, conc_rider_tests,
               sneak_row_tests, miss_row_tests, cast_noise_tests, action_rolls_tests, arena_camera_tests,
               cast_id_tests, holder_idle_tests, end_turn_tests, engine_gate_tests, record_gap_tests,
-              save_log_tests, turn_round_tests):
+              save_log_tests, save_deciding_tests, turn_round_tests):
         try:
             t(L)
         except Exception as e:  # noqa: BLE001 - a broken block is a failed test, not a crash
@@ -3547,8 +3547,8 @@ def save_log_tests(L):
     """The enemies' saving throws, one row per cast and condition, keyed by the cast's SpellCastUuid: the engine's
     cast-start event gives the row (d20, total, the outcome, the bonus used) and its impact event only the condition's
     result, whichever event the Osiris RollResult (roller, raw result, criticality) comes with; a component whose enemy
-    is only its Source waits for an Osiris roll that claims its whole cast. Piercing Shot rolls its save twice and the
-    first row decides. The statuses only cross-check the outcome, linked by the story action id of the cast's hit,
+    is only its Source waits for an Osiris roll that claims its whole cast. Piercing Shot rolls its save twice and,
+    for a caster without Crossbow Expert's passive, the first row decides. The statuses only cross-check the outcome, linked by the story action id of the cast's hit,
     never by time. Every component counted and the first kept before any filter; the registrations' outcome recorded."""
     L.execute(r"""
       local G = GAUNTLET
@@ -3779,6 +3779,72 @@ def save_log_tests(L):
           "G.results = { prep = prepRes, save_listeners = G.saveListeners() }" in src)
     check("saves: the outcomes settled when the fight ends",
           "  G.settleSaves(G.rounds, G.hits)\n" in src)
+
+
+def save_deciding_tests(L):
+    """Piercing Shot's deciding row is the condition whose IF applies to the caster: the second with Crossbow Expert's
+    wounding passive, the first without, the passive asked once per caster. The cases are the in-game probe's: with
+    the passive the status followed the second save (made/failed applied, failed/made not), without it the first."""
+    L.execute(r"""
+      local G = GAUNTLET
+      G.reset()
+      T_sd_asked = {}
+      local oldHas = Osi.HasPassive
+      Osi.HasPassive = function(u, p)
+        T_sd_asked[#T_sd_asked + 1] = u .. "/" .. p
+        if u == "unknown" then error("no entity") end
+        return u == "cbe" and 1 or 0
+      end
+      local R = { status_tries = {}, status_log = {}, casts = {}, saves = {} }
+      local hits = {}
+      local function cast(src, guid, sid, s1, s2, applied, spell)
+        spell = spell or "Projectile_PiercingShot"
+        hits[#hits + 1] = { cast_guid = guid, sid = sid, spell = spell, source = src }
+        R.saves[#R.saves + 1] = { who = "b1", source = src, cast_guid = guid, condition = 1, success = s1 }
+        if s2 ~= nil then
+          R.saves[#R.saves + 1] = { who = "b1", source = src, cast_guid = guid, condition = 2, success = s2 }
+        end
+        if applied then
+          R.status_tries[#R.status_tries + 1] = { sid = sid, who = "b1", cause = src, status = "GAPING_WOUND" }
+          R.status_log[#R.status_log + 1] = { on = true, sid = sid, who = "b1", status = "GAPING_WOUND" }
+        end
+        R.casts[#R.casts + 1] = { sid = sid }
+      end
+      cast("cbe", "p1", 301, true, false, true)
+      cast("cbe", "p2", 302, false, true, false)
+      cast("cbe", "p3", 303, false, false, true)
+      cast("np", "q1", 311, false, true, true)
+      cast("np", "q2", 312, true, false, false)
+      cast("unknown", "u1", 321, false, true, true)
+      cast("np", "s1", 331, false, nil, true, "Target_PiercingThrust")
+      G.rounds = { R }
+      G.settleSaves(G.rounds, hits)
+      T_sd_rows, T_sd_passives = R.saves, G.results.save_passives
+      Osi.HasPassive = oldHas
+      G.rounds = {}
+    """)
+    g = L.globals()
+    rows = [(x.cast_guid, x.condition, x.caster_passive, x.deciding, x.success_status, x.success_differs)
+            for x in lst(g.T_sd_rows) or []]
+    check("saves: with Crossbow Expert's wounding passive Piercing Shot's second row decides, the first does not; "
+          "a made first save with a failed second applies the status and flags nothing",
+          rows[:6] == [("p1", 1, True, False, False, None), ("p1", 2, True, True, False, None),
+                       ("p2", 1, True, False, True, None), ("p2", 2, True, True, True, None),
+                       ("p3", 1, True, False, False, None), ("p3", 2, True, True, False, None)], str(rows[:6]))
+    check("saves: without the passive Piercing Shot's first row decides",
+          rows[6:10] == [("q1", 1, False, True, False, None), ("q1", 2, False, False, False, None),
+                         ("q2", 1, False, True, True, None), ("q2", 2, False, False, True, None)], str(rows[6:10]))
+    check("saves: a caster the game gave no passive answer for keeps the first row deciding, the answer left empty",
+          rows[10:12] == [("u1", 1, None, True, False, None), ("u1", 2, None, False, False, None)], str(rows[10:12]))
+    check("saves: Piercing Strike's single save row neither asks for the passive nor is marked",
+          rows[12:] == [("s1", 1, None, None, False, None)], str(rows[12:]))
+    asked = lst(g.T_sd_asked) or []
+    ps = g.T_sd_passives
+    check("saves: the caster's passive asked of the game once per caster and kept in the record",
+          sorted(asked) == ["cbe/CrossbowExpert_Wounding", "np/CrossbowExpert_Wounding",
+                            "unknown/CrossbowExpert_Wounding", "unknown/CrossbowExpert_Wounding"]
+          and ps is not None and ps["cbe"]["CrossbowExpert_Wounding"] is True
+          and ps["np"]["CrossbowExpert_Wounding"] is False, str(asked))
 
 
 def turn_round_tests(L):
@@ -7914,9 +7980,13 @@ MUTATIONS = [
     ("saves: rows not keyed by the cast", GL,
      "  if row.cast_guid ~= nil then rows, claimed = castRows(row.who, row.cast_guid) end\n", ""),
     ("saves: Piercing Shot's second save marked deciding", GL,
-     "v.deciding = v.condition == 1 end", "v.deciding = true end"),
+     "v.deciding = v.condition == (v.caster_passive and 2 or 1)", "v.deciding = true"),
+    ("saves: Piercing Shot's first row deciding whatever the caster's passive", GL,
+     "v.deciding = v.condition == (v.caster_passive and 2 or 1)", "v.deciding = v.condition == 1"),
+    ("saves: the caster's passive asked of the game for every row", GL,
+     "  if seen[caster][passive] == nil then", "  if true then"),
     ("saves: Piercing Shot not known to roll twice", GL,
-     "G.SAVE_FIRST_DECIDES = { Projectile_PiercingShot = true,", "G.SAVE_FIRST_DECIDES = {"),
+     'G.SAVE_PASSIVE_SPLIT = { Projectile_PiercingShot = "CrossbowExpert_Wounding" }', "G.SAVE_PASSIVE_SPLIT = {}"),
     ("saves: a non-deciding row's disagreement flagged", GL,
      "v.success_status ~= v.success and v.deciding ~= false then", "v.success_status ~= v.success then"),
     ("saves: an Osiris roll joins the nearest condition, not the cast's first", GL,
