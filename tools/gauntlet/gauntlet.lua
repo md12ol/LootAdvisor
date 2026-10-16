@@ -11,7 +11,7 @@
 
 GAUNTLET = GAUNTLET or {}
 local G = GAUNTLET
-G.VERSION = 15
+G.VERSION = 16
 
 local RES = {
   ActionPoint = "734cbcfb-8922-4b6d-8330-b2a7e4c14b6a",
@@ -3337,9 +3337,10 @@ G.OFFHAND_MS = 900
 -- Did the pending cast's off-hand half fire. Told by its place in the cast, not by the damage cause alone: a ranged
 -- off-hand half's rows come with cause Offhand, a melee one's with cause Attack like the main hand's. So: a row of
 -- cause Offhand; or the cast's second strike on its target (attack rows more than ROLL_MERGE_MS after the first
--- strike's first row; one strike's damage types and riders land together, the off-hand half about 0.4-0.6 s later);
+-- strike's first row; one strike's damage types land together, the off-hand half about 0.4-0.6 s later);
 -- or a hit-log row that is the cast's last attack and not its first (AttackFlags LastAttack without FirstAttack; a
--- single attack carries both).
+-- single attack carries both). A rider such as Sneak Attack is a row of its own with storyActionID 0, never a strike:
+-- in game one came 169 ms after a critical Piercing Shot's row, past ROLL_MERGE_MS.
 function G.offhandFired(P, dmg, hits)
   local first
   for i = (P.dmg0 or 0) + 1, #(dmg or {}) do
@@ -3347,7 +3348,7 @@ function G.offhandFired(P, dmg, hits)
     if d.source == P.who or d.owner == P.who then
       local cause = tostring(d.cause or "")
       if cause:find("Offhand", 1, true) then return true end
-      if G.ROLL_CAUSES[cause] and d.t and (not P.target or d.target == P.target) then
+      if G.ROLL_CAUSES[cause] and d.t and d.sid ~= 0 and (not P.target or d.target == P.target) then
         if not first then first = d.t elseif d.t - first > G.ROLL_MERGE_MS then return true end
       end
     end
