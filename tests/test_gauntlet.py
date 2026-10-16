@@ -2948,6 +2948,13 @@ def offhand_melee_tests(L):
       T_om_miss = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1560, "Attack", 0, nil) })
       -- one strike with a rider row of its own (Sneak Attack) shortly after: no off-hand half
       T_om_one = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), row(1066, "Attack", 11, "Piercing") })
+      -- a critical hit's Sneak Attack row (storyActionID 0) came 169 ms after its strike in game: still no off-hand half,
+      -- while the off-hand half's row carries the cast's own id
+      local function sid(r, n) r.sid = n; return r end
+      T_om_late = G.offhandFired(P, { sid(row(1000, "Attack", 40, "Piercing"), 7),
+        sid(row(1169, "Attack", 14, "Piercing"), 0) })
+      T_om_late2 = G.offhandFired(P, { sid(row(1000, "Attack", 8, "Piercing"), 7),
+        sid(row(1060, "Attack", 7, "Piercing"), 0), sid(row(1560, "Attack", 6, "Piercing"), 7) })
       -- another target's row or a status tick is no second strike
       local other = row(1600, "Attack", 5, "Piercing"); other.target = "e9"
       T_om_other = G.offhandFired(P, { row(1000, "Attack", 8, "Piercing"), other, row(1700, "Status", 3, "Fire") })
@@ -3025,6 +3032,8 @@ def offhand_melee_tests(L):
     check("off-hand half: a melee cast's second strike (cause Attack) is the off-hand half", g.T_om_two is True)
     check("off-hand half: a missed melee off-hand half (its 0 damage row) counts too", g.T_om_miss is True)
     check("off-hand half: one strike with its rider row is no off-hand half", g.T_om_one is False)
+    check("off-hand half: a rider row with no story action, however late, is no second strike",
+          g.T_om_late is False and g.T_om_late2 is True, f"{g.T_om_late} {g.T_om_late2}")
     check("off-hand half: another target's row or a status tick is no second strike", g.T_om_other is False)
     check("off-hand half: a hit row that is the cast's last attack and not its first is the off-hand half",
           g.T_om_hit is True and g.T_om_hit1 is False, f"{g.T_om_hit} {g.T_om_hit1}")
@@ -7228,6 +7237,8 @@ MUTATIONS = [
      "        if not first then first = d.t elseif d.t - first > G.ROLL_MERGE_MS then return true end\n", ""),
     ("off-hand half: a rider row taken for a second strike", GL,
      "elseif d.t - first > G.ROLL_MERGE_MS then return true end", "elseif d.t - first > 0 then return true end"),
+    ("off-hand half: a late rider row with no story action taken for a second strike", GL,
+     "if G.ROLL_CAUSES[cause] and d.t and d.sid ~= 0 and", "if G.ROLL_CAUSES[cause] and d.t and"),
     ("off-hand half: the hit log's last attack not read", GL,
      "    if h.source == P.who and f:find(\"LastAttack\", 1, true) and not f:find(\"FirstAttack\", 1, true) then",
      "    if false then"),
